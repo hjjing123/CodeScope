@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+from app.core.errors import AppError
+
+
+@dataclass(slots=True)
+class CypherExecutionSummary:
+    statement_count: int
+    total_rows: int
+    row_counts: list[int]
+
+
+def execute_cypher_file(
+    *,
+    cypher_file: Path,
+    uri: str,
+    user: str,
+    password: str,
+    database: str,
+    connect_retry: int,
+    connect_wait_seconds: int,
+) -> CypherExecutionSummary:
+    if not cypher_file.exists() or not cypher_file.is_file():
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="Cypher 文件不存在",
+            detail={"cypher_file": str(cypher_file)},
+        )
+
+    cypher_text = cypher_file.read_text(encoding="utf-8", errors="replace")
+    statements = split_cypher_statements(cypher_text)
+    if not statements:
+        return CypherExecutionSummary(statement_count=0, total_rows=0, row_counts=[])
+
+    try:
+        from neo4j import GraphDatabase
+        from neo4j.exceptions import DatabaseUnavailable, ServiceUnavailable
+    except Exception as exc:  # pragma: no cover - runtime dependency guard
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="缺少 neo4j Python 驱动，请安装依赖 neo4j",
+        ) from exc
+
+    driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=5)
+    try:
+        _verify_connectivity(
+            driver=driver,
+            retry=max(1, int(connect_retry)),
+            wait_seconds=max(1, int(connect_wait_seconds)),
+            retry_errors=(ServiceUnavailable, DatabaseUnavailable),
+        )
+
+        row_counts: list[int] = []
+        with driver.session(database=database) as session:
+            for statement in statements:
+                result = _run_with_retry(
+                    session=session,
+                    statement=statement,
+                    retry=max(1, int(connect_retry)),
+                    wait_seconds=max(1, int(connect_wait_seconds)),
+                    retry_errors=(ServiceUnavailable, DatabaseUnavailable),
+                )
+                keys = list(result.keys())
+                if not keys:
+                    result.consume()
+                    row_counts.append(0)
+                    continue
+                row_counts.append(len(list(result)))
+
+        return CypherExecutionSummary(
+            statement_count=len(statements),
+            total_rows=sum(row_counts),
+            row_counts=row_counts,
+        )
+    except AppError:
+        raise
+    except Exception as exc:
+        raise AppError(
+            code="SCAN_EXTERNAL_RULES_FAILED",
+            status_code=422,
+            message="执行 Cypher 失败",
+            detail={"cypher_file": str(cypher_file), "error": str(exc)},
+        ) from exc
+    finally:
+        driver.close()
+
+
+def strip_cypher_comments(text: str) -> str:
+    out: list[str] = []
+    i = 0
+    in_single = False
+    in_double = False
+    in_backtick = False
+    in_line_comment = False
+    in_block_comment = False
+
+    while i < len(text):
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+                out.append(ch)
+            i += 1
+            continue
+
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if not in_single and not in_double and not in_backtick:
+            if ch == "/" and nxt == "/":
+                in_line_comment = True
+                i += 2
+                continue
+            if ch == "/" and nxt == "*":
+                in_block_comment = True
+                i += 2
+                continue
+
+        if ch == "'" and not in_double and not in_backtick:
+            if in_single and nxt == "'":
+                out.append("''")
+                i += 2
+                continue
+            in_single = not in_single
+            out.append(ch)
+            i += 1
+            continue
+
+        if ch == '"' and not in_single and not in_backtick:
+            in_double = not in_double
+            out.append(ch)
+            i += 1
+            continue
+
+        if ch == "`" and not in_single and not in_double:
+            in_backtick = not in_backtick
+            out.append(ch)
+            i += 1
+            continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
+
+
+def split_cypher_statements(text: str) -> list[str]:
+    text = strip_cypher_comments(text)
+    statements: list[str] = []
+    buf: list[str] = []
+    in_single = False
+    in_double = False
+    in_backtick = False
+    i = 0
+
+    while i < len(text):
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+
+        if ch == "'" and not in_double and not in_backtick:
+            if in_single and nxt == "'":
+                buf.append("''")
+                i += 2
+                continue
+            in_single = not in_single
+            buf.append(ch)
+            i += 1
+            continue
+
+        if ch == '"' and not in_single and not in_backtick:
+            in_double = not in_double
+            buf.append(ch)
+            i += 1
+            continue
+
+        if ch == "`" and not in_single and not in_double:
+            in_backtick = not in_backtick
+            buf.append(ch)
+            i += 1
+            continue
+
+        if ch == ";" and not in_single and not in_double and not in_backtick:
+            statement = "".join(buf).strip()
+            if statement:
+                statements.append(statement)
+            buf = []
+            i += 1
+            continue
+
+        buf.append(ch)
+        i += 1
+
+    tail = "".join(buf).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
+def _verify_connectivity(*, driver, retry: int, wait_seconds: int, retry_errors: tuple[type[Exception], ...]) -> None:
+    for attempt in range(1, retry + 1):
+        try:
+            driver.verify_connectivity()
+            return
+        except retry_errors as exc:
+            if attempt == retry:
+                raise AppError(
+                    code="SCAN_EXTERNAL_NOT_CONFIGURED",
+                    status_code=501,
+                    message="Neo4j 连接失败，请检查连接配置",
+                    detail={"error": str(exc)},
+                ) from exc
+            time.sleep(wait_seconds)
+
+
+def _run_with_retry(*, session, statement: str, retry: int, wait_seconds: int, retry_errors: tuple[type[Exception], ...]):
+    for attempt in range(1, retry + 1):
+        try:
+            return session.run(statement)
+        except retry_errors:
+            if attempt == retry:
+                raise
+            time.sleep(wait_seconds)

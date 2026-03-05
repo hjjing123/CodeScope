@@ -1,0 +1,49 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+
+:root {
+  --cs-bg: #f8fafc;
+  --cs-surface: #ffffff;
+  --cs-surface-muted: #f1f5f9;
+  --cs-border: #dbe3ee;
+  --cs-border-strong: #cbd5e1;
+  --cs-text: #0f172a;
+  --cs-text-muted: #475569;
+  --cs-text-subtle: #64748b;
+  --cs-primary: #1d4ed8;
+  --cs-primary-strong: #1e3a8a;
+  --cs-font-sans: 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cs-font-mono: 'JetBrains Mono', 'Consolas', 'SFMono-Regular', monospace;
+  font-family: var(--cs-font-sans);
+  line-height: 1.5;
+  font-weight: 400;
+  color: var(--cs-text);
+  background-color: var(--cs-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  color: var(--cs-text);
+  background-color: var(--cs-bg);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}

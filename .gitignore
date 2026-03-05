@@ -1,0 +1,31 @@
+# Dependencies and build artifacts
+**/node_modules/
+**/dist/
+**/build/
+**/coverage/
+
+# Python cache and virtual environments
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+**/*.pyc
+
+# Local runtime data and databases
+**/codescope.db
+storage/
+workspace/
+backend/storage/
+backend/workspace/
+
+# Logs
+**/*.log
+
+# User-requested excludes
+文档/
+启动脚本/
+start-dev.bat
+start-dev.ps1
+代码目录架构_前后端检索指南.md
+截图*.png

@@ -1,0 +1,46 @@
+name: CodeScope
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: CodeScope_postgresql
+    restart: unless-stopped
+    env_file:
+      - ../backend/config/database.env
+    ports:
+      - "5432:5432"
+    volumes:
+      - codescope_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: CodeScope_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - codescope_redis_data:/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: CodeScope_minio
+    restart: unless-stopped
+    env_file:
+      - ../backend/config/database.env
+    command: server /data --console-address ":9001"
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    volumes:
+      - codescope_minio_data:/data
+
+volumes:
+  codescope_postgres_data:
+  codescope_redis_data:
+  codescope_minio_data:
