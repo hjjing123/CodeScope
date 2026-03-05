@@ -191,6 +191,11 @@
 .login-form .ant-input {
   min-height: 46px;
   font-size: 14px;
+  background: var(--cs-surface) !important;
+}
+
+.login-form .ant-input-affix-wrapper .ant-input {
+  background: transparent !important;
 }
 
 .login-form .ant-input-prefix {
@@ -210,6 +215,18 @@
 
 .login-form .ant-input-affix-wrapper-focused {
   box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.14);
+  background: var(--cs-surface) !important;
+}
+
+.login-form input:-webkit-autofill,
+.login-form input:-webkit-autofill:hover,
+.login-form input:-webkit-autofill:focus,
+.login-form input:-webkit-autofill:active {
+  -webkit-text-fill-color: var(--cs-text);
+  -webkit-box-shadow: 0 0 0 1000px var(--cs-surface) inset !important;
+  box-shadow: 0 0 0 1000px var(--cs-surface) inset !important;
+  transition: background-color 9999s ease-out 0s;
+  caret-color: var(--cs-text);
 }
 
 .login-password-wrap {

@@ -9,6 +9,7 @@ import 'dayjs/locale/zh-cn';
 import WorkspaceLayout from './layouts/WorkspaceLayout';
 import WorkspaceSectionPage from './pages/WorkspaceSectionPage';
 import LogCenterPage from './pages/LogCenterPage';
+import ProjectVersionPage from './pages/ProjectVersionPage';
 import { workspaceSections } from './config/workspaceSections';
 
 // Protected Route Component
@@ -52,19 +53,17 @@ function App() {
             }
           >
             <Route index element={<Navigate to="dashboard" replace />} />
-            {workspaceSections.map((section) => (
-              <Route
-                key={section.key}
-                path={section.route}
-                element={
-                  section.key === 'log-center' ? (
-                    <LogCenterPage />
-                  ) : (
-                    <WorkspaceSectionPage />
-                  )
-                }
-              />
-            ))}
+            <Route path="projects" element={<ProjectVersionPage />} />
+            <Route path="log-center" element={<LogCenterPage />} />
+            {workspaceSections
+              .filter((section) => section.key !== 'projects' && section.key !== 'log-center')
+              .map((section) => (
+                <Route
+                  key={section.key}
+                  path={section.route}
+                  element={<WorkspaceSectionPage />}
+                />
+              ))}
             <Route path="*" element={<Navigate to="dashboard" replace />} />
           </Route>
           <Route path="*" element={<Navigate to="/login" replace />} />

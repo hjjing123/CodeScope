@@ -164,6 +164,18 @@ def create_app() -> FastAPI:
         return PlainTextResponse("Not Found", status_code=404)
 
     app.include_router(api_router)
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def frontend_spa_fallback(full_path: str):
+        normalized_path = full_path.strip("/")
+        if normalized_path == "api" or normalized_path.startswith("api/"):
+            return PlainTextResponse("Not Found", status_code=404)
+
+        if "." in Path(normalized_path).name:
+            return PlainTextResponse("Not Found", status_code=404)
+
+        return serve_frontend_index()
+
     return app
 
 

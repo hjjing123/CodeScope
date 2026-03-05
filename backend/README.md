@@ -34,6 +34,8 @@ Notes:
 - Local Redis container is `CodeScope_redis` (`redis://127.0.0.1:6379`).
 - Local MinIO container is `CodeScope_minio` (`http://127.0.0.1:19000`, console `http://127.0.0.1:19001`).
 - Worker process runs from backend code: `uv run codescope-worker` (or `uv run python -m app.worker`).
+- On Windows, worker defaults to `solo` pool (`concurrency=1`) to avoid `billiard` spawn permission errors.
+- If you run Celery manually on Windows, add `-P solo` (example: `uv run celery -A app.worker.celery_app worker -Q import,scan,patch,env,report,low -l info -P solo`).
 - Task logs are stored in MinIO (`CODESCOPE_TASK_LOG_STORAGE_BACKEND=minio`), metadata is indexed in PostgreSQL (`task_log_index`).
 - `alembic upgrade head` seeds/normalizes a bootstrap admin for local login debug.
 - Default bootstrap admin credentials are `admin@example.com / admin123` (override via `CODESCOPE_BOOTSTRAP_ADMIN_*`).
