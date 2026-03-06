@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Modal, Form, Input, message, Select, Tooltip, Typography, Card } from 'antd';
 import { PlusOutlined, EditOutlined } from '@ant-design/icons';
-import type { TablePaginationConfig } from 'antd/es/table';
+import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import { getRuleSets, createRuleSet, updateRuleSet, bindRuleSetRules, getRules, getRuleSet } from '../../services/rules';
 import type { RuleSet, Rule } from '../../types/rule';
 
@@ -44,14 +44,25 @@ const RuleSetList: React.FC = () => {
     fetchData(pagination.current, pagination.pageSize);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch all rules for selection
   const fetchRules = async () => {
     setLoadingRules(true);
     try {
-      // Assuming fetching enough rules for now. 
-      // In production, might need search functionality for Select if rules > 1000
-      const res = await getRules({ page: 1, page_size: 1000 });
-      setRules(res.items);
+      const pageSize = 200;
+      let page = 1;
+      let total = 0;
+      const allRules: Rule[] = [];
+
+      do {
+        const res = await getRules({ page, page_size: pageSize });
+        allRules.push(...res.items);
+        total = res.total;
+        page += 1;
+        if (res.items.length === 0) {
+          break;
+        }
+      } while (allRules.length < total);
+
+      setRules(allRules);
     } catch (error) {
       console.error(error);
       message.error('获取规则列表失败');
@@ -142,7 +153,7 @@ const RuleSetList: React.FC = () => {
     }
   };
 
-  const columns: any = [
+  const columns: ColumnsType<RuleSet> = [
     {
       title: '名称',
       dataIndex: 'name',
@@ -170,7 +181,7 @@ const RuleSetList: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      render: (_: any, record: RuleSet) => (
+      render: (_, record) => (
         <Space size="middle">
           <Tooltip title="编辑">
             <Button

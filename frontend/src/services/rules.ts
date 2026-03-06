@@ -18,6 +18,7 @@ export interface RuleListParams {
   page_size?: number;
   enabled?: boolean;
   vuln_type?: string;
+  search?: string;
 }
 
 export interface RuleStatsParams {
@@ -69,40 +70,64 @@ export interface SelfTestLogsResponse {
   }>;
 }
 
+interface ApiResponse<T> {
+  request_id: string;
+  data: T;
+  meta: Record<string, unknown>;
+}
+
 export const getRules = (params?: RuleListParams) => {
-  return request.get<unknown, RuleListResponse>('/rules', { params });
+  return request
+    .get<unknown, ApiResponse<RuleListResponse>>('/rules', { params })
+    .then((res) => res.data);
 };
 
 export const getRuleDetails = (ruleKey: string) => {
-  return request.get<unknown, Rule>(`/rules/${ruleKey}`);
+  return request
+    .get<unknown, ApiResponse<Rule>>(`/rules/${ruleKey}`)
+    .then((res) => res.data);
 };
 
 export const getRuleVersions = (ruleKey: string) => {
-  return request.get<unknown, RuleVersionListResponse>(`/rules/${ruleKey}/versions`);
+  return request
+    .get<unknown, ApiResponse<RuleVersionListResponse>>(`/rules/${ruleKey}/versions`)
+    .then((res) => res.data);
 };
 
 export const createRule = (data: RuleCreateRequest) => {
-  return request.post<unknown, Rule>('/rules', data);
+  return request
+    .post<unknown, ApiResponse<Rule>>('/rules', data)
+    .then((res) => res.data);
 };
 
 export const updateDraft = (ruleKey: string, data: RuleDraftUpdateRequest) => {
-  return request.patch<unknown, RuleUpdateResponse>(`/rules/${ruleKey}/draft`, data);
+  return request
+    .patch<unknown, ApiResponse<RuleUpdateResponse>>(`/rules/${ruleKey}/draft`, data)
+    .then((res) => res.data);
 };
 
 export const publish = (ruleKey: string) => {
-  return request.post<unknown, RulePublishResponse>(`/rules/${ruleKey}/publish`);
+  return request
+    .post<unknown, ApiResponse<RulePublishResponse>>(`/rules/${ruleKey}/publish`)
+    .then((res) => res.data);
 };
 
 export const rollback = (ruleKey: string, version: number) => {
-  return request.post<unknown, Rule>(`/rules/${ruleKey}/rollback`, { version });
+  return request
+    .post<unknown, ApiResponse<Rule>>(`/rules/${ruleKey}/rollback`, { version })
+    .then((res) => res.data);
 };
 
 export const toggle = (ruleKey: string, enabled: boolean) => {
-  return request.post<unknown, Rule>(`/rules/${ruleKey}/toggle`, { enabled });
+  return request
+    .post<unknown, ApiResponse<Rule>>(`/rules/${ruleKey}/toggle`, { enabled })
+    .then((res) => res.data);
 };
 
 export const runSelfTest = (data: RuleSelfTestCreateRequest) => {
-  return request.post<unknown, { selftest_job_id: string }>('/rules/selftest', data);
+  return request
+    .post<unknown, ApiResponse<{ selftest_job_id: string }>>('/rules/selftest', data)
+    .then((res) => res.data);
 };
 
 export const runSelfTestWithUpload = (
@@ -119,41 +144,59 @@ export const runSelfTestWithUpload = (
   if (data.rule_version) formData.append('rule_version', String(data.rule_version));
   if (data.draft_payload) formData.append('draft_payload', JSON.stringify(data.draft_payload));
 
-  return request.post<unknown, { selftest_job_id: string }>('/rules/selftest/upload', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  });
+  return request
+    .post<unknown, ApiResponse<{ selftest_job_id: string }>>('/rules/selftest/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    })
+    .then((res) => res.data);
 };
 
 export const getSelfTestJob = (jobId: string) => {
-  return request.get<unknown, SelfTestJob>(`/rules/selftest/${jobId}`);
+  return request
+    .get<unknown, ApiResponse<SelfTestJob>>(`/rules/selftest/${jobId}`)
+    .then((res) => res.data);
 };
 
 export const getSelfTestLogs = (jobId: string, params?: { stage?: string; tail?: number }) => {
-  return request.get<unknown, SelfTestLogsResponse>(`/rules/selftest/${jobId}/logs`, { params });
+  return request
+    .get<unknown, ApiResponse<SelfTestLogsResponse>>(`/rules/selftest/${jobId}/logs`, { params })
+    .then((res) => res.data);
 };
 
 export const getRuleSets = (params?: { page?: number; page_size?: number }) => {
-  return request.get<unknown, RuleSetListResponse>('/rule-sets', { params });
+  return request
+    .get<unknown, ApiResponse<RuleSetListResponse>>('/rule-sets', { params })
+    .then((res) => res.data);
 };
 
 export const getRuleSet = (ruleSetId: string) => {
-  return request.get<unknown, RuleSetDetail>(`/rule-sets/${ruleSetId}`);
+  return request
+    .get<unknown, ApiResponse<RuleSetDetail>>(`/rule-sets/${ruleSetId}`)
+    .then((res) => res.data);
 };
 
 export const createRuleSet = (data: RuleSetCreateRequest) => {
-  return request.post<unknown, RuleSet>('/rule-sets', data);
+  return request
+    .post<unknown, ApiResponse<RuleSet>>('/rule-sets', data)
+    .then((res) => res.data);
 };
 
 export const updateRuleSet = (ruleSetId: string, data: RuleSetUpdateRequest) => {
-  return request.patch<unknown, RuleSet>(`/rule-sets/${ruleSetId}`, data);
+  return request
+    .patch<unknown, ApiResponse<RuleSet>>(`/rule-sets/${ruleSetId}`, data)
+    .then((res) => res.data);
 };
 
 export const bindRuleSetRules = (ruleSetId: string, ruleKeys: string[]) => {
-  return request.post<unknown, RuleSetDetail>(`/rule-sets/${ruleSetId}/rules`, { rule_keys: ruleKeys });
+  return request
+    .post<unknown, ApiResponse<RuleSetDetail>>(`/rule-sets/${ruleSetId}/rules`, { rule_keys: ruleKeys })
+    .then((res) => res.data);
 };
 
 export const getRuleStats = (params?: RuleStatsParams) => {
-  return request.get<unknown, RuleStatsListResponse>('/rule-stats', { params });
+  return request
+    .get<unknown, ApiResponse<RuleStatsListResponse>>('/rule-stats', { params })
+    .then((res) => res.data);
 };

@@ -191,7 +191,7 @@ const RuleCenterPage: React.FC = () => {
   };
 
   const renderRulesTab = () => (
-    <Space direction="vertical" size="large" style={{ width: '100%' }}>
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <RuleStatsCard
         totalRules={enabledCount + disabledCount}
         enabledRules={enabledCount}
@@ -234,7 +234,7 @@ const RuleCenterPage: React.FC = () => {
           onEdit={handleEditRule}
           onToggle={handleToggleRule}
           onViewVersions={handleViewVersions}
-          size="middle"
+          size="small"
         />
       </Card>
     </Space>
@@ -258,8 +258,8 @@ const RuleCenterPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
-      <Space direction="vertical" size="large" style={{ width: '100%' }}>
+    <div style={{ padding: 16 }}>
+      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <Tabs defaultActiveKey="rules" items={items} destroyInactiveTabPane={true} />
       </Space>
 

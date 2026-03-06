@@ -2,6 +2,7 @@ import React from 'react';
 import { Table, Tag, Button, Switch, Space, Tooltip } from 'antd';
 import { EditOutlined, HistoryOutlined } from '@ant-design/icons';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
+import type { FilterValue, SorterResult } from 'antd/es/table/interface';
 import dayjs from 'dayjs';
 import type { Rule } from '../../types/rule';
 
@@ -9,7 +10,11 @@ interface RuleListTableProps {
   loading: boolean;
   dataSource: Rule[];
   pagination: TablePaginationConfig;
-  onChange: (pagination: TablePaginationConfig, filters: any, sorter: any) => void;
+  onChange: (
+    pagination: TablePaginationConfig,
+    filters: Record<string, FilterValue | null>,
+    sorter: SorterResult<Rule> | SorterResult<Rule>[]
+  ) => void;
   onEdit: (rule: Rule) => void;
   onToggle: (rule: Rule, checked: boolean) => void;
   onViewVersions: (rule: Rule) => void;
@@ -66,12 +71,6 @@ const RuleListTable: React.FC<RuleListTableProps> = ({
         { text: 'Low', value: 'LOW' },
         { text: 'Info', value: 'INFO' },
       ],
-    },
-    {
-      title: '语言范围',
-      dataIndex: 'language_scope',
-      key: 'language_scope',
-      render: (text) => <Tag>{text}</Tag>,
     },
     {
       title: '状态',

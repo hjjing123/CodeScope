@@ -67,6 +67,7 @@ def list_rules(
     *,
     enabled: bool | None,
     vuln_type: str | None,
+    search: str | None = None,
     page: int,
     page_size: int,
 ) -> tuple[list[RuleFileRecord], int]:
@@ -74,13 +75,30 @@ def list_rules(
     keys = _collect_rule_keys(rules_dir)
     records: list[RuleFileRecord] = []
     for key in keys:
-        records.append(_build_rule_record(rules_dir, key))
+        try:
+            records.append(_build_rule_record(rules_dir, key))
+        except AppError as exc:
+            if exc.code == "NOT_FOUND":
+                continue
+            raise
 
     if enabled is not None:
         records = [item for item in records if item.enabled == enabled]
     if vuln_type is not None and vuln_type.strip():
         target = vuln_type.strip().upper()
         records = [item for item in records if item.vuln_type.upper() == target]
+    if search is not None and search.strip():
+        keyword = search.strip().lower()
+        records = [
+            item
+            for item in records
+            if (
+                keyword in item.rule_key.lower()
+                or keyword in item.name.lower()
+                or keyword in item.vuln_type.lower()
+                or keyword in (item.description or "").lower()
+            )
+        ]
 
     records.sort(key=lambda item: item.updated_at, reverse=True)
     total = len(records)
@@ -748,6 +766,8 @@ def _collect_rule_keys(rules_dir: Path) -> list[str]:
         for item in versions_root.iterdir():
             if not item.is_dir():
                 continue
+            if not _has_version_files(item):
+                continue
             try:
                 keys.add(normalize_rule_key(item.name))
             except AppError:
@@ -770,13 +790,17 @@ def _rule_exists(rules_dir: Path, rule_key: str) -> bool:
     if _draft_path(rules_dir, key).exists():
         return True
     version_dir = _version_dir(rules_dir, key)
-    if (
-        version_dir.exists()
-        and version_dir.is_dir()
-        and any(version_dir.glob("*.json"))
-    ):
+    if _has_version_files(version_dir):
         return True
     return False
+
+
+def _has_version_files(version_dir: Path) -> bool:
+    return (
+        version_dir.exists()
+        and version_dir.is_dir()
+        and any(item.is_file() for item in version_dir.glob("*.json"))
+    )
 
 
 def _next_version(rules_dir: Path, rule_key: str) -> int:

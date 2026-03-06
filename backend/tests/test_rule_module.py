@@ -232,6 +232,28 @@ def test_rule_lifecycle_create_draft_publish_and_rollback(client, db_session):
     )
 
 
+def test_rule_list_supports_keyword_search(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="rule-search-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    tokens = _login(client, email=admin.email, password="Password123!")
+
+    _create_rule(client, tokens["access_token"], rule_key="demo.search.alpha")
+    _create_rule(client, tokens["access_token"], rule_key="demo.search.beta")
+
+    list_resp = client.get(
+        "/api/v1/rules",
+        headers=_auth_header(tokens["access_token"]),
+        params={"search": "alpha"},
+    )
+    assert list_resp.status_code == 200
+    assert list_resp.json()["data"]["total"] == 1
+    assert list_resp.json()["data"]["items"][0]["rule_key"] == "demo.search.alpha"
+
+
 def test_rule_write_requires_admin_scope(client, db_session):
     developer = _create_user(
         db_session,
@@ -254,6 +276,34 @@ def test_rule_write_requires_admin_scope(client, db_session):
         },
     )
     assert denied_resp.status_code == 403
+
+
+def test_rule_list_ignores_empty_version_directories(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="rule-empty-version-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    tokens = _login(client, email=admin.email, password="Password123!")
+
+    rules_dir = Path(get_settings().scan_external_rules_dir)
+    orphan_dir = rules_dir / ".versions" / "orphan.rule"
+    orphan_dir.mkdir(parents=True, exist_ok=True)
+
+    list_resp = client.get(
+        "/api/v1/rules",
+        headers=_auth_header(tokens["access_token"]),
+    )
+    assert list_resp.status_code == 200
+    assert list_resp.json()["data"]["total"] == 0
+
+    detail_resp = client.get(
+        "/api/v1/rules/orphan.rule",
+        headers=_auth_header(tokens["access_token"]),
+    )
+    assert detail_resp.status_code == 404
+    assert detail_resp.json()["error"]["code"] == "NOT_FOUND"
 
 
 def test_rule_set_create_and_bind_published_rules(client, db_session):

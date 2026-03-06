@@ -288,14 +288,16 @@ def list_rules(
     request: Request,
     enabled: bool | None = None,
     vuln_type: str | None = None,
+    search: str | None = None,
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=200),
+    page_size: int = Query(default=20, ge=1, le=1000),
     _db: Session = Depends(get_db),
     _principal: AuthPrincipal = Depends(require_platform_action("rule:read")),
 ):
     rows, total = list_file_rules(
         enabled=enabled,
         vuln_type=vuln_type,
+        search=search,
         page=page,
         page_size=page_size,
     )
