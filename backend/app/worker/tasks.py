@@ -55,6 +55,7 @@ def _append_worker_runtime_log(
     task_type: str | None,
     task_id: uuid.UUID | None,
     error_code: str | None = None,
+    high_value: bool = True,
     detail_json: dict[str, object] | None = None,
 ) -> None:
     if db_bind is None:
@@ -77,6 +78,7 @@ def _append_worker_runtime_log(
             task_type=task_type,
             task_id=task_id,
             error_code=error_code,
+            high_value=high_value,
             detail_json=detail_json or {},
             db=session,
         )
@@ -109,6 +111,7 @@ def _run_with_bind(
         message=f"worker task started: {runner.__name__}",
         task_type=task_type,
         task_id=task_id,
+        high_value=True,
         detail_json={"runner": runner.__name__},
     )
     if db_bind is None:
@@ -121,6 +124,7 @@ def _run_with_bind(
                 message=f"worker task succeeded: {runner.__name__}",
                 task_type=task_type,
                 task_id=task_id,
+                high_value=True,
                 detail_json={"runner": runner.__name__},
             )
             return
@@ -133,6 +137,7 @@ def _run_with_bind(
                 task_type=task_type,
                 task_id=task_id,
                 error_code=exc.__class__.__name__.upper(),
+                high_value=True,
                 detail_json={"runner": runner.__name__, "error": str(exc)},
             )
             raise
@@ -150,6 +155,7 @@ def _run_with_bind(
             message=f"worker task succeeded: {runner.__name__}",
             task_type=task_type,
             task_id=task_id,
+            high_value=True,
             detail_json={"runner": runner.__name__},
         )
     except Exception as exc:
@@ -161,6 +167,7 @@ def _run_with_bind(
             task_type=task_type,
             task_id=task_id,
             error_code=exc.__class__.__name__.upper(),
+            high_value=True,
             detail_json={"runner": runner.__name__, "error": str(exc)},
         )
         raise

@@ -257,6 +257,7 @@ def set_baseline(
     if project is None:
         raise AppError(code="NOT_FOUND", status_code=404, message="项目不存在")
 
+    previous_baseline = project.baseline_version_id
     project.baseline_version_id = version.id
     append_audit_log(
         db,
@@ -266,6 +267,16 @@ def set_baseline(
         resource_type="VERSION",
         resource_id=str(version.id),
         project_id=project.id,
+        detail_json={
+            "context": {"project_id": str(project.id)},
+            "change": {
+                "before_baseline_version_id": str(previous_baseline)
+                if previous_baseline is not None
+                else None,
+                "baseline_version_id": str(version.id),
+            },
+            "outcome": {"status": "SUCCEEDED"},
+        },
     )
     db.commit()
 

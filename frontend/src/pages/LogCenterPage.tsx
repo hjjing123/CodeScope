@@ -13,8 +13,10 @@ import {
   Form,
   Input,
   InputNumber,
+  Modal,
   Row,
   Segmented,
+  Select,
   Space,
   Statistic,
   Switch,
@@ -27,12 +29,15 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import {
   CopyOutlined,
+  DeleteOutlined,
   DownloadOutlined,
   LinkOutlined,
   ReloadOutlined,
   SearchOutlined,
 } from '@ant-design/icons';
 import {
+  batchDeleteLogs,
+  deleteSingleLog,
   downloadTaskLogs,
   getAuditLogs,
   getLogCorrelation,
@@ -60,7 +65,10 @@ interface AuditFilterValues {
   request_id?: string;
   project_id?: string;
   action?: string;
+  action_group?: string;
   result?: string;
+  keyword?: string;
+  high_value_only?: boolean;
   range?: [Dayjs, Dayjs];
 }
 
@@ -70,6 +78,10 @@ interface RuntimeFilterValues {
   level?: string;
   module?: string;
   event?: string;
+  task_type?: TaskType;
+  task_id?: string;
+  keyword?: string;
+  high_value_only?: boolean;
   range?: [Dayjs, Dayjs];
 }
 
@@ -153,6 +165,43 @@ const taskTypeOptions: { label: string; value: TaskType }[] = [
   { label: '规则自测', value: 'SELFTEST' },
 ];
 
+const actionGroupOptions = [
+  { label: '认证与会话', value: 'AUTH' },
+  { label: '权限与成员', value: 'PERMISSION' },
+  { label: '项目与版本', value: 'PROJECT' },
+  { label: '规则与规则集', value: 'RULE' },
+  { label: '导入与扫描', value: 'SCAN' },
+  { label: '结果与修复', value: 'FINDING' },
+  { label: '报告与导出', value: 'REPORT' },
+  { label: '任务与执行器', value: 'TASK' },
+  { label: '平台运维', value: 'SYSTEM' },
+  { label: '其他', value: 'OTHER' },
+];
+
+const hasBatchDeleteCondition = (systemMode: SystemLogMode, values: AuditFilterValues | RuntimeFilterValues): boolean => {
+  if (systemMode === 'audit') {
+    const auditValues = values as AuditFilterValues;
+    return Boolean(
+      normalizeText(auditValues.request_id) ||
+        normalizeText(auditValues.project_id) ||
+        normalizeText(auditValues.keyword) ||
+        normalizeText(auditValues.action_group) ||
+        auditValues.high_value_only ||
+        (auditValues.range && auditValues.range.length === 2)
+    );
+  }
+  const runtimeValues = values as RuntimeFilterValues;
+  return Boolean(
+    normalizeText(runtimeValues.request_id) ||
+      normalizeText(runtimeValues.project_id) ||
+      normalizeText(runtimeValues.task_id) ||
+      normalizeText(runtimeValues.keyword) ||
+      runtimeValues.task_type ||
+      runtimeValues.high_value_only ||
+      (runtimeValues.range && runtimeValues.range.length === 2)
+  );
+};
+
 const LogCenterPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<LogCenterTabKey>('system');
   const [systemMode, setSystemMode] = useState<SystemLogMode>('audit');
@@ -208,7 +257,10 @@ const LogCenterPage: React.FC = () => {
       request_id: normalizeText(values.request_id),
       project_id: normalizeText(values.project_id),
       action: normalizeText(values.action),
+      action_group: normalizeText(values.action_group),
       result: normalizeText(values.result),
+      keyword: normalizeText(values.keyword),
+      high_value_only: Boolean(values.high_value_only),
       page,
       page_size: pageSize,
       ...toRangeParams(values.range),
@@ -235,6 +287,10 @@ const LogCenterPage: React.FC = () => {
       level: normalizeText(values.level),
       module: normalizeText(values.module),
       event: normalizeText(values.event),
+      task_type: values.task_type,
+      task_id: normalizeText(values.task_id),
+      keyword: normalizeText(values.keyword),
+      high_value_only: Boolean(values.high_value_only),
       page,
       page_size: pageSize,
       ...toRangeParams(values.range),
@@ -253,6 +309,86 @@ const LogCenterPage: React.FC = () => {
     }
   };
 
+  const handleDeleteLog = (record: AuditLogItem | RuntimeLogItem): void => {
+    Modal.confirm({
+      title: '确认删除日志',
+      content: '删除后不可恢复，是否继续？',
+      okText: '确认删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        await deleteSingleLog(record.id);
+        message.success('日志删除成功');
+        if (logDetail && logDetail.record.id === record.id) {
+          setLogDetail(null);
+        }
+        if (systemMode === 'audit') {
+          await loadAuditLogs(auditPage, auditPageSize);
+        } else {
+          await loadRuntimeLogs(runtimePage, runtimePageSize);
+        }
+      },
+    });
+  };
+
+  const handleBatchDelete = (): void => {
+    if (systemMode === 'audit') {
+      const values = auditForm.getFieldsValue();
+      if (!hasBatchDeleteCondition(systemMode, values)) {
+        message.warning('请至少设置一个筛选条件后再批量删除');
+        return;
+      }
+      Modal.confirm({
+        title: '确认批量删除操作日志',
+        content: '将删除当前筛选条件命中的操作日志，删除后不可恢复。',
+        okText: '确认删除',
+        okButtonProps: { danger: true },
+        cancelText: '取消',
+        onOk: async () => {
+          const response = await batchDeleteLogs({
+            log_kind: 'OPERATION',
+            request_id: normalizeText(values.request_id),
+            project_id: normalizeText(values.project_id),
+            keyword: normalizeText(values.keyword),
+            action_group: normalizeText(values.action_group),
+            high_value_only: Boolean(values.high_value_only),
+            ...toRangeParams(values.range),
+          });
+          message.success(`已删除 ${response.data.deleted_count} 条日志`);
+          await loadAuditLogs(auditPage, auditPageSize);
+        },
+      });
+      return;
+    }
+
+    const values = runtimeForm.getFieldsValue();
+    if (!hasBatchDeleteCondition(systemMode, values)) {
+      message.warning('请至少设置一个筛选条件后再批量删除');
+      return;
+    }
+    Modal.confirm({
+      title: '确认批量删除运行日志',
+      content: '将删除当前筛选条件命中的运行日志，删除后不可恢复。',
+      okText: '确认删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        const response = await batchDeleteLogs({
+          log_kind: 'RUNTIME',
+          request_id: normalizeText(values.request_id),
+          task_type: values.task_type,
+          task_id: normalizeText(values.task_id),
+          project_id: normalizeText(values.project_id),
+          keyword: normalizeText(values.keyword),
+          high_value_only: Boolean(values.high_value_only),
+          ...toRangeParams(values.range),
+        });
+        message.success(`已删除 ${response.data.deleted_count} 条日志`);
+        await loadRuntimeLogs(runtimePage, runtimePageSize);
+      },
+    });
+  };
+
   React.useEffect(() => {
     taskForm.setFieldsValue({ task_type: 'SCAN', tail: 200 });
     correlationForm.setFieldsValue({ limit: 100 });
@@ -269,15 +405,26 @@ const LogCenterPage: React.FC = () => {
       },
       {
         title: '动作',
-        dataIndex: 'action',
-        width: 180,
+        dataIndex: 'action_zh',
+        width: 240,
         ellipsis: true,
-        render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>,
+        render: (_: string, record) => (
+          <div style={{ display: 'grid', gap: 2 }}>
+            <span>{record.action_zh || record.action || '--'}</span>
+            <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#999' }}>{record.action || '--'}</span>
+          </div>
+        ),
+      },
+      {
+        title: '摘要',
+        dataIndex: 'summary_zh',
+        ellipsis: true,
+        render: (value: string) => value || '--',
       },
       {
         title: '资源',
         key: 'resource',
-        width: 220,
+        width: 200,
         ellipsis: true,
         render: (_, record) => (
           <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{`${record.resource_type || '--'} / ${record.resource_id || '--'}`}</span>
@@ -286,10 +433,16 @@ const LogCenterPage: React.FC = () => {
       {
         title: '结果',
         dataIndex: 'result',
-        width: 96,
+        width: 110,
         render: (value: string) => (
           <Tag color={value === 'SUCCEEDED' ? 'blue' : 'red'}>{value || 'UNKNOWN'}</Tag>
         ),
+      },
+      {
+        title: '高价值',
+        dataIndex: 'is_high_value',
+        width: 88,
+        render: (value: boolean) => (value ? <Tag color="gold">是</Tag> : <Tag>否</Tag>),
       },
       {
         title: 'request_id',
@@ -314,11 +467,29 @@ const LogCenterPage: React.FC = () => {
       {
         title: '错误码',
         dataIndex: 'error_code',
-        width: 160,
+        width: 120,
         render: (value: string | null) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>,
       },
+      {
+        title: '操作',
+        width: 92,
+        fixed: 'right',
+        render: (_, record) => (
+          <Button
+            type="link"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={(event) => {
+              event.stopPropagation();
+              handleDeleteLog(record);
+            }}
+          >
+            删除
+          </Button>
+        ),
+      },
     ],
-    []
+    [handleDeleteLog]
   );
 
   const runtimeColumns: ColumnsType<RuntimeLogItem> = useMemo(
@@ -352,6 +523,12 @@ const LogCenterPage: React.FC = () => {
         ellipsis: true,
       },
       {
+        title: '高价值',
+        dataIndex: 'is_high_value',
+        width: 88,
+        render: (value: boolean) => (value ? <Tag color="gold">是</Tag> : <Tag>否</Tag>),
+      },
+      {
         title: 'request_id',
         dataIndex: 'request_id',
         width: 220,
@@ -381,8 +558,26 @@ const LogCenterPage: React.FC = () => {
         width: 90,
         render: (_, record) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{record.duration_ms ?? '--'}</span>,
       },
+      {
+        title: '操作',
+        width: 92,
+        fixed: 'right',
+        render: (_, record) => (
+          <Button
+            type="link"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={(event) => {
+              event.stopPropagation();
+              handleDeleteLog(record);
+            }}
+          >
+            删除
+          </Button>
+        ),
+      },
     ],
-    []
+    [handleDeleteLog]
   );
 
   const handleSystemModeChange = (value: string | number): void => {
@@ -558,7 +753,7 @@ const LogCenterPage: React.FC = () => {
             </Button>
           </div>
           {entry.lines.length === 0 ? (
-            <Alert type="info" showIcon message="当前阶段暂无日志输出。" />
+            <Alert type="info" showIcon title="当前阶段暂无日志输出。" />
           ) : (
             <div 
               style={{
@@ -683,14 +878,23 @@ const LogCenterPage: React.FC = () => {
                       { label: '运行日志', value: 'runtime' },
                     ]}
                   />
-                  <Button
-                    icon={<ReloadOutlined />}
-                    onClick={() => {
-                      void runAutoRefresh();
-                    }}
-                  >
-                    刷新
-                  </Button>
+                  <Space>
+                    <Button
+                      danger
+                      icon={<DeleteOutlined />}
+                      onClick={handleBatchDelete}
+                    >
+                      批量删除当前筛选
+                    </Button>
+                    <Button
+                      icon={<ReloadOutlined />}
+                      onClick={() => {
+                        void runAutoRefresh();
+                      }}
+                    >
+                      刷新
+                    </Button>
+                  </Space>
                 </div>
 
                 {systemMode === 'audit' ? (
@@ -711,8 +915,22 @@ const LogCenterPage: React.FC = () => {
                       <Form.Item name="action" style={{ margin: 0 }}>
                         <Input allowClear placeholder="action" style={{ width: 150 }} />
                       </Form.Item>
+                      <Form.Item name="action_group" style={{ margin: 0 }}>
+                        <Select
+                          allowClear
+                          placeholder="action_group"
+                          style={{ width: 160 }}
+                          options={actionGroupOptions}
+                        />
+                      </Form.Item>
                       <Form.Item name="result" style={{ margin: 0 }}>
                         <Input allowClear placeholder="result" style={{ width: 100 }} />
+                      </Form.Item>
+                      <Form.Item name="keyword" style={{ margin: 0 }}>
+                        <Input allowClear placeholder="keyword" style={{ width: 160 }} />
+                      </Form.Item>
+                      <Form.Item name="high_value_only" style={{ margin: 0 }} valuePropName="checked">
+                        <Switch checkedChildren="高价值" unCheckedChildren="全部" />
                       </Form.Item>
                       <Form.Item name="range" style={{ margin: 0 }}>
                         <RangePicker showTime style={{ width: 300 }} />
@@ -748,6 +966,18 @@ const LogCenterPage: React.FC = () => {
                       <Form.Item name="event" style={{ margin: 0 }}>
                         <Input allowClear placeholder="event" style={{ width: 150 }} />
                       </Form.Item>
+                      <Form.Item name="task_type" style={{ margin: 0 }}>
+                        <Select allowClear placeholder="task_type" style={{ width: 130 }} options={taskTypeOptions} />
+                      </Form.Item>
+                      <Form.Item name="task_id" style={{ margin: 0 }}>
+                        <Input allowClear placeholder="task_id" style={{ width: 180 }} />
+                      </Form.Item>
+                      <Form.Item name="keyword" style={{ margin: 0 }}>
+                        <Input allowClear placeholder="keyword" style={{ width: 160 }} />
+                      </Form.Item>
+                      <Form.Item name="high_value_only" style={{ margin: 0 }} valuePropName="checked">
+                        <Switch checkedChildren="高价值" unCheckedChildren="全部" />
+                      </Form.Item>
                       <Form.Item name="range" style={{ margin: 0 }}>
                         <RangePicker showTime style={{ width: 300 }} />
                       </Form.Item>
@@ -766,6 +996,7 @@ const LogCenterPage: React.FC = () => {
                     loading={systemLoading}
                     columns={auditColumns}
                     dataSource={auditItems}
+                    scroll={{ x: 1360 }}
                     pagination={{
                       current: auditPage,
                       pageSize: auditPageSize,
@@ -791,6 +1022,7 @@ const LogCenterPage: React.FC = () => {
                     loading={systemLoading}
                     columns={runtimeColumns}
                     dataSource={runtimeItems}
+                    scroll={{ x: 1340 }}
                     pagination={{
                       current: runtimePage,
                       pageSize: runtimePageSize,
@@ -879,7 +1111,7 @@ const LogCenterPage: React.FC = () => {
                 {taskPayload ? (
                   <Collapse items={taskLogItems} style={{ background: '#fff' }} />
                 ) : (
-                  <Alert type="info" showIcon message="请先输入任务条件并点击查询。" />
+                  <Alert type="info" showIcon title="请先输入任务条件并点击查询。" />
                 )}
               </div>
             ),
@@ -939,10 +1171,21 @@ const LogCenterPage: React.FC = () => {
                             render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{formatTime(value)}</span>,
                           },
                           {
-                            title: 'action',
-                            dataIndex: 'action',
+                            title: '动作',
+                            dataIndex: 'action_zh',
                             ellipsis: true,
-                            render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>,
+                            render: (_: string, record: AuditLogItem) => (
+                              <div style={{ display: 'grid', gap: 2 }}>
+                                <span>{record.action_zh || record.action || '--'}</span>
+                                <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#999' }}>{record.action || '--'}</span>
+                              </div>
+                            ),
+                          },
+                          {
+                            title: '摘要',
+                            dataIndex: 'summary_zh',
+                            ellipsis: true,
+                            render: (value: string) => value || '--',
                           },
                           {
                             title: 'request_id',
@@ -1022,7 +1265,7 @@ const LogCenterPage: React.FC = () => {
                     </Card>
                   </div>
                 ) : (
-                  <Alert type="info" showIcon message="请输入关联条件后点击追踪。" />
+                  <Alert type="info" showIcon title="请输入关联条件后点击追踪。" />
                 )}
               </div>
             ),
@@ -1035,6 +1278,20 @@ const LogCenterPage: React.FC = () => {
         width={540}
         onClose={() => setLogDetail(null)}
         title={logDetail?.kind === 'audit' ? '操作日志详情' : '运行日志详情'}
+        extra={
+          logDetail ? (
+            <Button
+              danger
+              size="small"
+              icon={<DeleteOutlined />}
+              onClick={() => {
+                handleDeleteLog(logDetail.record);
+              }}
+            >
+              删除日志
+            </Button>
+          ) : null
+        }
       >
         {logDetail ? (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -1042,9 +1299,12 @@ const LogCenterPage: React.FC = () => {
               {logDetail.kind === 'audit' ? (
                 <>
                   <Descriptions.Item label="时间">{formatTime(logDetail.record.created_at)}</Descriptions.Item>
-                  <Descriptions.Item label="动作">
+                  <Descriptions.Item label="动作中文">{logDetail.record.action_zh || '--'}</Descriptions.Item>
+                  <Descriptions.Item label="动作编码">
                     <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{logDetail.record.action || '--'}</span>
                   </Descriptions.Item>
+                  <Descriptions.Item label="摘要">{logDetail.record.summary_zh || '--'}</Descriptions.Item>
+                  <Descriptions.Item label="动作分组">{logDetail.record.action_group || '--'}</Descriptions.Item>
                   <Descriptions.Item label="资源">
                     <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{`${logDetail.record.resource_type} / ${logDetail.record.resource_id}`}</span>
                   </Descriptions.Item>
@@ -1061,6 +1321,7 @@ const LogCenterPage: React.FC = () => {
                     </Button>
                   </Descriptions.Item>
                   <Descriptions.Item label="结果">{logDetail.record.result || '--'}</Descriptions.Item>
+                  <Descriptions.Item label="高价值">{logDetail.record.is_high_value ? '是' : '否'}</Descriptions.Item>
                 </>
               ) : (
                 <>
@@ -1085,6 +1346,7 @@ const LogCenterPage: React.FC = () => {
                     </Button>
                   </Descriptions.Item>
                   <Descriptions.Item label="消息">{logDetail.record.message || '--'}</Descriptions.Item>
+                  <Descriptions.Item label="高价值">{logDetail.record.is_high_value ? '是' : '否'}</Descriptions.Item>
                 </>
               )}
             </Descriptions>

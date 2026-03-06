@@ -14,6 +14,10 @@ from app.dependencies.auth import require_platform_action
 from app.models import SystemLog, SystemLogKind
 from app.schemas.runtime_log import RuntimeLogListPayload, RuntimeLogPayload
 from app.services.auth_service import AuthPrincipal
+from app.services.log_center_service import (
+    build_log_keyword_condition,
+    coalesce_json,
+)
 
 
 router = APIRouter(tags=["runtime-logs"])
@@ -28,7 +32,7 @@ def _payload(item: SystemLog) -> RuntimeLogPayload:
         module=item.module or "",
         event=item.event or "",
         message=item.message or "",
-        request_id=item.request_id,
+        request_id=item.request_id or "",
         operator_user_id=item.operator_user_id,
         project_id=item.project_id,
         resource_type=item.resource_type,
@@ -38,7 +42,8 @@ def _payload(item: SystemLog) -> RuntimeLogPayload:
         status_code=item.status_code,
         duration_ms=item.duration_ms,
         error_code=item.error_code,
-        detail_json=item.detail_json,
+        is_high_value=bool(item.is_high_value),
+        detail_json=coalesce_json(item.detail_json),
         created_at=item.created_at,
     )
 
@@ -57,6 +62,8 @@ def list_runtime_logs(
     task_id: uuid.UUID | None = None,
     status_code: int | None = None,
     error_code: str | None = None,
+    keyword: str | None = None,
+    high_value_only: bool = False,
     start_time: datetime | None = None,
     end_time: datetime | None = None,
     page: int = Query(default=1, ge=1),
@@ -87,6 +94,10 @@ def list_runtime_logs(
         conditions.append(SystemLog.status_code == status_code)
     if error_code is not None and error_code.strip():
         conditions.append(SystemLog.error_code == error_code.strip().upper())
+    if keyword is not None and keyword.strip():
+        conditions.append(build_log_keyword_condition(keyword.strip()))
+    if high_value_only:
+        conditions.append(SystemLog.is_high_value.is_(True))
     if start_time is not None:
         conditions.append(SystemLog.occurred_at >= start_time)
     if end_time is not None:

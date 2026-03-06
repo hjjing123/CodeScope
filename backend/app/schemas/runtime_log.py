@@ -24,6 +24,7 @@ class RuntimeLogPayload(BaseModel):
     status_code: int | None
     duration_ms: int | None
     error_code: str | None
+    is_high_value: bool
     detail_json: dict[str, object]
     created_at: datetime
 

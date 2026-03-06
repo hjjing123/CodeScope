@@ -16,11 +16,15 @@ export interface AuditLogItem {
   request_id: string;
   operator_user_id: string | null;
   action: string;
+  action_zh: string;
+  action_group: string;
   resource_type: string;
   resource_id: string;
   project_id: string | null;
   result: string;
   error_code: string | null;
+  summary_zh: string;
+  is_high_value: boolean;
   detail_json: Record<string, unknown>;
   created_at: string;
 }
@@ -43,6 +47,7 @@ export interface RuntimeLogItem {
   status_code: number | null;
   duration_ms: number | null;
   error_code: string | null;
+  is_high_value: boolean;
   detail_json: Record<string, unknown>;
   created_at: string;
 }
@@ -79,10 +84,13 @@ export interface AuditLogQuery {
   request_id?: string;
   actor_user_id?: string;
   action?: string;
+  action_group?: string;
   resource_type?: string;
   project_id?: string;
   result?: string;
   error_code?: string;
+  keyword?: string;
+  high_value_only?: boolean;
   start_time?: string;
   end_time?: string;
   page?: number;
@@ -101,10 +109,25 @@ export interface RuntimeLogQuery {
   task_id?: string;
   status_code?: number;
   error_code?: string;
+  keyword?: string;
+  high_value_only?: boolean;
   start_time?: string;
   end_time?: string;
   page?: number;
   page_size?: number;
+}
+
+export interface BatchDeleteLogsPayload {
+  log_kind?: 'OPERATION' | 'RUNTIME';
+  request_id?: string;
+  task_type?: string;
+  task_id?: string;
+  project_id?: string;
+  start_time?: string;
+  end_time?: string;
+  keyword?: string;
+  action_group?: string;
+  high_value_only?: boolean;
 }
 
 export interface CorrelationQuery {

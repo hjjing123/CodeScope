@@ -13,6 +13,12 @@ from app.dependencies.auth import require_platform_action
 from app.models import SystemLog, SystemLogKind
 from app.schemas.audit_log import AuditLogListPayload, AuditLogPayload
 from app.services.auth_service import AuthPrincipal
+from app.services.log_center_service import (
+    build_log_keyword_condition,
+    coalesce_json,
+    normalize_action_groups,
+    resolve_action_zh,
+)
 
 
 router = APIRouter(tags=["audit-logs"])
@@ -28,6 +34,9 @@ def list_audit_logs(
     project_id: uuid.UUID | None = None,
     result: str | None = None,
     error_code: str | None = None,
+    keyword: str | None = None,
+    action_group: str | None = None,
+    high_value_only: bool = False,
     start_time: datetime | None = None,
     end_time: datetime | None = None,
     page: int = Query(default=1, ge=1),
@@ -51,6 +60,13 @@ def list_audit_logs(
         conditions.append(SystemLog.result == result.strip().upper())
     if error_code is not None and error_code.strip():
         conditions.append(SystemLog.error_code == error_code.strip().upper())
+    if keyword is not None and keyword.strip():
+        conditions.append(build_log_keyword_condition(keyword.strip()))
+    groups = normalize_action_groups(action_group)
+    if groups:
+        conditions.append(SystemLog.action_group.in_(groups))
+    if high_value_only:
+        conditions.append(SystemLog.is_high_value.is_(True))
     if start_time is not None:
         conditions.append(SystemLog.occurred_at >= start_time)
     if end_time is not None:
@@ -74,15 +90,19 @@ def list_audit_logs(
         items=[
             AuditLogPayload(
                 id=item.id,
-                request_id=item.request_id,
+                request_id=item.request_id or "",
                 operator_user_id=item.operator_user_id,
                 action=item.action or "",
+                action_zh=resolve_action_zh(action=item.action, action_zh=item.action_zh),
+                action_group=item.action_group or "",
                 resource_type=item.resource_type or "",
                 resource_id=item.resource_id or "",
                 project_id=item.project_id,
                 result=item.result or "",
                 error_code=item.error_code,
-                detail_json=item.detail_json,
+                summary_zh=item.summary_zh or "",
+                is_high_value=bool(item.is_high_value),
+                detail_json=coalesce_json(item.detail_json),
                 created_at=item.occurred_at,
             )
             for item in rows

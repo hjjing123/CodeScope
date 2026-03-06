@@ -4,6 +4,7 @@ import type {
   ApiResponse,
   AuditLogItem,
   AuditLogQuery,
+  BatchDeleteLogsPayload,
   CorrelationQuery,
   LogCorrelationPayload,
   PagedPayload,
@@ -42,6 +43,19 @@ export const getTaskLogs = (
 ) => {
   const path = resolveTaskPath(taskType, taskId);
   return request.get<any, ApiResponse<TaskLogPayload>>(`${path}/logs`, { params });
+};
+
+export const deleteSingleLog = (logId: string) => {
+  return request.delete<any, ApiResponse<{ deleted: boolean; deleted_count: number }>>(
+    `/log-center/logs/${logId}`
+  );
+};
+
+export const batchDeleteLogs = (payload: BatchDeleteLogsPayload) => {
+  return request.post<any, ApiResponse<{ deleted_count: number }>>(
+    '/log-center/logs/batch-delete',
+    payload
+  );
 };
 
 const parseFilenameFromHeader = (contentDisposition: string | null): string | null => {

@@ -494,6 +494,7 @@ def toggle_rule(
     principal: AuthPrincipal = Depends(require_platform_action("rule:toggle")),
 ):
     normalized_rule_key = _normalize_rule_key(rule_key)
+    before_rule = get_file_rule(rule_key=normalized_rule_key)
     rule = toggle_file_rule(rule_key=normalized_rule_key, enabled=payload.enabled)
     append_audit_log(
         db,
@@ -502,7 +503,14 @@ def toggle_rule(
         action="rule.toggle",
         resource_type="RULE",
         resource_id=normalized_rule_key,
-        detail_json={"enabled": payload.enabled},
+        detail_json={
+            "context": {"rule_key": normalized_rule_key},
+            "change": {
+                "before_enabled": bool(before_rule.enabled),
+                "after_enabled": bool(payload.enabled),
+            },
+            "outcome": {"status": "SUCCEEDED"},
+        },
     )
     db.commit()
     return success_response(request, data=_rule_payload(rule).model_dump())

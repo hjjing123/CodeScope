@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.session import SessionLocal
 from app.models import RuntimeLogLevel, RuntimeService, SystemLog, SystemLogKind
+from app.services.log_center_service import is_high_value_runtime_log
 
 
 def append_runtime_log(
@@ -26,6 +27,7 @@ def append_runtime_log(
     status_code: int | None = None,
     duration_ms: int | None = None,
     error_code: str | None = None,
+    high_value: bool | None = None,
     detail_json: dict[str, object] | None = None,
     db: Session | None = None,
 ) -> None:
@@ -33,6 +35,7 @@ def append_runtime_log(
     if db is None:
         session = SessionLocal()
     else:
+        owns_db = False
         bind = db.get_bind()
         scoped = sessionmaker(
             bind=bind,
@@ -60,6 +63,12 @@ def append_runtime_log(
                 status_code=status_code,
                 duration_ms=duration_ms,
                 error_code=error_code,
+                is_high_value=is_high_value_runtime_log(
+                    level=level,
+                    status_code=status_code,
+                    duration_ms=duration_ms,
+                    explicit_high_value=high_value,
+                ),
                 detail_json=detail_json or {},
             )
         )

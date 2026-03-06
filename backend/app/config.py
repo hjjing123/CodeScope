@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     celery_task_always_eager: bool = False
     celery_task_eager_propagates: bool = True
 
+    runtime_http_log_sample_rate: float = 0.05
+    runtime_http_log_slow_threshold_ms: int = 1200
+    runtime_http_log_record_success: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

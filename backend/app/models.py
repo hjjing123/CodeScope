@@ -692,6 +692,8 @@ class SystemLog(Base):
     task_type: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     task_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     action: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    action_zh: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    action_group: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     resource_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     resource_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -704,6 +706,10 @@ class SystemLog(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_code: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
+    )
+    summary_zh: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    is_high_value: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
     )
     detail_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(

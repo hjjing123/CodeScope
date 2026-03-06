@@ -17,6 +17,7 @@ from app.api.router import api_router
 from app.config import get_settings
 from app.core.errors import AppError
 from app.core.response import error_response, success_response
+from app.services.log_center_service import should_record_runtime_request
 from app.services.runtime_log_service import (
     append_runtime_log,
     build_request_runtime_detail,
@@ -124,6 +125,15 @@ def create_app() -> FastAPI:
             raise
         finally:
             duration_ms = int((time.perf_counter() - start) * 1000)
+            should_record, is_high_value, capture_reason = should_record_runtime_request(
+                status_code=status_code,
+                duration_ms=duration_ms,
+                request_id=request_id,
+                path=request.url.path,
+                sample_rate=settings.runtime_http_log_sample_rate,
+                slow_threshold_ms=settings.runtime_http_log_slow_threshold_ms,
+                record_success=settings.runtime_http_log_record_success,
+            )
             detail_json = build_request_runtime_detail(
                 method=request.method,
                 path=request.url.path,
@@ -131,8 +141,9 @@ def create_app() -> FastAPI:
                 client_ip=request.client.host if request.client else None,
                 user_agent=request.headers.get("User-Agent"),
             )
+            detail_json["capture_reason"] = capture_reason
             db_for_runtime = getattr(request.state, "db_session", None)
-            if db_for_runtime is not None:
+            if db_for_runtime is not None and should_record:
                 append_runtime_log(
                     level=normalize_level_for_status(status_code),
                     service="api",
@@ -144,6 +155,7 @@ def create_app() -> FastAPI:
                     status_code=status_code,
                     duration_ms=duration_ms,
                     error_code=error_code,
+                    high_value=is_high_value,
                     detail_json=detail_json,
                     db=db_for_runtime,
                 )

@@ -5,6 +5,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.core.errors import AppError
 from app.models import (
     Finding,
@@ -20,8 +21,10 @@ from app.models import (
     UserProjectRole,
     Version,
     VersionSource,
+    utc_now,
 )
 from app.security.password import hash_password
+from app.services.audit_service import append_audit_log
 from app.services.authorization_service import (
     ensure_resource_action,
     resolve_project_id,
@@ -933,3 +936,302 @@ def test_runtime_logs_and_log_center_endpoints_admin_only(client, db_session):
     assert correlation_resp.status_code == 200
     audit_logs = correlation_resp.json()["data"]["audit_logs"]
     assert any(item["action"] == "auth.register" for item in audit_logs)
+
+
+def test_log_endpoints_tolerate_non_object_detail_json(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="log-malformed-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    tokens = _login(client, email=admin.email, password="Password123!")
+    request_id = "req-log-malformed"
+
+    db_session.add_all(
+        [
+            SystemLog(
+                log_kind=SystemLogKind.RUNTIME.value,
+                level="INFO",
+                service="api",
+                module="test",
+                event="runtime.malformed.detail",
+                message="runtime malformed detail",
+                request_id=request_id,
+                detail_json=["not-object"],
+            ),
+            SystemLog(
+                log_kind=SystemLogKind.OPERATION.value,
+                request_id=request_id,
+                operator_user_id=admin.id,
+                action="auth.register",
+                action_zh="注册用户",
+                action_group="auth",
+                resource_type="USER",
+                resource_id=str(admin.id),
+                result="SUCCEEDED",
+                summary_zh="注册用户",
+                is_high_value=True,
+                detail_json=["not-object"],
+            ),
+        ]
+    )
+    db_session.commit()
+
+    runtime_resp = client.get(
+        "/api/v1/runtime-logs",
+        headers=_auth_header(tokens["access_token"]),
+        params={"request_id": request_id},
+    )
+    assert runtime_resp.status_code == 200
+    runtime_items = runtime_resp.json()["data"]["items"]
+    assert len(runtime_items) >= 1
+    assert runtime_items[0]["detail_json"] == {}
+
+    audit_resp = client.get(
+        "/api/v1/audit-logs",
+        headers=_auth_header(tokens["access_token"]),
+        params={"request_id": request_id},
+    )
+    assert audit_resp.status_code == 200
+    audit_items = audit_resp.json()["data"]["items"]
+    assert len(audit_items) >= 1
+    assert audit_items[0]["detail_json"] == {}
+
+    correlation_resp = client.get(
+        "/api/v1/log-center/correlation",
+        headers=_auth_header(tokens["access_token"]),
+        params={"request_id": request_id},
+    )
+    assert correlation_resp.status_code == 200
+    correlation_data = correlation_resp.json()["data"]
+    assert len(correlation_data["runtime_logs"]) >= 1
+    assert len(correlation_data["audit_logs"]) >= 1
+    assert correlation_data["runtime_logs"][0]["detail_json"] == {}
+    assert correlation_data["audit_logs"][0]["detail_json"] == {}
+
+
+def test_audit_logs_support_keyword_group_and_zh_fields(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="audit-zh-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    tokens = _login(client, email=admin.email, password="Password123!")
+
+    append_audit_log(
+        db_session,
+        request_id="req-audit-zh-1",
+        operator_user_id=admin.id,
+        action="version.baseline.set",
+        resource_type="VERSION",
+        resource_id="version-a",
+        detail_json={
+            "context": {"project_id": "project-a"},
+            "change": {"baseline_version_id": "version-a"},
+            "outcome": {"status": "SUCCEEDED"},
+        },
+    )
+    append_audit_log(
+        db_session,
+        request_id="req-audit-zh-2",
+        operator_user_id=admin.id,
+        action="rule.toggle",
+        resource_type="RULE",
+        resource_id="rule.demo",
+        detail_json={"enabled": False, "rule_key": "rule.demo"},
+    )
+    db_session.commit()
+
+    resp = client.get(
+        "/api/v1/audit-logs",
+        headers=_auth_header(tokens["access_token"]),
+        params={
+            "action_group": "version",
+            "keyword": "基线",
+            "high_value_only": "true",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["total"] >= 1
+    item = data["items"][0]
+    assert item["action"] == "version.baseline.set"
+    assert item["action_zh"] == "设置基线版本"
+    assert item["action_group"] == "version"
+    assert "基线版本" in item["summary_zh"]
+    assert set(item["detail_json"].keys()) == {"context", "change", "outcome"}
+
+
+def test_audit_action_zh_fallback_from_action_mapping(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="audit-fallback-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    tokens = _login(client, email=admin.email, password="Password123!")
+    request_id = "req-audit-fallback-action-zh"
+    db_session.add(
+        SystemLog(
+            log_kind=SystemLogKind.OPERATION.value,
+            request_id=request_id,
+            operator_user_id=admin.id,
+            action="import.dispatch.failed",
+            action_zh="import.dispatch.failed",
+            action_group="import",
+            resource_type="VERSION",
+            resource_id="v-1",
+            result="FAILED",
+            summary_zh="导入派发失败",
+            is_high_value=True,
+            detail_json={"context": {"source": "legacy"}},
+            occurred_at=utc_now(),
+        )
+    )
+    db_session.commit()
+
+    audit_resp = client.get(
+        "/api/v1/audit-logs",
+        headers=_auth_header(tokens["access_token"]),
+        params={"request_id": request_id},
+    )
+    assert audit_resp.status_code == 200
+    audit_items = audit_resp.json()["data"]["items"]
+    assert len(audit_items) == 1
+    assert audit_items[0]["action"] == "import.dispatch.failed"
+    assert audit_items[0]["action_zh"] == "导入派发失败"
+
+    correlation_resp = client.get(
+        "/api/v1/log-center/correlation",
+        headers=_auth_header(tokens["access_token"]),
+        params={"request_id": request_id},
+    )
+    assert correlation_resp.status_code == 200
+    correlation_audit_items = correlation_resp.json()["data"]["audit_logs"]
+    assert len(correlation_audit_items) == 1
+    assert correlation_audit_items[0]["action_zh"] == "导入派发失败"
+
+
+def test_runtime_http_logging_uses_high_value_strategy(client, db_session):
+    settings = get_settings()
+    original_sample = settings.runtime_http_log_sample_rate
+    original_record_success = settings.runtime_http_log_record_success
+    original_slow_threshold = settings.runtime_http_log_slow_threshold_ms
+    settings.runtime_http_log_sample_rate = 0.0
+    settings.runtime_http_log_record_success = False
+    settings.runtime_http_log_slow_threshold_ms = 10_000
+    try:
+        health_resp = client.get("/healthz")
+        assert health_resp.status_code == 200
+
+        missing_resp = client.get("/api/v1/not-found-demo")
+        assert missing_resp.status_code == 404
+    finally:
+        settings.runtime_http_log_sample_rate = original_sample
+        settings.runtime_http_log_record_success = original_record_success
+        settings.runtime_http_log_slow_threshold_ms = original_slow_threshold
+
+    success_logs = db_session.scalars(
+        select(SystemLog).where(
+            SystemLog.log_kind == SystemLogKind.RUNTIME.value,
+            SystemLog.message == "GET /healthz -> 200",
+        )
+    ).all()
+    assert success_logs == []
+
+    failed_logs = db_session.scalars(
+        select(SystemLog).where(
+            SystemLog.log_kind == SystemLogKind.RUNTIME.value,
+            SystemLog.message == "GET /api/v1/not-found-demo -> 404",
+        )
+    ).all()
+    assert len(failed_logs) == 1
+    assert failed_logs[0].is_high_value is True
+    assert failed_logs[0].detail_json.get("capture_reason") == "error"
+
+
+def test_log_center_delete_endpoints_and_audit(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="log-delete-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    tokens = _login(client, email=admin.email, password="Password123!")
+
+    target_single = SystemLog(
+        log_kind=SystemLogKind.RUNTIME.value,
+        request_id="req-log-delete-single",
+        level="INFO",
+        service="api",
+        module="test",
+        event="runtime.single",
+        message="single-delete",
+        is_high_value=False,
+        detail_json={"context": {"source": "test"}},
+        occurred_at=utc_now(),
+    )
+    target_batch_a = SystemLog(
+        log_kind=SystemLogKind.OPERATION.value,
+        request_id="req-log-delete-batch",
+        action="project.update",
+        action_zh="更新项目",
+        action_group="project",
+        summary_zh="更新项目",
+        is_high_value=True,
+        resource_type="PROJECT",
+        resource_id="p-1",
+        result="SUCCEEDED",
+        detail_json={"context": {"source": "batch"}},
+        occurred_at=utc_now(),
+    )
+    target_batch_b = SystemLog(
+        log_kind=SystemLogKind.RUNTIME.value,
+        request_id="req-log-delete-batch",
+        level="ERROR",
+        service="worker",
+        module="worker.tasks",
+        event="worker.task.failed",
+        message="batch-delete",
+        is_high_value=True,
+        detail_json={"context": {"source": "batch"}},
+        occurred_at=utc_now(),
+    )
+    db_session.add_all([target_single, target_batch_a, target_batch_b])
+    db_session.commit()
+
+    single_resp = client.delete(
+        f"/api/v1/log-center/logs/{target_single.id}",
+        headers=_auth_header(tokens["access_token"]),
+    )
+    assert single_resp.status_code == 200
+    assert single_resp.json()["data"]["deleted"] is True
+
+    detail_after_delete = client.get(
+        f"/api/v1/runtime-logs/{target_single.id}",
+        headers=_auth_header(tokens["access_token"]),
+    )
+    assert detail_after_delete.status_code == 404
+
+    batch_resp = client.post(
+        "/api/v1/log-center/logs/batch-delete",
+        headers=_auth_header(tokens["access_token"]),
+        json={"request_id": "req-log-delete-batch"},
+    )
+    assert batch_resp.status_code == 200
+    assert batch_resp.json()["data"]["deleted_count"] == 2
+
+    remain = db_session.scalars(
+        select(SystemLog).where(SystemLog.request_id == "req-log-delete-batch")
+    ).all()
+    assert remain == []
+
+    audit_resp = client.get(
+        "/api/v1/audit-logs",
+        headers=_auth_header(tokens["access_token"]),
+        params={"action": "log.delete"},
+    )
+    assert audit_resp.status_code == 200
+    assert audit_resp.json()["data"]["total"] >= 2
