@@ -78,7 +78,7 @@ class Settings(BaseSettings):
 
     scan_external_post_labels_cypher: str = "./assets/scan/query/post_labels.cypher"
     scan_external_rules_dir: str = "./assets/scan/rules"
-    scan_external_rules_allowlist_file: str = "./assets/scan/rules/allowlist.txt"
+    scan_external_rule_sets_dir: str = "./assets/scan/rule_sets"
     scan_external_rules_max_count: int = 0
 
     scan_external_neo4j_uri: str = "bolt://127.0.0.1:7687"

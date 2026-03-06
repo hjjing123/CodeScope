@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tarfile
 import uuid
@@ -132,7 +133,7 @@ def external_scan_settings(tmp_path: Path):
         "scan_external_joern_export_script",
         "scan_external_post_labels_cypher",
         "scan_external_rules_dir",
-        "scan_external_rules_allowlist_file",
+        "scan_external_rule_sets_dir",
         "scan_external_rules_max_count",
         "scan_external_neo4j_uri",
         "scan_external_neo4j_user",
@@ -174,6 +175,8 @@ def external_scan_settings(tmp_path: Path):
     rules_dir = tmp_path / "rules"
     rules_dir.mkdir(parents=True, exist_ok=True)
     (rules_dir / "sample.cypher").write_text("RETURN 0;\n", encoding="utf-8")
+    rule_sets_dir = tmp_path / "rule-sets"
+    rule_sets_dir.mkdir(parents=True, exist_ok=True)
 
     joern_home = tmp_path / "joern-cli"
     joern_home.mkdir(parents=True, exist_ok=True)
@@ -196,7 +199,7 @@ def external_scan_settings(tmp_path: Path):
     settings.scan_external_joern_export_script = str(joern_export_script)
     settings.scan_external_post_labels_cypher = str(post_labels_file)
     settings.scan_external_rules_dir = str(rules_dir)
-    settings.scan_external_rules_allowlist_file = ""
+    settings.scan_external_rule_sets_dir = str(rule_sets_dir)
     settings.scan_external_rules_max_count = 0
     settings.scan_external_neo4j_uri = "bolt://127.0.0.1:7687"
     settings.scan_external_neo4j_user = "neo4j"
@@ -230,6 +233,20 @@ def external_scan_settings(tmp_path: Path):
     finally:
         for key, value in old_values.items():
             setattr(settings, key, value)
+
+
+@pytest.fixture()
+def rule_set_settings(tmp_path: Path):
+    settings = get_settings()
+    old_value = settings.scan_external_rule_sets_dir
+    rule_sets_dir = tmp_path / "rule-sets"
+    rule_sets_dir.mkdir(parents=True, exist_ok=True)
+    settings.scan_external_rule_sets_dir = str(rule_sets_dir)
+    try:
+        yield rule_sets_dir
+    finally:
+        settings.scan_external_rule_sets_dir = old_value
+        shutil.rmtree(rule_sets_dir, ignore_errors=True)
 
 
 def _write_round_report(
@@ -292,7 +309,7 @@ def test_scan_job_create_and_get_succeeds(client, db_session):
             "project_id": project_id,
             "version_id": version_id,
             "scan_mode": "FULL",
-            "rule_set_ids": ["any_any_xss.cypher", "any_any_urlredirect.cypher"],
+            "rule_keys": ["any_any_xss", "any_any_urlredirect"],
         },
     )
     assert create_resp.status_code == 202
@@ -307,6 +324,84 @@ def test_scan_job_create_and_get_succeeds(client, db_session):
     assert job_resp.json()["data"]["stage"] == JobStage.CLEANUP.value
     assert job_resp.json()["data"]["result_summary"]["engine_mode"] == "stub"
     assert job_resp.json()["data"]["result_summary"]["total_findings"] >= 1
+
+
+def test_scan_job_accepts_rule_set_keys_and_rule_keys_union(
+    client, db_session, rule_set_settings
+):
+    admin = _create_user(
+        db_session,
+        email="scan-ruleset-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    tokens = _login(client, email=admin.email, password="Password123!")
+
+    rule_set_resp = client.post(
+        "/api/v1/rule-sets",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "key": "scan-default",
+            "name": "scan-default",
+            "description": "scan defaults",
+        },
+    )
+    assert rule_set_resp.status_code == 201
+    rule_set_id = rule_set_resp.json()["data"]["id"]
+
+    bind_resp = client.post(
+        f"/api/v1/rule-sets/{rule_set_id}/rules",
+        headers=_auth_header(tokens["access_token"]),
+        json={"rule_keys": ["any_any_xss"]},
+    )
+    assert bind_resp.status_code == 200
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "scan-ruleset-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "scan-ruleset-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key(
+                {"README.md": "scan-ruleset\n"}
+            ),
+        },
+    )
+    version_id = version_resp.json()["data"]["id"]
+
+    create_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "project_id": project_id,
+            "version_id": version_id,
+            "scan_mode": "FULL",
+            "rule_set_keys": ["scan-default"],
+            "rule_keys": ["any_any_urlredirect"],
+        },
+    )
+    assert create_resp.status_code == 202
+    job_id = create_resp.json()["data"]["job_id"]
+
+    detail_resp = client.get(
+        f"/api/v1/jobs/{job_id}", headers=_auth_header(tokens["access_token"])
+    )
+    assert detail_resp.status_code == 200
+    payload = detail_resp.json()["data"]
+    assert payload["status"] == JobStatus.SUCCEEDED.value
+    assert payload["payload"]["rule_set_keys"] == ["scan-default"]
+    assert payload["payload"]["rule_keys"] == ["any_any_urlredirect"]
+    assert payload["payload"]["resolved_rule_keys"] == [
+        "any_any_xss",
+        "any_any_urlredirect",
+    ]
 
 
 def test_scan_job_idempotency_replay(client, db_session):
@@ -400,6 +495,46 @@ def test_scan_job_idempotency_conflict(client, db_session):
     assert second_resp.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
 
 
+def test_scan_job_rejects_legacy_rule_set_ids_field(client, db_session):
+    developer = _create_user(
+        db_session,
+        email="scan-legacy-field@example.com",
+        password="Password123!",
+        role=SystemRole.DEVELOPER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "scan-legacy-field-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "scan-legacy-field-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key({"README.md": "legacy\n"}),
+        },
+    )
+    version_id = version_resp.json()["data"]["id"]
+
+    create_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "project_id": project_id,
+            "version_id": version_id,
+            "scan_mode": "FULL",
+            "rule_set_ids": ["any_any_xss"],
+        },
+    )
+    assert create_resp.status_code == 422
+
+
 def test_scan_job_requires_project_membership(client, db_session):
     owner = _create_user(
         db_session,
@@ -469,7 +604,7 @@ def test_scan_job_cancel_running(client, db_session):
         project_id=project.id,
         version_id=version.id,
         job_type=JobType.SCAN.value,
-        payload={"request_id": "req_cancel", "scan_mode": "FULL", "rule_set_ids": []},
+        payload={"request_id": "req_cancel", "scan_mode": "FULL", "rule_keys": []},
         status=JobStatus.RUNNING.value,
         stage=JobStage.QUERY.value,
         created_by=developer.id,
@@ -694,7 +829,7 @@ def test_findings_list_supports_job_id_filter(client, db_session):
             "project_id": project_id,
             "version_id": version_id,
             "scan_mode": "FULL",
-            "rule_set_ids": ["any_any_xss.cypher", "any_any_urlredirect.cypher"],
+            "rule_keys": ["any_any_xss", "any_any_urlredirect"],
         },
     )
     assert create_resp.status_code == 202
@@ -1009,7 +1144,6 @@ def test_scan_job_external_builtin_rules_honors_string_rule_names(
     settings.scan_external_stage_import_command = ""
     settings.scan_external_stage_post_labels_command = ""
     settings.scan_external_stage_rules_command = "builtin:rules"
-    settings.scan_external_rules_allowlist_file = ""
 
     executed_rules: list[str] = []
 
@@ -1056,7 +1190,7 @@ def test_scan_job_external_builtin_rules_honors_string_rule_names(
             "project_id": project_id,
             "version_id": version_id,
             "scan_mode": "FULL",
-            "rule_set_ids": ["rule_b.cypher"],
+            "rule_keys": ["rule_b"],
         },
     )
     assert create_resp.status_code == 202
@@ -1081,7 +1215,6 @@ def test_scan_job_external_builtin_live_smoke(
     external_scan_settings,
 ):
     settings = external_scan_settings["settings"]
-    reports_dir: Path = external_scan_settings["reports_dir"]
 
     neo4j_uri = os.getenv(
         "CODESCOPE_SCAN_EXTERNAL_NEO4J_URI", settings.scan_external_neo4j_uri
@@ -1110,8 +1243,6 @@ def test_scan_job_external_builtin_live_smoke(
         pytest.skip(f"neo4j unavailable for live smoke: {exc}")
 
     backend_root = Path(__file__).resolve().parents[1]
-    smoke_allowlist = reports_dir.parent / "smoke_allowlist.txt"
-    smoke_allowlist.write_text("any_any_xss.cypher\n", encoding="utf-8")
 
     settings.scan_engine_mode = "external"
     settings.scan_dispatch_backend = "sync"
@@ -1123,7 +1254,6 @@ def test_scan_job_external_builtin_live_smoke(
         backend_root / "assets" / "scan" / "query" / "post_labels.cypher"
     )
     settings.scan_external_rules_dir = str(backend_root / "assets" / "scan" / "rules")
-    settings.scan_external_rules_allowlist_file = str(smoke_allowlist)
     settings.scan_external_neo4j_uri = neo4j_uri
     settings.scan_external_neo4j_user = neo4j_user
     settings.scan_external_neo4j_password = neo4j_password
@@ -1215,11 +1345,6 @@ def test_scan_job_external_builtin_live_full_smoke(
     if not joern_bin.exists():
         pytest.skip(f"joern binary missing for full smoke: {joern_bin}")
 
-    smoke_allowlist = (
-        external_scan_settings["reports_dir"].parent / "smoke_full_allowlist.txt"
-    )
-    smoke_allowlist.write_text("any_any_xss.cypher\n", encoding="utf-8")
-
     settings.scan_engine_mode = "external"
     settings.scan_dispatch_backend = "sync"
     settings.scan_external_stage_joern_command = "builtin:joern"
@@ -1233,7 +1358,6 @@ def test_scan_job_external_builtin_live_full_smoke(
 
     settings.scan_external_post_labels_cypher = str(post_labels)
     settings.scan_external_rules_dir = str(rules_dir)
-    settings.scan_external_rules_allowlist_file = str(smoke_allowlist)
     settings.scan_external_rules_max_count = 1
 
     settings.scan_external_neo4j_uri = neo4j_uri

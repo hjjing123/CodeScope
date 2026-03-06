@@ -41,6 +41,10 @@ from app.services.artifact_service import (
     resolve_job_artifact,
 )
 from app.services.authorization_service import ensure_project_action
+from app.services.rule_file_service import (
+    validate_runtime_single_rule,
+)
+from app.services.rule_set_file_service import resolve_scan_rule_keys
 from app.services.scan_service import (
     cancel_scan_job,
     clone_scan_job_for_retry,
@@ -49,7 +53,6 @@ from app.services.scan_service import (
     dispatch_scan_job,
     failure_hint_for_code,
     get_existing_idempotent_scan_job,
-    normalize_rule_set_ids,
     normalize_scan_mode,
 )
 from app.services.task_log_service import (
@@ -139,8 +142,18 @@ def create_scan_job_endpoint(
     request_id = get_request_id(request)
     normalized_idempotency_key = _normalize_idempotency_key(idempotency_key)
     scan_mode = normalize_scan_mode(payload.scan_mode)
-    normalized_rule_set_ids = normalize_rule_set_ids(payload.rule_set_ids)
+    (
+        normalized_rule_set_keys,
+        normalized_rule_keys,
+        resolved_rule_keys,
+    ) = resolve_scan_rule_keys(
+        rule_set_keys=payload.rule_set_keys,
+        rule_keys=payload.rule_keys,
+    )
     target_rule_id = (payload.target_rule_id or "").strip() or None
+
+    if target_rule_id is not None:
+        target_rule_id = validate_runtime_single_rule(rule_name=target_rule_id)
 
     ensure_project_action(
         db=db,
@@ -173,7 +186,9 @@ def create_scan_job_endpoint(
             "project_id": str(payload.project_id),
             "version_id": str(payload.version_id),
             "scan_mode": scan_mode,
-            "rule_set_ids": normalized_rule_set_ids,
+            "rule_set_keys": normalized_rule_set_keys,
+            "rule_keys": normalized_rule_keys,
+            "resolved_rule_keys": resolved_rule_keys,
             "note": payload.note,
             "target_rule_id": target_rule_id,
         }
@@ -195,7 +210,9 @@ def create_scan_job_endpoint(
         payload={
             "request_id": request_id,
             "scan_mode": scan_mode,
-            "rule_set_ids": normalized_rule_set_ids,
+            "rule_set_keys": normalized_rule_set_keys,
+            "rule_keys": normalized_rule_keys,
+            "resolved_rule_keys": resolved_rule_keys,
             "note": payload.note,
             "target_rule_id": target_rule_id,
         },
@@ -214,7 +231,9 @@ def create_scan_job_endpoint(
         detail_json={
             "version_id": str(payload.version_id),
             "scan_mode": scan_mode,
-            "rule_set_count": len(normalized_rule_set_ids),
+            "rule_set_count": len(normalized_rule_set_keys),
+            "rule_key_count": len(normalized_rule_keys),
+            "resolved_rule_count": len(resolved_rule_keys),
             "target_rule_id": target_rule_id,
         },
     )

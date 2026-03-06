@@ -67,28 +67,28 @@ class RuleListPayload(BaseModel):
 
 
 class RuleSetCreateRequest(BaseModel):
+    key: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=1024)
+    enabled: bool = True
 
 
 class RuleSetUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=1024)
-
-
-class RuleSetBindItemRequest(BaseModel):
-    rule_key: str = Field(min_length=1, max_length=128)
-    rule_version: int = Field(ge=1)
+    enabled: bool | None = None
 
 
 class RuleSetBindRulesRequest(BaseModel):
-    items: list[RuleSetBindItemRequest] = Field(min_length=1, max_length=1000)
+    rule_keys: list[str] = Field(min_length=1, max_length=1000)
 
 
 class RuleSetPayload(BaseModel):
     id: uuid.UUID
+    key: str
     name: str
     description: str | None
+    enabled: bool
     rule_count: int
     created_at: datetime
     updated_at: datetime
@@ -103,14 +103,15 @@ class RuleSetItemPayload(BaseModel):
     id: uuid.UUID
     rule_set_id: uuid.UUID
     rule_key: str
-    rule_version: int
     created_at: datetime
 
 
 class RuleSetDetailPayload(BaseModel):
     id: uuid.UUID
+    key: str
     name: str
     description: str | None
+    enabled: bool
     items: list[RuleSetItemPayload]
     created_at: datetime
     updated_at: datetime

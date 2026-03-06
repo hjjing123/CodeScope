@@ -24,7 +24,6 @@ from app.models import (
     JobStatus,
     JobType,
     Project,
-    Rule,
     ScanMode,
     TaskLogType,
     Version,
@@ -32,6 +31,7 @@ from app.models import (
     utc_now,
 )
 from app.services.audit_service import append_audit_log
+from app.services.rule_file_service import get_rules_by_keys, normalize_rule_selector
 from app.services.scan_external import run_external_scan as run_external_scan_pipeline
 from app.services.task_log_service import append_task_log
 
@@ -138,22 +138,27 @@ def normalize_scan_mode(value: str) -> str:
     return normalized
 
 
-def normalize_rule_set_ids(values: list[str]) -> list[str]:
+def normalize_rule_keys(values: list[str]) -> list[str]:
     cleaned: list[str] = []
     seen: set[str] = set()
     for item in values:
-        rule = item.strip()
-        if not rule:
+        raw = (item or "").strip()
+        if not raw:
             continue
-        if len(rule) > 128:
+        try:
+            rule = normalize_rule_selector(raw)
+        except AppError as exc:
             raise AppError(
                 code="INVALID_ARGUMENT",
                 status_code=422,
-                message="rule_set_ids 中存在超过 128 字符的规则名",
-            )
-        if rule in seen:
+                message="rule_keys 中存在非法规则名",
+                detail={"rule": raw},
+            ) from exc
+
+        marker = rule.lower()
+        if marker in seen:
             continue
-        seen.add(rule)
+        seen.add(marker)
         cleaned.append(rule)
     return cleaned
 
@@ -557,22 +562,25 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
             execution = _run_stub_scan(job=job)
 
         _set_scan_job_running(session, job=job, stage=JobStage.AGGREGATE.value)
-        rule_keys = {
-            str(item.get("rule_key") or "").strip()
-            for item in execution.findings
-            if str(item.get("rule_key") or "").strip()
-        }
-        rule_meta_by_key: dict[str, Rule] = {}
-        if rule_keys:
-            rows = session.scalars(
-                select(Rule).where(Rule.rule_key.in_(sorted(rule_keys)))
-            ).all()
-            rule_meta_by_key = {item.rule_key: item for item in rows}
+        rule_keys: set[str] = set()
+        for item in execution.findings:
+            raw_rule_key = str(item.get("rule_key") or "").strip()
+            if not raw_rule_key:
+                continue
+            try:
+                rule_keys.add(normalize_rule_selector(raw_rule_key))
+            except AppError:
+                rule_keys.add(raw_rule_key)
+        rule_meta_by_key = get_rules_by_keys(rule_keys)
 
         for finding_data in execution.findings:
-            rule_key = str(finding_data.get("rule_key") or "").strip()
-            if not rule_key:
+            raw_rule_key = str(finding_data.get("rule_key") or "").strip()
+            if not raw_rule_key:
                 continue
+            try:
+                rule_key = normalize_rule_selector(raw_rule_key)
+            except AppError:
+                rule_key = raw_rule_key
             meta = rule_meta_by_key.get(rule_key)
             fallback_path = str(finding_data.get("file_path") or "").strip() or None
             source_file = str(finding_data.get("source_file") or "").strip() or None
@@ -591,7 +599,7 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
                     rule_key=rule_key,
                     rule_version=_to_int(
                         finding_data.get("rule_version"),
-                        default=meta.active_version if meta else None,
+                        default=meta.active_version if meta is not None else None,
                     ),
                     vuln_type=(
                         str(finding_data.get("vuln_type") or "").strip()
@@ -769,12 +777,16 @@ def _run_stub_scan(*, job: Job) -> ScanExecutionResult:
         str(job.payload.get("scan_mode", ScanMode.FULL.value))
     )
     target_rule_id = str(job.payload.get("target_rule_id") or "").strip()
-    rule_set_ids = normalize_rule_set_ids(list(job.payload.get("rule_set_ids") or []))
+    resolved_rule_keys = normalize_rule_keys(
+        list(job.payload.get("resolved_rule_keys") or [])
+    )
+    direct_rule_keys = normalize_rule_keys(list(job.payload.get("rule_keys") or []))
+    rule_keys = resolved_rule_keys or direct_rule_keys
     _append_scan_log(
         job_id=job.id,
         stage=JobStage.QUERY.value,
         message=(
-            f"stub 执行: mode={scan_mode}, rule_set_count={len(rule_set_ids)}, "
+            f"stub 执行: mode={scan_mode}, rule_count={len(rule_keys)}, "
             f"target_rule_id={target_rule_id or '-'}"
         ),
     )
@@ -782,19 +794,19 @@ def _run_stub_scan(*, job: Job) -> ScanExecutionResult:
     findings: list[dict[str, str]] = []
     if scan_mode == ScanMode.VERIFY.value:
         rule_key = target_rule_id or (
-            rule_set_ids[0] if rule_set_ids else "verify.default.rule"
+            rule_keys[0] if rule_keys else "verify.default.rule"
         )
         findings.append({"rule_key": rule_key, "severity": FindingSeverity.MED.value})
     elif scan_mode == ScanMode.FAST.value:
-        seeds = rule_set_ids[:2] if rule_set_ids else ["fast.input.validation"]
+        seeds = rule_keys[:2] if rule_keys else ["fast.input.validation"]
         for rule_key in seeds:
             findings.append(
                 {"rule_key": rule_key, "severity": FindingSeverity.LOW.value}
             )
     else:
         seeds = (
-            rule_set_ids[:3]
-            if rule_set_ids
+            rule_keys[:3]
+            if rule_keys
             else [
                 "stub.any_any_xss",
                 "stub.any_any_urlredirect",
@@ -816,7 +828,7 @@ def _run_stub_scan(*, job: Job) -> ScanExecutionResult:
         scan_mode=scan_mode,
         engine_mode="stub",
         extra={
-            "total_rules": len(rule_set_ids) if rule_set_ids else len(findings),
+            "total_rules": len(rule_keys) if rule_keys else len(findings),
             "total_rows": len(findings),
             "partial_failures": [],
         },

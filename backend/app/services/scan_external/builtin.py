@@ -12,6 +12,10 @@ from typing import Any, Callable
 
 from app.core.errors import AppError
 from app.models import Job
+from app.services.rule_file_service import (
+    list_runtime_rule_files,
+    resolve_runtime_rule_files,
+)
 
 from .contracts import ExternalScanContext
 from .neo4j_runner import execute_cypher_file
@@ -77,7 +81,9 @@ def _run_builtin_joern(
 ) -> tuple[str, str]:
     joern_bin = Path(context.base_env.get("CODESCOPE_SCAN_JOERN_BIN") or "")
     joern_home = Path(context.base_env.get("CODESCOPE_SCAN_JOERN_HOME") or "")
-    export_script = Path(context.base_env.get("CODESCOPE_SCAN_JOERN_EXPORT_SCRIPT") or "")
+    export_script = Path(
+        context.base_env.get("CODESCOPE_SCAN_JOERN_EXPORT_SCRIPT") or ""
+    )
 
     if not joern_bin.exists() or not joern_bin.is_file():
         raise AppError(
@@ -147,7 +153,9 @@ def _run_builtin_joern(
     export_env["AST_MODE"] = ast_mode
 
     export_cmd = [str(joern_bin), "--script", str(export_script)]
-    export_result = _run_command_with_deadline(export_cmd, deadline=deadline, env=export_env)
+    export_result = _run_command_with_deadline(
+        export_cmd, deadline=deadline, env=export_env
+    )
     if export_result.returncode != 0:
         raise AppError(
             code="SCAN_EXTERNAL_JOERN_FAILED",
@@ -180,7 +188,9 @@ def _run_builtin_joern(
             f"nodes={len(nodes)} rels={len(rels)}",
         ]
     ).strip()
-    stderr = "\n".join([_tail_text(parse_result.stderr), _tail_text(export_result.stderr)]).strip()
+    stderr = "\n".join(
+        [_tail_text(parse_result.stderr), _tail_text(export_result.stderr)]
+    ).strip()
     return stdout, stderr
 
 
@@ -223,16 +233,26 @@ def _run_builtin_neo4j_import(
     if bool(settings.scan_external_import_preflight):
         _preflight_check_import_mount(import_host=import_host, deadline=deadline)
 
-    restart_mode = str(settings.scan_external_neo4j_runtime_restart_mode or "none").strip().lower()
-    container_name = str(settings.scan_external_neo4j_runtime_container_name or "").strip()
-    restart_wait_seconds = max(0, int(settings.scan_external_neo4j_runtime_restart_wait_seconds or 0))
+    restart_mode = (
+        str(settings.scan_external_neo4j_runtime_restart_mode or "none").strip().lower()
+    )
+    container_name = str(
+        settings.scan_external_neo4j_runtime_container_name or ""
+    ).strip()
+    restart_wait_seconds = max(
+        0, int(settings.scan_external_neo4j_runtime_restart_wait_seconds or 0)
+    )
     manage_runtime = restart_mode == "docker" and bool(container_name)
     was_running = False
 
     if manage_runtime:
-        was_running = _is_container_running(container_name=container_name, deadline=deadline)
+        was_running = _is_container_running(
+            container_name=container_name, deadline=deadline
+        )
         if was_running:
-            append_log("ANALYZE", f"[neo4j_import] 停止运行中的 Neo4j 容器: {container_name}")
+            append_log(
+                "ANALYZE", f"[neo4j_import] 停止运行中的 Neo4j 容器: {container_name}"
+            )
             _stop_container(container_name=container_name, deadline=deadline)
 
     import_error: AppError | None = None
@@ -246,8 +266,12 @@ def _run_builtin_neo4j_import(
             clean_db=bool(settings.scan_external_import_clean_db),
             id_type=str(settings.scan_external_import_id_type or "").strip().lower(),
             multiline_fields=bool(settings.scan_external_import_multiline_fields),
-            multiline_fields_format=str(settings.scan_external_import_multiline_fields_format or "").strip(),
-            array_delimiter=str(settings.scan_external_import_array_delimiter or "\\001"),
+            multiline_fields_format=str(
+                settings.scan_external_import_multiline_fields_format or ""
+            ).strip(),
+            array_delimiter=str(
+                settings.scan_external_import_array_delimiter or "\\001"
+            ),
             nodes=nodes,
             rels=rels,
         )
@@ -285,10 +309,14 @@ def _run_builtin_neo4j_import(
     finally:
         if manage_runtime and was_running:
             try:
-                append_log("ANALYZE", f"[neo4j_import] 重启 Neo4j 容器: {container_name}")
+                append_log(
+                    "ANALYZE", f"[neo4j_import] 重启 Neo4j 容器: {container_name}"
+                )
                 _start_container(container_name=container_name, deadline=deadline)
                 if restart_wait_seconds > 0:
-                    sleep_seconds = min(restart_wait_seconds, _remaining_seconds(deadline))
+                    sleep_seconds = min(
+                        restart_wait_seconds, _remaining_seconds(deadline)
+                    )
                     time.sleep(max(0, sleep_seconds))
             except Exception as exc:
                 restart_error = AppError(
@@ -300,7 +328,11 @@ def _run_builtin_neo4j_import(
 
     if import_error is not None:
         if restart_error is not None:
-            detail = dict(import_error.detail) if isinstance(import_error.detail, dict) else {}
+            detail = (
+                dict(import_error.detail)
+                if isinstance(import_error.detail, dict)
+                else {}
+            )
             detail["runtime_restart_error"] = restart_error.detail
             raise AppError(
                 code=import_error.code,
@@ -385,14 +417,17 @@ def _run_builtin_rules(
             detail={"rules_dir": str(rules_dir)},
         )
 
-    allowlist = Path(context.base_env.get("CODESCOPE_SCAN_RULES_ALLOWLIST_FILE") or "")
-    rule_files = _list_rule_files(rules_dir=rules_dir, allowlist_file=allowlist)
-
-    requested_rule_names = _normalize_requested_rule_names(job.payload.get("rule_set_ids"))
+    requested_rule_names = _normalize_requested_rule_names(
+        job.payload.get("resolved_rule_keys")
+    )
+    if not requested_rule_names:
+        requested_rule_names = _normalize_requested_rule_names(
+            job.payload.get("rule_keys")
+        )
     if requested_rule_names:
-        rule_files, missing_rules = _filter_rule_files_by_request(
-            rule_files=rule_files,
+        rule_files, missing_rules, disabled_rules = resolve_runtime_rule_files(
             requested_rule_names=requested_rule_names,
+            rules_dir=rules_dir,
         )
         if missing_rules:
             raise AppError(
@@ -401,6 +436,15 @@ def _run_builtin_rules(
                 message="规则执行阶段存在未知规则名",
                 detail={"missing_rules": missing_rules},
             )
+        if disabled_rules:
+            raise AppError(
+                code="SCAN_EXTERNAL_RULES_FAILED",
+                status_code=422,
+                message="规则执行阶段包含已停用规则",
+                detail={"disabled_rules": disabled_rules},
+            )
+    else:
+        rule_files = _list_rule_files(rules_dir=rules_dir)
 
     max_count = int(getattr(settings, "scan_external_rules_max_count", 0) or 0)
     if max_count > 0:
@@ -417,6 +461,7 @@ def _run_builtin_rules(
     partial_failures: list[dict[str, object]] = []
     succeeded_rule_count = 0
     for rule_file in rule_files:
+        rule_key = _rule_key_from_file(rule_file)
         try:
             summary = execute_cypher_file(
                 cypher_file=rule_file,
@@ -425,17 +470,19 @@ def _run_builtin_rules(
                 password=str(settings.scan_external_neo4j_password or ""),
                 database=str(settings.scan_external_neo4j_database or "neo4j"),
                 connect_retry=int(settings.scan_external_neo4j_connect_retry),
-                connect_wait_seconds=int(settings.scan_external_neo4j_connect_wait_seconds),
+                connect_wait_seconds=int(
+                    settings.scan_external_neo4j_connect_wait_seconds
+                ),
             )
-            rule_rows[rule_file.name] = summary.total_rows
+            rule_rows[rule_key] = summary.total_rows
             succeeded_rule_count += 1
         except AppError as exc:
             if exc.code == "SCAN_EXTERNAL_NOT_CONFIGURED":
                 raise
-            rule_rows[rule_file.name] = 0
+            rule_rows[rule_key] = 0
             partial_failures.append(
                 {
-                    "rule": rule_file.name,
+                    "rule": rule_key,
                     "error_code": exc.code,
                     "message": exc.message,
                 }
@@ -462,7 +509,9 @@ def _run_builtin_rules(
     }
     report_path = context.reports_dir / "round_1.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(round_report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path.write_text(
+        json.dumps(round_report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     append_log(
         "QUERY",
@@ -535,7 +584,9 @@ def _clear_directory(path: Path) -> None:
             shutil.rmtree(child)
 
 
-def _collect_csv_pairs(import_dir: Path) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+def _collect_csv_pairs(
+    import_dir: Path,
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
     nodes: list[tuple[str, str, str]] = []
     rels: list[tuple[str, str, str]] = []
 
@@ -574,7 +625,9 @@ def _collect_csv_pairs(import_dir: Path) -> tuple[list[tuple[str, str, str]], li
     return nodes, rels
 
 
-def _resolve_joern_binary(*, joern_home: Path, windows_name: str, unix_name: str) -> Path:
+def _resolve_joern_binary(
+    *, joern_home: Path, windows_name: str, unix_name: str
+) -> Path:
     if os.name == "nt":
         return joern_home / windows_name
     return joern_home / unix_name
@@ -587,7 +640,9 @@ def _normalize_host_path_for_docker(path_text: str) -> str:
 def _resolve_data_mount(raw_value: str) -> str:
     cleaned = raw_value.strip().strip('"')
     if "/" in cleaned or ":\\" in raw_value or ":/" in raw_value:
-        return _normalize_host_path_for_docker(str(Path(cleaned).expanduser().resolve()))
+        return _normalize_host_path_for_docker(
+            str(Path(cleaned).expanduser().resolve())
+        )
     return cleaned
 
 
@@ -730,7 +785,9 @@ def _build_admin_parts(
             ]
         )
     else:
-        parts.extend([cleanup + "$NEO4J_ADMIN", "import", f"--database={database}", "--force"])
+        parts.extend(
+            [cleanup + "$NEO4J_ADMIN", "import", f"--database={database}", "--force"]
+        )
 
     mapped_id = _map_id_type(id_type)
     if mapped_id:
@@ -759,30 +816,12 @@ def _map_id_type(value: str) -> str:
     return ""
 
 
-def _list_rule_files(*, rules_dir: Path, allowlist_file: Path) -> list[Path]:
-    if allowlist_file.exists() and allowlist_file.is_file():
-        names = _load_allowlist(allowlist_file)
-        files: list[Path] = []
-        for name in names:
-            candidate = (rules_dir / name).resolve()
-            if candidate.exists() and candidate.is_file():
-                files.append(candidate)
-        return files
-
-    return sorted(
-        [item for item in rules_dir.glob("*.cypher") if item.is_file()],
-        key=lambda item: item.name.lower(),
-    )
+def _list_rule_files(*, rules_dir: Path) -> list[Path]:
+    return list_runtime_rule_files(rules_dir=rules_dir)
 
 
-def _load_allowlist(path: Path) -> list[str]:
-    names: list[str] = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        raw = line.strip()
-        if not raw or raw.startswith("#"):
-            continue
-        names.append(raw)
-    return names
+def _rule_key_from_file(path: Path) -> str:
+    return path.stem
 
 
 def _summarize_rule_rows(rule_rows: dict[str, int]) -> dict[str, int]:
@@ -823,37 +862,3 @@ def _normalize_requested_rule_names(value: object) -> list[str]:
         seen.add(marker)
         normalized.append(name)
     return normalized
-
-
-def _filter_rule_files_by_request(
-    *,
-    rule_files: list[Path],
-    requested_rule_names: list[str],
-) -> tuple[list[Path], list[str]]:
-    available_by_name = {item.name.lower(): item for item in rule_files}
-    selected: list[Path] = []
-    selected_markers: set[str] = set()
-    missing: list[str] = []
-
-    for requested in requested_rule_names:
-        candidates = [requested]
-        if not requested.lower().endswith(".cypher"):
-            candidates.append(f"{requested}.cypher")
-
-        matched: Path | None = None
-        for candidate in candidates:
-            matched = available_by_name.get(candidate.lower())
-            if matched is not None:
-                break
-
-        if matched is None:
-            missing.append(requested)
-            continue
-
-        marker = str(matched.resolve()).lower()
-        if marker in selected_markers:
-            continue
-        selected_markers.add(marker)
-        selected.append(matched)
-
-    return selected, missing

@@ -10,7 +10,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -20,15 +20,10 @@ from app.db.session import get_db
 from app.dependencies.auth import require_platform_action
 from app.models import (
     FindingSeverity,
-    Rule,
     RuleStat,
-    RuleSet,
-    RuleSetItem,
     SelfTestJob,
     SelfTestJobStage,
     SelfTestJobStatus,
-    RuleVersion,
-    RuleVersionStatus,
     utc_now,
 )
 from app.schemas.rule import (
@@ -56,7 +51,29 @@ from app.schemas.rule import (
 from app.schemas.task_log import TaskLogEntryPayload, TaskLogPayload
 from app.services.audit_service import append_audit_log
 from app.services.auth_service import AuthPrincipal
-from app.services.rule_validation_service import validate_rule_content_for_publish
+from app.services.rule_file_service import (
+    RuleFileRecord,
+    RuleFileVersionRecord,
+    create_rule as create_file_rule,
+    get_rule as get_file_rule,
+    list_rule_versions as list_file_rule_versions,
+    list_rules as list_file_rules,
+    publish_rule as publish_file_rule,
+    rollback_rule as rollback_file_rule,
+    toggle_rule as toggle_file_rule,
+    update_rule_draft as update_file_rule_draft,
+)
+from app.services.rule_set_file_service import (
+    RuleSetFileItemRecord,
+    RuleSetFileRecord,
+    bind_rule_set_rules as bind_rule_set_file_rules,
+    build_rule_set_items,
+    create_rule_set as create_file_rule_set,
+    get_rule_set as get_file_rule_set,
+    list_rule_sets as list_file_rule_sets,
+    normalize_rule_set_key,
+    update_rule_set as update_file_rule_set,
+)
 from app.services.selftest_service import (
     create_selftest_job,
     dispatch_selftest_job,
@@ -78,6 +95,8 @@ RULE_KEY_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 def _normalize_rule_key(value: str) -> str:
     normalized = value.strip()
+    if normalized.lower().endswith(".cypher"):
+        normalized = normalized[:-7]
     if not normalized:
         raise AppError(
             code="INVALID_ARGUMENT", status_code=422, message="rule_key 不能为空"
@@ -104,7 +123,7 @@ def _normalize_severity(value: str) -> str:
     return normalized
 
 
-def _rule_payload(rule: Rule) -> RulePayload:
+def _rule_payload(rule: RuleFileRecord) -> RulePayload:
     return RulePayload(
         rule_key=rule.rule_key,
         name=rule.name,
@@ -119,7 +138,7 @@ def _rule_payload(rule: Rule) -> RulePayload:
     )
 
 
-def _rule_version_payload(version: RuleVersion) -> RuleVersionPayload:
+def _rule_version_payload(version: RuleFileVersionRecord) -> RuleVersionPayload:
     return RuleVersionPayload(
         id=version.id,
         rule_key=version.rule_key,
@@ -131,14 +150,27 @@ def _rule_version_payload(version: RuleVersion) -> RuleVersionPayload:
     )
 
 
-def _rule_set_payload(rule_set: RuleSet, *, rule_count: int) -> RuleSetPayload:
+def _rule_set_payload(
+    rule_set: RuleSetFileRecord, *, rule_count: int
+) -> RuleSetPayload:
     return RuleSetPayload(
         id=rule_set.id,
+        key=rule_set.key,
         name=rule_set.name,
         description=rule_set.description,
+        enabled=rule_set.enabled,
         rule_count=rule_count,
         created_at=rule_set.created_at,
         updated_at=rule_set.updated_at,
+    )
+
+
+def _rule_set_item_payload(item: RuleSetFileItemRecord) -> RuleSetItemPayload:
+    return RuleSetItemPayload(
+        id=item.id,
+        rule_set_id=item.rule_set_id,
+        rule_key=item.rule_key,
+        created_at=item.created_at,
     )
 
 
@@ -251,37 +283,6 @@ def _mark_selftest_failed_for_input(
     db.commit()
 
 
-def _ensure_rule(db: Session, *, rule_key: str) -> Rule:
-    rule = db.get(Rule, rule_key)
-    if rule is None:
-        raise AppError(code="NOT_FOUND", status_code=404, message="规则不存在")
-    return rule
-
-
-def _latest_rule_version(
-    db: Session,
-    *,
-    rule_key: str,
-    status: str | None = None,
-) -> RuleVersion | None:
-    stmt = select(RuleVersion).where(RuleVersion.rule_key == rule_key)
-    if status is not None:
-        stmt = stmt.where(RuleVersion.status == status)
-    return db.scalar(stmt.order_by(RuleVersion.version.desc()))
-
-
-def _next_rule_version(db: Session, *, rule_key: str) -> int:
-    current = (
-        db.scalar(
-            select(func.max(RuleVersion.version)).where(
-                RuleVersion.rule_key == rule_key
-            )
-        )
-        or 0
-    )
-    return int(current) + 1
-
-
 @router.get("/api/v1/rules")
 def list_rules(
     request: Request,
@@ -289,31 +290,15 @@ def list_rules(
     vuln_type: str | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
-    db: Session = Depends(get_db),
+    _db: Session = Depends(get_db),
     _principal: AuthPrincipal = Depends(require_platform_action("rule:read")),
 ):
-    conditions = []
-    if enabled is not None:
-        conditions.append(Rule.enabled == enabled)
-    if vuln_type is not None:
-        normalized = vuln_type.strip()
-        if normalized:
-            conditions.append(Rule.vuln_type == normalized)
-
-    total_stmt = select(func.count()).select_from(Rule)
-    if conditions:
-        total_stmt = total_stmt.where(*conditions)
-    total = db.scalar(total_stmt) or 0
-
-    rows_stmt = select(Rule)
-    if conditions:
-        rows_stmt = rows_stmt.where(*conditions)
-    rows = db.scalars(
-        rows_stmt.order_by(Rule.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    ).all()
-
+    rows, total = list_file_rules(
+        enabled=enabled,
+        vuln_type=vuln_type,
+        page=page,
+        page_size=page_size,
+    )
     payload = RuleListPayload(items=[_rule_payload(item) for item in rows], total=total)
     return success_response(request, data=payload.model_dump())
 
@@ -322,10 +307,10 @@ def list_rules(
 def get_rule(
     request: Request,
     rule_key: str,
-    db: Session = Depends(get_db),
+    _db: Session = Depends(get_db),
     _principal: AuthPrincipal = Depends(require_platform_action("rule:read")),
 ):
-    rule = _ensure_rule(db, rule_key=_normalize_rule_key(rule_key))
+    rule = get_file_rule(_normalize_rule_key(rule_key))
     return success_response(request, data=_rule_payload(rule).model_dump())
 
 
@@ -333,16 +318,11 @@ def get_rule(
 def list_rule_versions(
     request: Request,
     rule_key: str,
-    db: Session = Depends(get_db),
+    _db: Session = Depends(get_db),
     _principal: AuthPrincipal = Depends(require_platform_action("rule:read")),
 ):
     normalized_rule_key = _normalize_rule_key(rule_key)
-    _ensure_rule(db, rule_key=normalized_rule_key)
-    rows = db.scalars(
-        select(RuleVersion)
-        .where(RuleVersion.rule_key == normalized_rule_key)
-        .order_by(RuleVersion.version.desc())
-    ).all()
+    rows = list_file_rule_versions(normalized_rule_key)
     payload = RuleVersionListPayload(
         items=[_rule_version_payload(item) for item in rows],
         total=len(rows),
@@ -358,30 +338,16 @@ def create_rule(
     principal: AuthPrincipal = Depends(require_platform_action("rule:write")),
 ):
     rule_key = _normalize_rule_key(payload.rule_key)
-    if db.get(Rule, rule_key) is not None:
-        raise AppError(
-            code="RULE_ALREADY_EXISTS", status_code=409, message="规则已存在"
-        )
-
-    rule = Rule(
+    rule, _draft_version = create_file_rule(
         rule_key=rule_key,
-        name=payload.name.strip(),
-        vuln_type=payload.vuln_type.strip(),
+        name=payload.name,
+        vuln_type=payload.vuln_type,
         default_severity=_normalize_severity(payload.default_severity),
-        language_scope=payload.language_scope.strip(),
+        language_scope=payload.language_scope,
         description=payload.description,
-        enabled=True,
-        active_version=None,
-    )
-    draft_version = RuleVersion(
-        rule_key=rule_key,
-        version=1,
-        status=RuleVersionStatus.DRAFT.value,
         content=payload.content,
         created_by=principal.user.id,
     )
-    db.add(rule)
-    db.add(draft_version)
 
     append_audit_log(
         db,
@@ -396,7 +362,6 @@ def create_rule(
         },
     )
     db.commit()
-    db.refresh(rule)
     return success_response(
         request, data=_rule_payload(rule).model_dump(), status_code=201
     )
@@ -411,68 +376,37 @@ def update_rule_draft(
     principal: AuthPrincipal = Depends(require_platform_action("rule:write")),
 ):
     normalized_rule_key = _normalize_rule_key(rule_key)
-    rule = _ensure_rule(db, rule_key=normalized_rule_key)
-
-    draft = _latest_rule_version(
-        db,
-        rule_key=normalized_rule_key,
-        status=RuleVersionStatus.DRAFT.value,
+    normalized_severity = (
+        _normalize_severity(payload.default_severity)
+        if payload.default_severity is not None
+        else None
     )
-    if draft is None:
-        base_content: dict = {}
-        if rule.active_version is not None:
-            active = db.scalar(
-                select(RuleVersion).where(
-                    RuleVersion.rule_key == normalized_rule_key,
-                    RuleVersion.version == rule.active_version,
-                )
-            )
-            if active is not None:
-                base_content = dict(active.content)
-        draft = RuleVersion(
-            rule_key=normalized_rule_key,
-            version=_next_rule_version(db, rule_key=normalized_rule_key),
-            status=RuleVersionStatus.DRAFT.value,
-            content=base_content,
-            created_by=principal.user.id,
-        )
-        db.add(draft)
+
+    rule, draft = update_file_rule_draft(
+        rule_key=normalized_rule_key,
+        updates={
+            "name": payload.name,
+            "vuln_type": payload.vuln_type,
+            "default_severity": normalized_severity,
+            "language_scope": payload.language_scope,
+            "description": payload.description,
+            "content": payload.content,
+        },
+        operator_id=principal.user.id,
+    )
 
     changes: dict[str, object] = {"draft_version": draft.version}
-    if payload.name is not None and payload.name.strip() != rule.name:
-        changes["name"] = {"before": rule.name, "after": payload.name.strip()}
-        rule.name = payload.name.strip()
-    if payload.vuln_type is not None and payload.vuln_type.strip() != rule.vuln_type:
-        changes["vuln_type"] = {
-            "before": rule.vuln_type,
-            "after": payload.vuln_type.strip(),
-        }
-        rule.vuln_type = payload.vuln_type.strip()
-    if payload.default_severity is not None:
-        normalized_severity = _normalize_severity(payload.default_severity)
-        if normalized_severity != rule.default_severity:
-            changes["default_severity"] = {
-                "before": rule.default_severity,
-                "after": normalized_severity,
-            }
-            rule.default_severity = normalized_severity
-    if (
-        payload.language_scope is not None
-        and payload.language_scope.strip() != rule.language_scope
-    ):
-        changes["language_scope"] = {
-            "before": rule.language_scope,
-            "after": payload.language_scope.strip(),
-        }
-        rule.language_scope = payload.language_scope.strip()
-    if payload.description is not None and payload.description != rule.description:
-        changes["description"] = {
-            "before": rule.description,
-            "after": payload.description,
-        }
-        rule.description = payload.description
+    if payload.name is not None:
+        changes["name"] = payload.name.strip()
+    if payload.vuln_type is not None:
+        changes["vuln_type"] = payload.vuln_type.strip()
+    if normalized_severity is not None:
+        changes["default_severity"] = normalized_severity
+    if payload.language_scope is not None:
+        changes["language_scope"] = payload.language_scope.strip()
+    if payload.description is not None:
+        changes["description"] = payload.description
     if payload.content is not None:
-        draft.content = payload.content
         changes["content_updated"] = True
 
     append_audit_log(
@@ -485,8 +419,6 @@ def update_rule_draft(
         detail_json=changes,
     )
     db.commit()
-    db.refresh(rule)
-    db.refresh(draft)
     return success_response(
         request,
         data={
@@ -504,24 +436,10 @@ def publish_rule(
     principal: AuthPrincipal = Depends(require_platform_action("rule:publish")),
 ):
     normalized_rule_key = _normalize_rule_key(rule_key)
-    rule = _ensure_rule(db, rule_key=normalized_rule_key)
-    draft = _latest_rule_version(
-        db,
+    rule, draft = publish_file_rule(
         rule_key=normalized_rule_key,
-        status=RuleVersionStatus.DRAFT.value,
+        operator_id=principal.user.id,
     )
-    if draft is None:
-        raise AppError(
-            code="RULE_DRAFT_NOT_FOUND", status_code=409, message="规则草稿不存在"
-        )
-
-    draft.content = validate_rule_content_for_publish(
-        rule_key=normalized_rule_key,
-        content=draft.content,
-    )
-
-    draft.status = RuleVersionStatus.PUBLISHED.value
-    rule.active_version = draft.version
 
     append_audit_log(
         db,
@@ -533,8 +451,6 @@ def publish_rule(
         detail_json={"published_version": draft.version},
     )
     db.commit()
-    db.refresh(rule)
-    db.refresh(draft)
     return success_response(
         request,
         data={
@@ -553,22 +469,7 @@ def rollback_rule(
     principal: AuthPrincipal = Depends(require_platform_action("rule:publish")),
 ):
     normalized_rule_key = _normalize_rule_key(rule_key)
-    rule = _ensure_rule(db, rule_key=normalized_rule_key)
-    target = db.scalar(
-        select(RuleVersion).where(
-            RuleVersion.rule_key == normalized_rule_key,
-            RuleVersion.version == payload.version,
-            RuleVersion.status == RuleVersionStatus.PUBLISHED.value,
-        )
-    )
-    if target is None:
-        raise AppError(
-            code="RULE_VERSION_NOT_FOUND",
-            status_code=404,
-            message="目标发布版本不存在",
-        )
-
-    rule.active_version = payload.version
+    rule = rollback_file_rule(rule_key=normalized_rule_key, version=payload.version)
     append_audit_log(
         db,
         request_id=get_request_id(request),
@@ -579,7 +480,6 @@ def rollback_rule(
         detail_json={"active_version": payload.version},
     )
     db.commit()
-    db.refresh(rule)
     return success_response(request, data=_rule_payload(rule).model_dump())
 
 
@@ -592,20 +492,17 @@ def toggle_rule(
     principal: AuthPrincipal = Depends(require_platform_action("rule:toggle")),
 ):
     normalized_rule_key = _normalize_rule_key(rule_key)
-    rule = _ensure_rule(db, rule_key=normalized_rule_key)
-    if rule.enabled != payload.enabled:
-        rule.enabled = payload.enabled
-        append_audit_log(
-            db,
-            request_id=get_request_id(request),
-            operator_user_id=principal.user.id,
-            action="rule.toggle",
-            resource_type="RULE",
-            resource_id=normalized_rule_key,
-            detail_json={"enabled": payload.enabled},
-        )
-        db.commit()
-        db.refresh(rule)
+    rule = toggle_file_rule(rule_key=normalized_rule_key, enabled=payload.enabled)
+    append_audit_log(
+        db,
+        request_id=get_request_id(request),
+        operator_user_id=principal.user.id,
+        action="rule.toggle",
+        resource_type="RULE",
+        resource_id=normalized_rule_key,
+        detail_json={"enabled": payload.enabled},
+    )
+    db.commit()
     return success_response(request, data=_rule_payload(rule).model_dump())
 
 
@@ -915,31 +812,14 @@ def list_rule_sets(
     request: Request,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
-    db: Session = Depends(get_db),
+    _db: Session = Depends(get_db),
     _principal: AuthPrincipal = Depends(require_platform_action("rule:read")),
 ):
-    total = db.scalar(select(func.count()).select_from(RuleSet)) or 0
-    rows = db.scalars(
-        select(RuleSet)
-        .order_by(RuleSet.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    ).all()
-
-    counts_by_set: dict[uuid.UUID, int] = {}
-    if rows:
-        set_ids = [item.id for item in rows]
-        count_rows = db.execute(
-            select(RuleSetItem.rule_set_id, func.count())
-            .where(RuleSetItem.rule_set_id.in_(set_ids))
-            .group_by(RuleSetItem.rule_set_id)
-        ).all()
-        counts_by_set = {rule_set_id: count for rule_set_id, count in count_rows}
+    rows, total = list_file_rule_sets(page=page, page_size=page_size)
 
     payload = RuleSetListPayload(
         items=[
-            _rule_set_payload(item, rule_count=int(counts_by_set.get(item.id, 0)))
-            for item in rows
+            _rule_set_payload(item, rule_count=len(item.rule_keys)) for item in rows
         ],
         total=total,
     )
@@ -950,32 +830,18 @@ def list_rule_sets(
 def get_rule_set(
     request: Request,
     rule_set_id: uuid.UUID,
-    db: Session = Depends(get_db),
+    _db: Session = Depends(get_db),
     _principal: AuthPrincipal = Depends(require_platform_action("rule:read")),
 ):
-    rule_set = db.get(RuleSet, rule_set_id)
-    if rule_set is None:
-        raise AppError(code="NOT_FOUND", status_code=404, message="规则集不存在")
-
-    items = db.scalars(
-        select(RuleSetItem)
-        .where(RuleSetItem.rule_set_id == rule_set_id)
-        .order_by(RuleSetItem.rule_key.asc())
-    ).all()
+    rule_set = get_file_rule_set(rule_set_id=rule_set_id)
+    items = build_rule_set_items(rule_set)
     payload = RuleSetDetailPayload(
         id=rule_set.id,
+        key=rule_set.key,
         name=rule_set.name,
         description=rule_set.description,
-        items=[
-            RuleSetItemPayload(
-                id=item.id,
-                rule_set_id=item.rule_set_id,
-                rule_key=item.rule_key,
-                rule_version=item.rule_version,
-                created_at=item.created_at,
-            )
-            for item in items
-        ],
+        enabled=rule_set.enabled,
+        items=[_rule_set_item_payload(item) for item in items],
         created_at=rule_set.created_at,
         updated_at=rule_set.updated_at,
     )
@@ -989,16 +855,12 @@ def create_rule_set(
     db: Session = Depends(get_db),
     principal: AuthPrincipal = Depends(require_platform_action("rule:write")),
 ):
-    normalized_name = payload.name.strip()
-    existing = db.scalar(select(RuleSet.id).where(RuleSet.name == normalized_name))
-    if existing is not None:
-        raise AppError(
-            code="RULE_SET_ALREADY_EXISTS", status_code=409, message="规则集名称已存在"
-        )
-
-    rule_set = RuleSet(name=normalized_name, description=payload.description)
-    db.add(rule_set)
-    db.flush()
+    rule_set = create_file_rule_set(
+        key=normalize_rule_set_key(payload.key),
+        name=payload.name,
+        description=payload.description,
+        enabled=payload.enabled,
+    )
 
     append_audit_log(
         db,
@@ -1007,10 +869,9 @@ def create_rule_set(
         action="rule_set.create",
         resource_type="RULE_SET",
         resource_id=str(rule_set.id),
-        detail_json={"name": rule_set.name},
+        detail_json={"key": rule_set.key, "name": rule_set.name},
     )
     db.commit()
-    db.refresh(rule_set)
     return success_response(
         request,
         data=_rule_set_payload(rule_set, rule_count=0).model_dump(),
@@ -1026,34 +887,27 @@ def update_rule_set(
     db: Session = Depends(get_db),
     principal: AuthPrincipal = Depends(require_platform_action("rule:write")),
 ):
-    rule_set = db.get(RuleSet, rule_set_id)
-    if rule_set is None:
-        raise AppError(code="NOT_FOUND", status_code=404, message="规则集不存在")
+    before = get_file_rule_set(rule_set_id=rule_set_id)
+    updates: dict[str, object] = {}
+    if "name" in payload.model_fields_set:
+        updates["name"] = payload.name
+    if "description" in payload.model_fields_set:
+        updates["description"] = payload.description
+    if "enabled" in payload.model_fields_set:
+        updates["enabled"] = payload.enabled
+
+    rule_set = update_file_rule_set(rule_set_id=rule_set_id, **updates)
 
     changes: dict[str, object] = {}
-    if payload.name is not None:
-        normalized_name = payload.name.strip()
-        if normalized_name != rule_set.name:
-            exists = db.scalar(
-                select(RuleSet.id).where(
-                    RuleSet.name == normalized_name, RuleSet.id != rule_set_id
-                )
-            )
-            if exists is not None:
-                raise AppError(
-                    code="RULE_SET_ALREADY_EXISTS",
-                    status_code=409,
-                    message="规则集名称已存在",
-                )
-            changes["name"] = {"before": rule_set.name, "after": normalized_name}
-            rule_set.name = normalized_name
-
-    if payload.description is not None and payload.description != rule_set.description:
+    if before.name != rule_set.name:
+        changes["name"] = {"before": before.name, "after": rule_set.name}
+    if before.description != rule_set.description:
         changes["description"] = {
-            "before": rule_set.description,
-            "after": payload.description,
+            "before": before.description,
+            "after": rule_set.description,
         }
-        rule_set.description = payload.description
+    if before.enabled != rule_set.enabled:
+        changes["enabled"] = {"before": before.enabled, "after": rule_set.enabled}
 
     if changes:
         append_audit_log(
@@ -1065,15 +919,13 @@ def update_rule_set(
             resource_id=str(rule_set.id),
             detail_json=changes,
         )
-        db.commit()
-        db.refresh(rule_set)
+    db.commit()
 
-    count = (
-        db.scalar(select(func.count()).where(RuleSetItem.rule_set_id == rule_set.id))
-        or 0
-    )
     return success_response(
-        request, data=_rule_set_payload(rule_set, rule_count=int(count)).model_dump()
+        request,
+        data=_rule_set_payload(
+            rule_set, rule_count=len(rule_set.rule_keys)
+        ).model_dump(),
     )
 
 
@@ -1085,51 +937,10 @@ def bind_rule_set_rules(
     db: Session = Depends(get_db),
     principal: AuthPrincipal = Depends(require_platform_action("rule:write")),
 ):
-    rule_set = db.get(RuleSet, rule_set_id)
-    if rule_set is None:
-        raise AppError(code="NOT_FOUND", status_code=404, message="规则集不存在")
-
-    normalized_items: list[tuple[str, int]] = []
-    seen_by_rule_key: dict[str, int] = {}
-    for item in payload.items:
-        rule_key = _normalize_rule_key(item.rule_key)
-        existing_version = seen_by_rule_key.get(rule_key)
-        if existing_version is not None:
-            if existing_version != item.rule_version:
-                raise AppError(
-                    code="INVALID_ARGUMENT",
-                    status_code=422,
-                    message="同一规则集不允许为同一 rule_key 绑定多个版本",
-                    detail={
-                        "rule_key": rule_key,
-                        "versions": sorted({existing_version, item.rule_version}),
-                    },
-                )
-            continue
-        version = db.scalar(
-            select(RuleVersion).where(
-                RuleVersion.rule_key == rule_key,
-                RuleVersion.version == item.rule_version,
-                RuleVersion.status == RuleVersionStatus.PUBLISHED.value,
-            )
-        )
-        if version is None:
-            raise AppError(
-                code="RULE_VERSION_NOT_FOUND",
-                status_code=404,
-                message="规则版本不存在或尚未发布",
-                detail={"rule_key": rule_key, "rule_version": item.rule_version},
-            )
-        normalized_items.append((rule_key, item.rule_version))
-        seen_by_rule_key[rule_key] = item.rule_version
-
-    db.execute(delete(RuleSetItem).where(RuleSetItem.rule_set_id == rule_set_id))
-    for rule_key, rule_version in normalized_items:
-        db.add(
-            RuleSetItem(
-                rule_set_id=rule_set_id, rule_key=rule_key, rule_version=rule_version
-            )
-        )
+    rule_set = bind_rule_set_file_rules(
+        rule_set_id=rule_set_id,
+        rule_keys=payload.rule_keys,
+    )
 
     append_audit_log(
         db,
@@ -1138,29 +949,18 @@ def bind_rule_set_rules(
         action="rule_set.bind_rules",
         resource_type="RULE_SET",
         resource_id=str(rule_set.id),
-        detail_json={"item_count": len(normalized_items)},
+        detail_json={"item_count": len(rule_set.rule_keys)},
     )
     db.commit()
 
-    items = db.scalars(
-        select(RuleSetItem)
-        .where(RuleSetItem.rule_set_id == rule_set_id)
-        .order_by(RuleSetItem.rule_key.asc())
-    ).all()
+    items = build_rule_set_items(rule_set)
     detail = RuleSetDetailPayload(
         id=rule_set.id,
+        key=rule_set.key,
         name=rule_set.name,
         description=rule_set.description,
-        items=[
-            RuleSetItemPayload(
-                id=item.id,
-                rule_set_id=item.rule_set_id,
-                rule_key=item.rule_key,
-                rule_version=item.rule_version,
-                created_at=item.created_at,
-            )
-            for item in items
-        ],
+        enabled=rule_set.enabled,
+        items=[_rule_set_item_payload(item) for item in items],
         created_at=rule_set.created_at,
         updated_at=rule_set.updated_at,
     )

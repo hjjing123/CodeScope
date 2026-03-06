@@ -8,7 +8,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
-from app.models import Finding, FindingStatus, Job, JobStatus, JobType, RuleStat, utc_now
+from app.models import (
+    Finding,
+    FindingStatus,
+    Job,
+    JobStatus,
+    JobType,
+    RuleStat,
+    utc_now,
+)
 
 
 def dispatch_rule_stats_aggregation(db: Session, *, job_id: uuid.UUID) -> str | None:
@@ -32,11 +40,15 @@ def run_rule_stats_aggregation(*, job_id: uuid.UUID, db: Session | None = None) 
         duration_map = _duration_map(job.result_summary)
 
         grouped: dict[tuple[str, int], dict[str, int]] = {}
-        findings = session.scalars(select(Finding).where(Finding.job_id == job.id)).all()
+        findings = session.scalars(
+            select(Finding).where(Finding.job_id == job.id)
+        ).all()
         for finding in findings:
             version = int(finding.rule_version or 0)
             key = (finding.rule_key, version)
-            bucket = grouped.setdefault(key, {"hits": 0, "fp_count": 0, "timeout_count": 0})
+            bucket = grouped.setdefault(
+                key, {"hits": 0, "fp_count": 0, "timeout_count": 0}
+            )
             bucket["hits"] += 1
             if finding.status == FindingStatus.FP.value:
                 bucket["fp_count"] += 1
@@ -90,7 +102,9 @@ def _duration_map(summary: dict[str, Any] | None) -> dict[str, int]:
 def _timeout_rule_candidates(payload: object) -> list[str]:
     if not isinstance(payload, dict):
         return []
-    raw = payload.get("rule_set_ids")
+    raw = payload.get("resolved_rule_keys")
+    if not isinstance(raw, list):
+        raw = payload.get("rule_keys")
     if not isinstance(raw, list):
         return []
 
@@ -147,7 +161,9 @@ def _upsert_rule_stat(
     if new_total_hits <= 0:
         existing.avg_duration_ms = 0
     elif avg_duration_ms > 0:
-        weighted_total = existing.avg_duration_ms * previous_hits + avg_duration_ms * int(hits)
+        weighted_total = (
+            existing.avg_duration_ms * previous_hits + avg_duration_ms * int(hits)
+        )
         existing.avg_duration_ms = int(weighted_total / new_total_hits)
 
     existing.hits = new_total_hits

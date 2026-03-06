@@ -10,6 +10,8 @@ import WorkspaceLayout from './layouts/WorkspaceLayout';
 import WorkspaceSectionPage from './pages/WorkspaceSectionPage';
 import LogCenterPage from './pages/LogCenterPage';
 import ProjectVersionPage from './pages/ProjectVersionPage';
+import RuleCenterPage from './pages/RuleCenterPage';
+import RuleDetailPage from './pages/RuleDetailPage';
 import { workspaceSections } from './config/workspaceSections';
 
 // Protected Route Component
@@ -55,8 +57,15 @@ function App() {
             <Route index element={<Navigate to="dashboard" replace />} />
             <Route path="projects" element={<ProjectVersionPage />} />
             <Route path="log-center" element={<LogCenterPage />} />
+            <Route path="rules" element={<RuleCenterPage />} />
+            <Route path="rules/:ruleKey" element={<RuleDetailPage />} />
             {workspaceSections
-              .filter((section) => section.key !== 'projects' && section.key !== 'log-center')
+              .filter(
+                (section) =>
+                  section.key !== 'projects' &&
+                  section.key !== 'log-center' &&
+                  section.key !== 'rules'
+              )
               .map((section) => (
                 <Route
                   key={section.key}

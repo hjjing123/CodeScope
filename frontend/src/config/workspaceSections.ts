@@ -106,27 +106,27 @@ export const workspaceSections: WorkspaceSection[] = [
     tagline: '维护规则库、版本与启停策略。',
     badge: 'Rule Forge',
     intro:
-      '规则中心承载规则生命周期与执行策略。页面骨架已经按“规则清单 + 详情编辑 + 发布记录”组织，方便逐步填充。',
+      '规则中心已接入后端规则管理能力，支持规则列表、规则详情编辑、版本发布/回滚、规则集编排与规则自测。',
     icon: ControlOutlined,
-    highlights: ['规则分组与标签体系', '规则版本发布记录', '生效范围与风险级别统一配置'],
+    highlights: ['规则查看与启停', '规则集创建与绑定', '自定义规则草稿与自测'],
     blocks: [
       {
-        title: '规则清单区域',
-        description: '预留批量启停、筛选和版本对比入口。',
-        status: 'skeleton',
-      },
-      {
-        title: '规则详情编辑区',
-        description: '承接规则元信息、触发条件和修复建议编辑。',
+        title: '规则清单与统计',
+        description: '已支持规则分页、启停、统计卡片与详情跳转。',
         status: 'next',
       },
       {
-        title: '发布与回滚记录',
-        description: '后续用于展示规则变更日志和回滚操作。',
+        title: '规则详情与发布',
+        description: '已支持草稿保存、发布、回滚、状态切换与自测入口。',
+        status: 'next',
+      },
+      {
+        title: '规则集编排',
+        description: '已支持规则集创建、编辑以及绑定规则列表。',
         status: 'planned',
       },
     ],
-    nextAction: '先实现规则列表和详情面板联动，再补齐发布历史。',
+    nextAction: '下一步可补充规则变更审计可视化与规则集启停操作。',
   },
   {
     key: 'scans',

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -10,8 +11,12 @@ from app.models import Job, JobStage, ScanMode
 from .contracts import ExternalScanContext, ExternalStageSpec
 
 
-def build_external_scan_context(*, job: Job, settings: Any, backend_root: Path) -> ExternalScanContext:
-    reports_dir = _resolve_reports_dir(settings=settings, job=job, backend_root=backend_root)
+def build_external_scan_context(
+    *, job: Job, settings: Any, backend_root: Path
+) -> ExternalScanContext:
+    reports_dir = _resolve_reports_dir(
+        settings=settings, job=job, backend_root=backend_root
+    )
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     workdir = _resolve_workdir(settings=settings, job=job, backend_root=backend_root)
@@ -78,7 +83,9 @@ def render_template(value: str, *, job: Job) -> str:
     return rendered
 
 
-def resolve_external_path(*, raw_value: str, job: Job, backend_root: Path) -> Path | None:
+def resolve_external_path(
+    *, raw_value: str, job: Job, backend_root: Path
+) -> Path | None:
     rendered = render_template(raw_value.strip(), job=job)
     if not rendered:
         return None
@@ -106,7 +113,9 @@ def _resolve_reports_dir(*, settings: Any, job: Job, backend_root: Path) -> Path
             message="未配置外部扫描结果目录",
         )
 
-    reports_dir = resolve_external_path(raw_value=reports_dir_raw, job=job, backend_root=backend_root)
+    reports_dir = resolve_external_path(
+        raw_value=reports_dir_raw, job=job, backend_root=backend_root
+    )
     if reports_dir is None:
         raise AppError(
             code="SCAN_EXTERNAL_RESULT_MISSING",
@@ -123,7 +132,9 @@ def _resolve_workdir(*, settings: Any, job: Job, backend_root: Path) -> str | No
     if not workdir_raw:
         return None
 
-    workdir = resolve_external_path(raw_value=workdir_raw, job=job, backend_root=backend_root)
+    workdir = resolve_external_path(
+        raw_value=workdir_raw, job=job, backend_root=backend_root
+    )
     if workdir is None:
         return None
     if not workdir.exists() or not workdir.is_dir():
@@ -173,7 +184,9 @@ def _requires_builtin_source(stage_specs: list[ExternalStageSpec]) -> bool:
     return False
 
 
-def _prepare_workspace_paths(*, settings: Any, job: Job, backend_root: Path) -> tuple[Path, Path, Path]:
+def _prepare_workspace_paths(
+    *, settings: Any, job: Job, backend_root: Path
+) -> tuple[Path, Path, Path]:
     workspace_root = resolve_external_path(
         raw_value=settings.scan_workspace_root or "",
         job=job,
@@ -202,7 +215,9 @@ def _build_stage_specs(*, settings: Any) -> list[ExternalStageSpec]:
                 key="legacy_runner",
                 command=legacy_command,
                 log_stage=JobStage.QUERY.value,
-                timeout_seconds=_safe_timeout_seconds(settings.scan_external_timeout_seconds, default=3600),
+                timeout_seconds=_safe_timeout_seconds(
+                    settings.scan_external_timeout_seconds, default=3600
+                ),
                 failure_code="SCAN_EXTERNAL_RUN_FAILED",
                 timeout_code="SCAN_EXTERNAL_RUN_TIMEOUT",
             )
@@ -276,6 +291,13 @@ def _build_scan_env(
     env["CODESCOPE_SCAN_SOURCE_DIR"] = str(source_dir)
     env["CODESCOPE_SCAN_IMPORT_DIR"] = str(import_dir)
     env["CODESCOPE_SCAN_CPG_FILE"] = str(cpg_file)
+    env["CODESCOPE_SCAN_RULE_SET_KEYS"] = _json_list_string(
+        job.payload.get("rule_set_keys")
+    )
+    env["CODESCOPE_SCAN_RULE_KEYS"] = _json_list_string(job.payload.get("rule_keys"))
+    env["CODESCOPE_SCAN_RESOLVED_RULE_KEYS"] = _json_list_string(
+        job.payload.get("resolved_rule_keys")
+    )
 
     joern_home = resolve_external_path(
         raw_value=settings.scan_external_joern_home or "",
@@ -294,7 +316,9 @@ def _build_scan_env(
     )
     env["CODESCOPE_SCAN_JOERN_HOME"] = str(joern_home) if joern_home else ""
     env["CODESCOPE_SCAN_JOERN_BIN"] = str(joern_bin) if joern_bin else ""
-    env["CODESCOPE_SCAN_JOERN_EXPORT_SCRIPT"] = str(joern_export_script) if joern_export_script else ""
+    env["CODESCOPE_SCAN_JOERN_EXPORT_SCRIPT"] = (
+        str(joern_export_script) if joern_export_script else ""
+    )
 
     post_labels_cypher = resolve_external_path(
         raw_value=settings.scan_external_post_labels_cypher or "",
@@ -306,21 +330,23 @@ def _build_scan_env(
         job=job,
         backend_root=backend_root,
     )
-    rules_allowlist = resolve_external_path(
-        raw_value=settings.scan_external_rules_allowlist_file or "",
-        job=job,
-        backend_root=backend_root,
+    env["CODESCOPE_SCAN_POST_LABELS_CYPHER"] = (
+        str(post_labels_cypher) if post_labels_cypher else ""
     )
-    env["CODESCOPE_SCAN_POST_LABELS_CYPHER"] = str(post_labels_cypher) if post_labels_cypher else ""
     env["CODESCOPE_SCAN_RULES_DIR"] = str(rules_dir) if rules_dir else ""
-    env["CODESCOPE_SCAN_RULES_ALLOWLIST_FILE"] = str(rules_allowlist) if rules_allowlist else ""
 
     env["CODESCOPE_SCAN_NEO4J_URI"] = str(settings.scan_external_neo4j_uri or "")
     env["CODESCOPE_SCAN_NEO4J_USER"] = str(settings.scan_external_neo4j_user or "")
-    env["CODESCOPE_SCAN_NEO4J_PASSWORD"] = str(settings.scan_external_neo4j_password or "")
-    env["CODESCOPE_SCAN_NEO4J_DATABASE"] = str(settings.scan_external_neo4j_database or "")
+    env["CODESCOPE_SCAN_NEO4J_PASSWORD"] = str(
+        settings.scan_external_neo4j_password or ""
+    )
+    env["CODESCOPE_SCAN_NEO4J_DATABASE"] = str(
+        settings.scan_external_neo4j_database or ""
+    )
 
-    joern_stage_enabled = bool((settings.scan_external_stage_joern_command or "").strip())
+    joern_stage_enabled = bool(
+        (settings.scan_external_stage_joern_command or "").strip()
+    )
     if joern_stage_enabled:
         _validate_joern_paths(
             joern_home=joern_home,
@@ -331,7 +357,23 @@ def _build_scan_env(
     return env
 
 
-def _validate_joern_paths(*, joern_home: Path | None, joern_bin: Path | None, joern_export_script: Path | None) -> None:
+def _json_list_string(value: object) -> str:
+    if not isinstance(value, list):
+        return "[]"
+
+    cleaned: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if text:
+            cleaned.append(text)
+    return json.dumps(cleaned, ensure_ascii=False)
+
+
+def _validate_joern_paths(
+    *, joern_home: Path | None, joern_bin: Path | None, joern_export_script: Path | None
+) -> None:
     if joern_home is None or not joern_home.exists() or not joern_home.is_dir():
         raise AppError(
             code="SCAN_EXTERNAL_NOT_CONFIGURED",
@@ -346,12 +388,18 @@ def _validate_joern_paths(*, joern_home: Path | None, joern_bin: Path | None, jo
             message="Joern 可执行文件不存在",
             detail={"joern_bin": str(joern_bin) if joern_bin else ""},
         )
-    if joern_export_script is None or not joern_export_script.exists() or not joern_export_script.is_file():
+    if (
+        joern_export_script is None
+        or not joern_export_script.exists()
+        or not joern_export_script.is_file()
+    ):
         raise AppError(
             code="SCAN_EXTERNAL_NOT_CONFIGURED",
             status_code=501,
             message="Joern 导出脚本不存在",
             detail={
-                "joern_export_script": str(joern_export_script) if joern_export_script else ""
+                "joern_export_script": str(joern_export_script)
+                if joern_export_script
+                else ""
             },
         )

@@ -6,12 +6,14 @@ import {
   Button,
   Card,
   Collapse,
+  Col,
   DatePicker,
   Descriptions,
   Drawer,
   Form,
   Input,
   InputNumber,
+  Row,
   Segmented,
   Space,
   Statistic,
@@ -47,7 +49,6 @@ import type {
   TaskLogPayload,
   TaskType,
 } from '../types/logCenter';
-import './LogCenterPage.css';
 
 const { RangePicker } = DatePicker;
 const { Text } = Typography;
@@ -264,14 +265,14 @@ const LogCenterPage: React.FC = () => {
         title: '时间',
         dataIndex: 'created_at',
         width: 170,
-        render: (value: string) => <span className="log-center-code">{formatTime(value)}</span>,
+        render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{formatTime(value)}</span>,
       },
       {
         title: '动作',
         dataIndex: 'action',
         width: 180,
         ellipsis: true,
-        render: (value: string) => <span className="log-center-code">{value || '--'}</span>,
+        render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>,
       },
       {
         title: '资源',
@@ -279,7 +280,7 @@ const LogCenterPage: React.FC = () => {
         width: 220,
         ellipsis: true,
         render: (_, record) => (
-          <span className="log-center-code">{`${record.resource_type || '--'} / ${record.resource_id || '--'}`}</span>
+          <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{`${record.resource_type || '--'} / ${record.resource_id || '--'}`}</span>
         ),
       },
       {
@@ -299,14 +300,14 @@ const LogCenterPage: React.FC = () => {
           <Button
             type="link"
             size="small"
-            className="log-center-inline-action"
+            style={{ paddingInline: 0, height: 'auto' }}
             icon={<CopyOutlined />}
             onClick={(event) => {
               event.stopPropagation();
               void copyText('request_id', value);
             }}
           >
-            <span className="log-center-code">{value || '--'}</span>
+            <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>
           </Button>
         ),
       },
@@ -314,7 +315,7 @@ const LogCenterPage: React.FC = () => {
         title: '错误码',
         dataIndex: 'error_code',
         width: 160,
-        render: (value: string | null) => <span className="log-center-code">{value || '--'}</span>,
+        render: (value: string | null) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>,
       },
     ],
     []
@@ -326,7 +327,7 @@ const LogCenterPage: React.FC = () => {
         title: '时间',
         dataIndex: 'occurred_at',
         width: 170,
-        render: (value: string) => <span className="log-center-code">{formatTime(value)}</span>,
+        render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{formatTime(value)}</span>,
       },
       {
         title: '级别',
@@ -342,7 +343,7 @@ const LogCenterPage: React.FC = () => {
         width: 240,
         ellipsis: true,
         render: (_, record) => (
-          <span className="log-center-code">{`${record.module || '--'} / ${record.event || '--'}`}</span>
+          <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{`${record.module || '--'} / ${record.event || '--'}`}</span>
         ),
       },
       {
@@ -359,26 +360,26 @@ const LogCenterPage: React.FC = () => {
           <Button
             type="link"
             size="small"
-            className="log-center-inline-action"
+            style={{ paddingInline: 0, height: 'auto' }}
             icon={<CopyOutlined />}
             onClick={(event) => {
               event.stopPropagation();
               void copyText('request_id', value);
             }}
           >
-            <span className="log-center-code">{value || '--'}</span>
+            <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>
           </Button>
         ),
       },
       {
         title: '状态',
         width: 84,
-        render: (_, record) => <span className="log-center-code">{record.status_code ?? '--'}</span>,
+        render: (_, record) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{record.status_code ?? '--'}</span>,
       },
       {
         title: '耗时(ms)',
         width: 90,
-        render: (_, record) => <span className="log-center-code">{record.duration_ms ?? '--'}</span>,
+        render: (_, record) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{record.duration_ms ?? '--'}</span>,
       },
     ],
     []
@@ -536,15 +537,15 @@ const LogCenterPage: React.FC = () => {
     return taskPayload.items.map((entry) => ({
       key: entry.stage,
       label: (
-        <div className="log-center-stage-label">
-          <span className="log-center-code">{entry.stage}</span>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+          <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{entry.stage}</span>
           <span>{entry.line_count} 行</span>
           {entry.truncated ? <Tag color="gold">已截断</Tag> : null}
         </div>
       ),
       children: (
-        <div className="log-center-stage-body">
-          <div className="log-center-stage-toolbar">
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <Button
               type="default"
               size="small"
@@ -559,11 +560,34 @@ const LogCenterPage: React.FC = () => {
           {entry.lines.length === 0 ? (
             <Alert type="info" showIcon message="当前阶段暂无日志输出。" />
           ) : (
-            <div className="log-center-log-lines" role="log" aria-live="polite">
+            <div 
+              style={{
+                border: '1px solid #d9d9d9',
+                borderRadius: 6,
+                background: '#f8fafc',
+                maxHeight: 420,
+                overflow: 'auto',
+                padding: 12
+              }} 
+              role="log" 
+              aria-live="polite"
+            >
               {entry.lines.map((line, index) => (
-                <p key={`${entry.stage}-${index}`} className="log-center-log-line">
-                  <span className="log-center-line-number">{index + 1}</span>
-                  <span className="log-center-line-content">{line}</span>
+                <p 
+                  key={`${entry.stage}-${index}`} 
+                  style={{
+                    margin: 0,
+                    padding: '4px 0',
+                    borderBottom: '1px solid #f0f0f0',
+                    display: 'grid',
+                    gridTemplateColumns: '48px 1fr',
+                    gap: 8,
+                    fontSize: 13,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  <span style={{ color: '#999', fontFamily: 'monospace', textAlign: 'right', userSelect: 'none' }}>{index + 1}</span>
+                  <span style={{ color: '#333', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{line}</span>
                 </p>
               ))}
             </div>
@@ -574,11 +598,13 @@ const LogCenterPage: React.FC = () => {
   }, [taskPayload]);
 
   return (
-    <div className="log-center-page">
-      <section className="log-center-hero" aria-label="日志中心概览">
-        <div className="log-center-refresh-bar" aria-label="自动刷新控制">
-          <Space size={10} wrap>
-            <Text className="log-center-refresh-label">自动刷新</Text>
+    <div style={{ padding: '24px', background: '#fff', minHeight: '100%' }}>
+      <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
+        <h2 style={{ margin: 0 }}>日志中心</h2>
+        
+        <Space size={16} wrap>
+          <Space size={8}>
+            <Text type="secondary" style={{ fontSize: 13 }}>自动刷新</Text>
             <Switch
               checked={autoRefreshEnabled}
               onChange={(checked) => {
@@ -600,10 +626,10 @@ const LogCenterPage: React.FC = () => {
               onChange={(value) => setRefreshIntervalSec(Number(value))}
               disabled={!autoRefreshEnabled}
             />
-            <Text className="log-center-refresh-hint">仅轮询当前标签页</Text>
-            <Text className="log-center-refresh-hint">上次刷新: {lastRefreshTime || '--'}</Text>
           </Space>
-
+          
+          <Text type="secondary" style={{ fontSize: 12 }}>上次刷新: {lastRefreshTime || '--'}</Text>
+          
           <Button
             type="default"
             icon={<ReloadOutlined />}
@@ -613,26 +639,33 @@ const LogCenterPage: React.FC = () => {
           >
             立即刷新
           </Button>
-        </div>
+        </Space>
+      </div>
 
-        <div className="log-center-metrics" aria-label="日志指标速览">
-          <Card className="log-center-metric-card" bordered={false}>
-            <Statistic title="当前视图日志数" value={activeTotal} valueStyle={{ fontSize: 24 }} />
+      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small" bordered>
+            <Statistic title="当前视图日志数" value={activeTotal} valueStyle={{ fontSize: 20 }} />
           </Card>
-          <Card className="log-center-metric-card" bordered={false}>
-            <Statistic title="操作失败（当前页）" value={auditFailedCount} valueStyle={{ fontSize: 24 }} />
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small" bordered>
+            <Statistic title="操作失败（当前页）" value={auditFailedCount} valueStyle={{ fontSize: 20 }} />
           </Card>
-          <Card className="log-center-metric-card" bordered={false}>
-            <Statistic title="运行异常（当前页）" value={runtimeErrorCount} valueStyle={{ fontSize: 24 }} />
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small" bordered>
+            <Statistic title="运行异常（当前页）" value={runtimeErrorCount} valueStyle={{ fontSize: 20 }} />
           </Card>
-          <Card className="log-center-metric-card" bordered={false}>
-            <Statistic title="关联命中数" value={correlationHitCount} valueStyle={{ fontSize: 24 }} />
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small" bordered>
+            <Statistic title="关联命中数" value={correlationHitCount} valueStyle={{ fontSize: 20 }} />
           </Card>
-        </div>
-      </section>
+        </Col>
+      </Row>
 
       <Tabs
-        className="log-center-tabs"
         activeKey={activeTab}
         onChange={(key) => setActiveTab(key as LogCenterTabKey)}
         items={[
@@ -640,8 +673,8 @@ const LogCenterPage: React.FC = () => {
             key: 'system',
             label: '系统日志',
             children: (
-              <section className="log-center-panel" aria-label="系统日志检索">
-                <div className="log-center-panel-head">
+              <div style={{ display: 'grid', gap: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Segmented
                     value={systemMode}
                     onChange={handleSystemModeChange}
@@ -651,7 +684,6 @@ const LogCenterPage: React.FC = () => {
                     ]}
                   />
                   <Button
-                    type="default"
                     icon={<ReloadOutlined />}
                     onClick={() => {
                       void runAutoRefresh();
@@ -665,72 +697,72 @@ const LogCenterPage: React.FC = () => {
                   <Form
                     form={auditForm}
                     layout="inline"
-                    className="log-center-filter"
                     onFinish={() => {
                       void loadAuditLogs(1, auditPageSize);
                     }}
                   >
-                    <Form.Item name="request_id">
-                      <Input allowClear placeholder="request_id" className="log-center-input" />
-                    </Form.Item>
-                    <Form.Item name="project_id">
-                      <Input allowClear placeholder="project_id" className="log-center-input" />
-                    </Form.Item>
-                    <Form.Item name="action">
-                      <Input allowClear placeholder="action" className="log-center-input" />
-                    </Form.Item>
-                    <Form.Item name="result">
-                      <Input allowClear placeholder="result: SUCCEEDED/FAILED" className="log-center-input" />
-                    </Form.Item>
-                    <Form.Item name="range">
-                      <RangePicker showTime className="log-center-range" />
-                    </Form.Item>
-                    <Form.Item>
-                      <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
-                        查询
-                      </Button>
-                    </Form.Item>
+                    <Space wrap style={{ width: '100%' }}>
+                      <Form.Item name="request_id" style={{ margin: 0 }}>
+                        <Input allowClear placeholder="request_id" style={{ width: 180 }} />
+                      </Form.Item>
+                      <Form.Item name="project_id" style={{ margin: 0 }}>
+                        <Input allowClear placeholder="project_id" style={{ width: 150 }} />
+                      </Form.Item>
+                      <Form.Item name="action" style={{ margin: 0 }}>
+                        <Input allowClear placeholder="action" style={{ width: 150 }} />
+                      </Form.Item>
+                      <Form.Item name="result" style={{ margin: 0 }}>
+                        <Input allowClear placeholder="result" style={{ width: 100 }} />
+                      </Form.Item>
+                      <Form.Item name="range" style={{ margin: 0 }}>
+                        <RangePicker showTime style={{ width: 300 }} />
+                      </Form.Item>
+                      <Form.Item style={{ margin: 0 }}>
+                        <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
+                          查询
+                        </Button>
+                      </Form.Item>
+                    </Space>
                   </Form>
                 ) : (
                   <Form
                     form={runtimeForm}
                     layout="inline"
-                    className="log-center-filter"
                     onFinish={() => {
                       void loadRuntimeLogs(1, runtimePageSize);
                     }}
                   >
-                    <Form.Item name="request_id">
-                      <Input allowClear placeholder="request_id" className="log-center-input" />
-                    </Form.Item>
-                    <Form.Item name="project_id">
-                      <Input allowClear placeholder="project_id" className="log-center-input" />
-                    </Form.Item>
-                    <Form.Item name="level">
-                      <Input allowClear placeholder="level: INFO/WARN/ERROR" className="log-center-input" />
-                    </Form.Item>
-                    <Form.Item name="module">
-                      <Input allowClear placeholder="module" className="log-center-input" />
-                    </Form.Item>
-                    <Form.Item name="event">
-                      <Input allowClear placeholder="event" className="log-center-input" />
-                    </Form.Item>
-                    <Form.Item name="range">
-                      <RangePicker showTime className="log-center-range" />
-                    </Form.Item>
-                    <Form.Item>
-                      <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
-                        查询
-                      </Button>
-                    </Form.Item>
+                    <Space wrap style={{ width: '100%' }}>
+                      <Form.Item name="request_id" style={{ margin: 0 }}>
+                        <Input allowClear placeholder="request_id" style={{ width: 180 }} />
+                      </Form.Item>
+                      <Form.Item name="project_id" style={{ margin: 0 }}>
+                        <Input allowClear placeholder="project_id" style={{ width: 150 }} />
+                      </Form.Item>
+                      <Form.Item name="level" style={{ margin: 0 }}>
+                        <Input allowClear placeholder="level" style={{ width: 100 }} />
+                      </Form.Item>
+                      <Form.Item name="module" style={{ margin: 0 }}>
+                        <Input allowClear placeholder="module" style={{ width: 150 }} />
+                      </Form.Item>
+                      <Form.Item name="event" style={{ margin: 0 }}>
+                        <Input allowClear placeholder="event" style={{ width: 150 }} />
+                      </Form.Item>
+                      <Form.Item name="range" style={{ margin: 0 }}>
+                        <RangePicker showTime style={{ width: 300 }} />
+                      </Form.Item>
+                      <Form.Item style={{ margin: 0 }}>
+                        <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
+                          查询
+                        </Button>
+                      </Form.Item>
+                    </Space>
                   </Form>
                 )}
 
                 {systemMode === 'audit' ? (
                   <Table<AuditLogItem>
-                    className="log-center-table"
                     rowKey="id"
-                    size="middle"
                     loading={systemLoading}
                     columns={auditColumns}
                     dataSource={auditItems}
@@ -747,7 +779,7 @@ const LogCenterPage: React.FC = () => {
                       void loadAuditLogs(page, pageSize);
                     }}
                     onRow={(record) => ({
-                      className: 'log-center-row',
+                      style: { cursor: 'pointer' },
                       onClick: () => {
                         setLogDetail({ kind: 'audit', record });
                       },
@@ -755,9 +787,7 @@ const LogCenterPage: React.FC = () => {
                   />
                 ) : (
                   <Table<RuntimeLogItem>
-                    className="log-center-table"
                     rowKey="id"
-                    size="middle"
                     loading={systemLoading}
                     columns={runtimeColumns}
                     dataSource={runtimeItems}
@@ -774,130 +804,131 @@ const LogCenterPage: React.FC = () => {
                       void loadRuntimeLogs(page, pageSize);
                     }}
                     onRow={(record) => ({
-                      className: 'log-center-row',
+                      style: { cursor: 'pointer' },
                       onClick: () => {
                         setLogDetail({ kind: 'runtime', record });
                       },
                     })}
                   />
                 )}
-              </section>
+              </div>
             ),
           },
           {
             key: 'task',
             label: '任务日志',
             children: (
-              <section className="log-center-panel" aria-label="任务日志检索">
+              <div style={{ display: 'grid', gap: 16 }}>
                 <Form
                   form={taskForm}
                   layout="inline"
-                  className="log-center-filter"
                   onFinish={(values) => {
                     void handleTaskSearch(values);
                   }}
                 >
-                  <Form.Item name="task_type" rules={[{ required: true, message: '请选择任务类型' }]}>
-                    <Segmented options={taskTypeOptions} />
-                  </Form.Item>
-                  <Form.Item name="task_id" rules={[{ required: true, message: '请输入任务 ID' }]}>
-                    <Input allowClear placeholder="task_id (UUID)" className="log-center-input log-center-input-wide" />
-                  </Form.Item>
-                  <Form.Item name="stage">
-                    <Input allowClear placeholder="stage (可选)" className="log-center-input" />
-                  </Form.Item>
-                  <Form.Item name="tail" rules={[{ required: true, message: '请输入 tail 行数' }]}>
-                    <InputNumber min={1} max={5000} className="log-center-input-number" />
-                  </Form.Item>
-                  <Form.Item>
-                    <Space size={8}>
-                      <Button type="primary" htmlType="submit" icon={<SearchOutlined />} loading={taskLoading}>
-                        查询
-                      </Button>
-                      <Button
-                        type="default"
-                        icon={<DownloadOutlined />}
-                        disabled={!taskQuery}
-                        onClick={() => {
-                          void handleTaskDownload(taskQuery?.stage);
-                        }}
-                      >
-                        下载当前筛选
-                      </Button>
-                      <Button
-                        type="default"
-                        icon={<DownloadOutlined />}
-                        disabled={!taskQuery}
-                        onClick={() => {
-                          void handleTaskDownload();
-                        }}
-                      >
-                        下载全部
-                      </Button>
-                    </Space>
-                  </Form.Item>
+                  <Space wrap style={{ width: '100%' }}>
+                    <Form.Item name="task_type" rules={[{ required: true, message: '请选择任务类型' }]} style={{ margin: 0 }}>
+                      <Segmented options={taskTypeOptions} />
+                    </Form.Item>
+                    <Form.Item name="task_id" rules={[{ required: true, message: '请输入任务 ID' }]} style={{ margin: 0 }}>
+                      <Input allowClear placeholder="task_id (UUID)" style={{ width: 300 }} />
+                    </Form.Item>
+                    <Form.Item name="stage" style={{ margin: 0 }}>
+                      <Input allowClear placeholder="stage (可选)" style={{ width: 150 }} />
+                    </Form.Item>
+                    <Form.Item name="tail" rules={[{ required: true, message: '请输入 tail 行数' }]} style={{ margin: 0 }}>
+                      <InputNumber min={1} max={5000} style={{ width: 100 }} />
+                    </Form.Item>
+                    <Form.Item style={{ margin: 0 }}>
+                      <Space size={8}>
+                        <Button type="primary" htmlType="submit" icon={<SearchOutlined />} loading={taskLoading}>
+                          查询
+                        </Button>
+                        <Button
+                          type="default"
+                          icon={<DownloadOutlined />}
+                          disabled={!taskQuery}
+                          onClick={() => {
+                            void handleTaskDownload(taskQuery?.stage);
+                          }}
+                        >
+                          下载当前筛选
+                        </Button>
+                        <Button
+                          type="default"
+                          icon={<DownloadOutlined />}
+                          disabled={!taskQuery}
+                          onClick={() => {
+                            void handleTaskDownload();
+                          }}
+                        >
+                          下载全部
+                        </Button>
+                      </Space>
+                    </Form.Item>
+                  </Space>
                 </Form>
 
-                <div className="log-center-task-summary">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', background: '#f5f5f5', borderRadius: 6 }}>
                   <Statistic title="阶段数量" value={taskStageCount} />
-                  <Text className="log-center-task-tip">
+                  <Text type="secondary" style={{ fontSize: 13 }}>
                     当前按任务类型 + 任务 ID 聚合日志，可按 stage 精确定位问题阶段。
                   </Text>
                 </div>
 
                 {taskPayload ? (
-                  <Collapse className="log-center-collapse" items={taskLogItems} />
+                  <Collapse items={taskLogItems} style={{ background: '#fff' }} />
                 ) : (
                   <Alert type="info" showIcon message="请先输入任务条件并点击查询。" />
                 )}
-              </section>
+              </div>
             ),
           },
           {
             key: 'correlation',
             label: '关联追踪',
             children: (
-              <section className="log-center-panel" aria-label="关联追踪查询">
+              <div style={{ display: 'grid', gap: 16 }}>
                 <Form
                   form={correlationForm}
                   layout="inline"
-                  className="log-center-filter"
                   onFinish={(values) => {
                     void handleCorrelationSearch(values);
                   }}
                 >
-                  <Form.Item name="request_id">
-                    <Input allowClear placeholder="request_id" className="log-center-input" />
-                  </Form.Item>
-                  <Form.Item name="task_type">
-                    <Segmented options={taskTypeOptions} />
-                  </Form.Item>
-                  <Form.Item name="task_id">
-                    <Input allowClear placeholder="task_id" className="log-center-input log-center-input-wide" />
-                  </Form.Item>
-                  <Form.Item name="project_id">
-                    <Input allowClear placeholder="project_id" className="log-center-input" />
-                  </Form.Item>
-                  <Form.Item name="limit">
-                    <InputNumber min={1} max={500} className="log-center-input-number" />
-                  </Form.Item>
-                  <Form.Item name="range">
-                    <RangePicker showTime className="log-center-range" />
-                  </Form.Item>
-                  <Form.Item>
-                    <Button type="primary" htmlType="submit" icon={<LinkOutlined />} loading={correlationLoading}>
-                      追踪
-                    </Button>
-                  </Form.Item>
+                  <Space wrap style={{ width: '100%' }}>
+                    <Form.Item name="request_id" style={{ margin: 0 }}>
+                      <Input allowClear placeholder="request_id" style={{ width: 180 }} />
+                    </Form.Item>
+                    <Form.Item name="task_type" style={{ margin: 0 }}>
+                      <Segmented options={taskTypeOptions} />
+                    </Form.Item>
+                    <Form.Item name="task_id" style={{ margin: 0 }}>
+                      <Input allowClear placeholder="task_id" style={{ width: 300 }} />
+                    </Form.Item>
+                    <Form.Item name="project_id" style={{ margin: 0 }}>
+                      <Input allowClear placeholder="project_id" style={{ width: 150 }} />
+                    </Form.Item>
+                    <Form.Item name="limit" style={{ margin: 0 }}>
+                      <InputNumber min={1} max={500} style={{ width: 100 }} />
+                    </Form.Item>
+                    <Form.Item name="range" style={{ margin: 0 }}>
+                      <RangePicker showTime style={{ width: 300 }} />
+                    </Form.Item>
+                    <Form.Item style={{ margin: 0 }}>
+                      <Button type="primary" htmlType="submit" icon={<LinkOutlined />} loading={correlationLoading}>
+                        追踪
+                      </Button>
+                    </Form.Item>
+                  </Space>
                 </Form>
 
                 {correlationPayload ? (
-                  <div className="log-center-correlation-grid">
-                    <Card title={`操作日志 (${correlationPayload.audit_logs.length})`} size="small" bordered={false}>
+                  <div style={{ display: 'grid', gap: 16 }}>
+                    <Card title={`操作日志 (${correlationPayload.audit_logs.length})`} size="small">
                       <Table
                         rowKey="id"
                         size="middle"
-                        className="log-center-table"
                         pagination={false}
                         dataSource={correlationPayload.audit_logs}
                         columns={[
@@ -905,30 +936,29 @@ const LogCenterPage: React.FC = () => {
                             title: '时间',
                             dataIndex: 'created_at',
                             width: 170,
-                            render: (value: string) => <span className="log-center-code">{formatTime(value)}</span>,
+                            render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{formatTime(value)}</span>,
                           },
                           {
                             title: 'action',
                             dataIndex: 'action',
                             ellipsis: true,
-                            render: (value: string) => <span className="log-center-code">{value || '--'}</span>,
+                            render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>,
                           },
                           {
                             title: 'request_id',
                             dataIndex: 'request_id',
                             width: 220,
                             ellipsis: true,
-                            render: (value: string) => <span className="log-center-code">{value || '--'}</span>,
+                            render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>,
                           },
                         ]}
                       />
                     </Card>
 
-                    <Card title={`运行日志 (${correlationPayload.runtime_logs.length})`} size="small" bordered={false}>
+                    <Card title={`运行日志 (${correlationPayload.runtime_logs.length})`} size="small">
                       <Table
                         rowKey="id"
                         size="middle"
-                        className="log-center-table"
                         pagination={false}
                         dataSource={correlationPayload.runtime_logs}
                         columns={[
@@ -936,13 +966,13 @@ const LogCenterPage: React.FC = () => {
                             title: '时间',
                             dataIndex: 'occurred_at',
                             width: 170,
-                            render: (value: string) => <span className="log-center-code">{formatTime(value)}</span>,
+                            render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{formatTime(value)}</span>,
                           },
                           {
                             title: '事件',
                             dataIndex: 'event',
                             ellipsis: true,
-                            render: (value: string) => <span className="log-center-code">{value || '--'}</span>,
+                            render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>,
                           },
                           {
                             title: '消息',
@@ -956,12 +986,10 @@ const LogCenterPage: React.FC = () => {
                     <Card
                       title={`任务日志元数据 (${correlationPayload.task_log_previews.length})`}
                       size="small"
-                      bordered={false}
                     >
                       <Table
                         rowKey={(item) => `${item.task_type}-${item.task_id}-${item.stage}`}
                         size="middle"
-                        className="log-center-table"
                         pagination={false}
                         dataSource={correlationPayload.task_log_previews}
                         columns={[
@@ -969,14 +997,14 @@ const LogCenterPage: React.FC = () => {
                             title: 'task',
                             width: 260,
                             render: (_, item) => (
-                              <span className="log-center-code">{`${item.task_type} / ${item.task_id}`}</span>
+                              <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{`${item.task_type} / ${item.task_id}`}</span>
                             ),
                           },
                           {
                             title: 'stage',
                             dataIndex: 'stage',
                             width: 120,
-                            render: (value: string) => <span className="log-center-code">{value}</span>,
+                            render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value}</span>,
                           },
                           {
                             title: '行数',
@@ -987,7 +1015,7 @@ const LogCenterPage: React.FC = () => {
                             title: '更新时间',
                             dataIndex: 'updated_at',
                             width: 170,
-                            render: (value: string) => <span className="log-center-code">{formatTime(value)}</span>,
+                            render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{formatTime(value)}</span>,
                           },
                         ]}
                       />
@@ -996,7 +1024,7 @@ const LogCenterPage: React.FC = () => {
                 ) : (
                   <Alert type="info" showIcon message="请输入关联条件后点击追踪。" />
                 )}
-              </section>
+              </div>
             ),
           },
         ]}
@@ -1007,19 +1035,18 @@ const LogCenterPage: React.FC = () => {
         width={540}
         onClose={() => setLogDetail(null)}
         title={logDetail?.kind === 'audit' ? '操作日志详情' : '运行日志详情'}
-        className="log-center-detail-drawer"
       >
         {logDetail ? (
-          <Space direction="vertical" size={12} className="log-center-detail-content">
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Descriptions column={1} size="small" bordered>
               {logDetail.kind === 'audit' ? (
                 <>
                   <Descriptions.Item label="时间">{formatTime(logDetail.record.created_at)}</Descriptions.Item>
                   <Descriptions.Item label="动作">
-                    <span className="log-center-code">{logDetail.record.action || '--'}</span>
+                    <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{logDetail.record.action || '--'}</span>
                   </Descriptions.Item>
                   <Descriptions.Item label="资源">
-                    <span className="log-center-code">{`${logDetail.record.resource_type} / ${logDetail.record.resource_id}`}</span>
+                    <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{`${logDetail.record.resource_type} / ${logDetail.record.resource_id}`}</span>
                   </Descriptions.Item>
                   <Descriptions.Item label="request_id">
                     <Button
@@ -1030,7 +1057,7 @@ const LogCenterPage: React.FC = () => {
                         void copyText('request_id', logDetail.record.request_id);
                       }}
                     >
-                      <span className="log-center-code">{logDetail.record.request_id}</span>
+                      <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{logDetail.record.request_id}</span>
                     </Button>
                   </Descriptions.Item>
                   <Descriptions.Item label="结果">{logDetail.record.result || '--'}</Descriptions.Item>
@@ -1040,10 +1067,10 @@ const LogCenterPage: React.FC = () => {
                   <Descriptions.Item label="时间">{formatTime(logDetail.record.occurred_at)}</Descriptions.Item>
                   <Descriptions.Item label="级别">{logDetail.record.level || '--'}</Descriptions.Item>
                   <Descriptions.Item label="服务/模块">
-                    <span className="log-center-code">{`${logDetail.record.service || '--'} / ${logDetail.record.module || '--'}`}</span>
+                    <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{`${logDetail.record.service || '--'} / ${logDetail.record.module || '--'}`}</span>
                   </Descriptions.Item>
                   <Descriptions.Item label="事件">
-                    <span className="log-center-code">{logDetail.record.event || '--'}</span>
+                    <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{logDetail.record.event || '--'}</span>
                   </Descriptions.Item>
                   <Descriptions.Item label="request_id">
                     <Button
@@ -1054,7 +1081,7 @@ const LogCenterPage: React.FC = () => {
                         void copyText('request_id', logDetail.record.request_id);
                       }}
                     >
-                      <span className="log-center-code">{logDetail.record.request_id}</span>
+                      <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{logDetail.record.request_id}</span>
                     </Button>
                   </Descriptions.Item>
                   <Descriptions.Item label="消息">{logDetail.record.message || '--'}</Descriptions.Item>
@@ -1063,8 +1090,20 @@ const LogCenterPage: React.FC = () => {
             </Descriptions>
 
             <div>
-              <p className="log-center-json-title">detail_json</p>
-              <pre className="log-center-json-block">{formatJson(logDetail.record.detail_json)}</pre>
+              <p style={{ margin: '0 0 8px', color: '#999', fontSize: 13, fontWeight: 600 }}>detail_json</p>
+              <pre style={{
+                margin: 0,
+                border: '1px solid #d9d9d9',
+                borderRadius: 6,
+                padding: 12,
+                background: '#f5f5f5',
+                color: '#333',
+                fontSize: 13,
+                lineHeight: 1.55,
+                fontFamily: 'monospace',
+                overflow: 'auto',
+                maxHeight: 340
+              }}>{formatJson(logDetail.record.detail_json)}</pre>
             </div>
           </Space>
         ) : null}

@@ -3,14 +3,17 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ScanJobCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     project_id: uuid.UUID
     version_id: uuid.UUID
     scan_mode: str = Field(default="FULL", min_length=1, max_length=16)
-    rule_set_ids: list[str] = Field(default_factory=list)
+    rule_set_keys: list[str] = Field(default_factory=list)
+    rule_keys: list[str] = Field(default_factory=list)
     note: str | None = Field(default=None, max_length=1024)
     target_rule_id: str | None = Field(default=None, max_length=128)
 

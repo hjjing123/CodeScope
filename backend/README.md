@@ -78,7 +78,6 @@ External scan (four-stage orchestration):
 - Built-in assets:
   - `CODESCOPE_SCAN_EXTERNAL_POST_LABELS_CYPHER=./assets/scan/query/post_labels.cypher`
   - `CODESCOPE_SCAN_EXTERNAL_RULES_DIR=./assets/scan/rules`
-  - `CODESCOPE_SCAN_EXTERNAL_RULES_ALLOWLIST_FILE=./assets/scan/rules/allowlist.txt`
   - `CODESCOPE_SCAN_EXTERNAL_RULES_MAX_COUNT=0` (0 means no cap)
 - Neo4j runtime:
   - `CODESCOPE_SCAN_EXTERNAL_NEO4J_URI`

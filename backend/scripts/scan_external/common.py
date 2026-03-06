@@ -36,7 +36,7 @@ class StageContext:
     joern_export_script: Path | None
     post_labels_script: Path | None
     rules_dir: Path | None
-    rule_set_ids: list[str]
+    rule_keys: list[str]
     target_rule_id: str
     stage_timeout_seconds: int
 
@@ -57,21 +57,27 @@ class StageContext:
             _optional_env("CODESCOPE_SNAPSHOT_STORAGE_ROOT", "./storage/snapshots")
         )
 
-        joern_home = _resolve_optional_path(_optional_env("CODESCOPE_SCAN_JOERN_HOME", ""))
-        joern_bin = _resolve_optional_path(_optional_env("CODESCOPE_SCAN_JOERN_BIN", ""))
+        joern_home = _resolve_optional_path(
+            _optional_env("CODESCOPE_SCAN_JOERN_HOME", "")
+        )
+        joern_bin = _resolve_optional_path(
+            _optional_env("CODESCOPE_SCAN_JOERN_BIN", "")
+        )
         joern_export_script = _resolve_optional_path(
             _optional_env("CODESCOPE_SCAN_JOERN_EXPORT_SCRIPT", "")
         )
         post_labels_script = _resolve_optional_path(
             _optional_env("CODESCOPE_SCAN_EXTERNAL_POST_LABELS_FILE", "")
         )
-        rules_dir = _resolve_optional_path(_optional_env("CODESCOPE_SCAN_EXTERNAL_RULES_DIR", ""))
+        rules_dir = _resolve_optional_path(
+            _optional_env("CODESCOPE_SCAN_EXTERNAL_RULES_DIR", "")
+        )
 
         stage_timeout_seconds = _safe_int(
             _optional_env("CODESCOPE_SCAN_EXTERNAL_STAGE_TIMEOUT_SECONDS", "3600"),
             default=3600,
         )
-        rule_set_ids = _json_list_env("CODESCOPE_SCAN_RULE_SET_IDS")
+        rule_keys = _json_list_env("CODESCOPE_SCAN_RULE_KEYS")
         target_rule_id = _optional_env("CODESCOPE_SCAN_TARGET_RULE_ID", "")
 
         return cls(
@@ -87,7 +93,7 @@ class StageContext:
             joern_export_script=joern_export_script,
             post_labels_script=post_labels_script,
             rules_dir=rules_dir,
-            rule_set_ids=rule_set_ids,
+            rule_keys=rule_keys,
             target_rule_id=target_rule_id,
             stage_timeout_seconds=max(1, stage_timeout_seconds),
         )
@@ -107,8 +113,12 @@ class StageContext:
             "{snapshot_root}": str(self.snapshot_root),
             "{joern_home}": str(self.joern_home) if self.joern_home else "",
             "{joern_bin}": str(self.joern_bin) if self.joern_bin else "",
-            "{joern_export_script}": str(self.joern_export_script) if self.joern_export_script else "",
-            "{post_labels_script}": str(self.post_labels_script) if self.post_labels_script else "",
+            "{joern_export_script}": str(self.joern_export_script)
+            if self.joern_export_script
+            else "",
+            "{post_labels_script}": str(self.post_labels_script)
+            if self.post_labels_script
+            else "",
             "{rules_dir}": str(self.rules_dir) if self.rules_dir else "",
         }
         if extra:
@@ -188,7 +198,9 @@ def read_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
-        raise StageError("failed to parse json file", detail={"path": str(path), "error": str(exc)}) from exc
+        raise StageError(
+            "failed to parse json file", detail={"path": str(path), "error": str(exc)}
+        ) from exc
     if not isinstance(payload, dict):
         raise StageError("json file must be an object", detail={"path": str(path)})
     return payload

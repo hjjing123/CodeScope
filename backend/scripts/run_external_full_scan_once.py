@@ -24,7 +24,9 @@ def main() -> None:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
+    session_local = sessionmaker(
+        bind=engine, autocommit=False, autoflush=False, expire_on_commit=False
+    )
     Base.metadata.create_all(bind=engine)
 
     with session_local() as db:
@@ -41,11 +43,17 @@ def main() -> None:
             _configure_settings(settings=settings, temp_root=root)
 
             with TestClient(app) as client:
-                tokens = _login(client, email="full-smoke@example.com", password="Password123!")
+                tokens = _login(
+                    client, email="full-smoke@example.com", password="Password123!"
+                )
                 project_id = _create_project(client, tokens["access_token"])
                 version_id = _create_version(client, tokens["access_token"], project_id)
-                _create_source_snapshot(Path(settings.snapshot_storage_root), version_id)
-                job_id = _create_scan_job(client, tokens["access_token"], project_id, version_id)
+                _create_source_snapshot(
+                    Path(settings.snapshot_storage_root), version_id
+                )
+                job_id = _create_scan_job(
+                    client, tokens["access_token"], project_id, version_id
+                )
 
                 detail = client.get(
                     f"/api/v1/jobs/{job_id}",
@@ -113,24 +121,45 @@ def _configure_settings(*, settings, temp_root: Path) -> None:
     settings.scan_external_stage_post_labels_command = "builtin:post_labels"
     settings.scan_external_stage_rules_command = "builtin:rules"
 
-    settings.scan_external_joern_home = str(workspace_root / "infra" / "tools" / "joern-cli")
-    settings.scan_external_joern_bin = str(workspace_root / "infra" / "tools" / "joern-cli" / "joern.bat")
-    settings.scan_external_joern_export_script = str(backend_root / "assets" / "scan" / "joern" / "export_java_min.sc")
+    settings.scan_external_joern_home = str(
+        workspace_root / "infra" / "tools" / "joern-cli"
+    )
+    settings.scan_external_joern_bin = str(
+        workspace_root / "infra" / "tools" / "joern-cli" / "joern.bat"
+    )
+    settings.scan_external_joern_export_script = str(
+        backend_root / "assets" / "scan" / "joern" / "export_java_min.sc"
+    )
 
-    settings.scan_external_post_labels_cypher = str(backend_root / "assets" / "scan" / "query" / "post_labels.cypher")
+    settings.scan_external_post_labels_cypher = str(
+        backend_root / "assets" / "scan" / "query" / "post_labels.cypher"
+    )
     settings.scan_external_rules_dir = str(backend_root / "assets" / "scan" / "rules")
-    settings.scan_external_rules_allowlist_file = str(backend_root / "assets" / "scan" / "rules" / "allowlist.txt")
-    settings.scan_external_rules_max_count = int(os.getenv("CODESCOPE_SCAN_EXTERNAL_RULES_MAX_COUNT", "1"))
+    settings.scan_external_rules_max_count = int(
+        os.getenv("CODESCOPE_SCAN_EXTERNAL_RULES_MAX_COUNT", "1")
+    )
 
-    settings.scan_external_neo4j_uri = os.getenv("CODESCOPE_SCAN_EXTERNAL_NEO4J_URI", "bolt://127.0.0.1:7687")
-    settings.scan_external_neo4j_user = os.getenv("CODESCOPE_SCAN_EXTERNAL_NEO4J_USER", "neo4j")
-    settings.scan_external_neo4j_password = os.getenv("CODESCOPE_SCAN_EXTERNAL_NEO4J_PASSWORD", "")
-    settings.scan_external_neo4j_database = os.getenv("CODESCOPE_SCAN_EXTERNAL_NEO4J_DATABASE", "neo4j")
+    settings.scan_external_neo4j_uri = os.getenv(
+        "CODESCOPE_SCAN_EXTERNAL_NEO4J_URI", "bolt://127.0.0.1:7687"
+    )
+    settings.scan_external_neo4j_user = os.getenv(
+        "CODESCOPE_SCAN_EXTERNAL_NEO4J_USER", "neo4j"
+    )
+    settings.scan_external_neo4j_password = os.getenv(
+        "CODESCOPE_SCAN_EXTERNAL_NEO4J_PASSWORD", ""
+    )
+    settings.scan_external_neo4j_database = os.getenv(
+        "CODESCOPE_SCAN_EXTERNAL_NEO4J_DATABASE", "neo4j"
+    )
     settings.scan_external_neo4j_connect_retry = 30
     settings.scan_external_neo4j_connect_wait_seconds = 1
 
-    settings.scan_external_import_docker_image = os.getenv("CODESCOPE_SCAN_EXTERNAL_IMPORT_DOCKER_IMAGE", "neo4j:latest")
-    settings.scan_external_import_data_mount = os.getenv("CODESCOPE_SCAN_EXTERNAL_IMPORT_DATA_MOUNT", "data")
+    settings.scan_external_import_docker_image = os.getenv(
+        "CODESCOPE_SCAN_EXTERNAL_IMPORT_DOCKER_IMAGE", "neo4j:latest"
+    )
+    settings.scan_external_import_data_mount = os.getenv(
+        "CODESCOPE_SCAN_EXTERNAL_IMPORT_DATA_MOUNT", "data"
+    )
     settings.scan_external_import_database = settings.scan_external_neo4j_database
     settings.scan_external_import_clean_db = True
     settings.scan_external_import_preflight = True
@@ -146,7 +175,9 @@ def _configure_settings(*, settings, temp_root: Path) -> None:
 
 
 def _login(client: TestClient, *, email: str, password: str) -> dict[str, str]:
-    response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    response = client.post(
+        "/api/v1/auth/login", json={"email": email, "password": password}
+    )
     response.raise_for_status()
     return response.json()["data"]
 
@@ -188,7 +219,9 @@ def _create_source_snapshot(snapshot_root: Path, version_id: str) -> None:
     )
 
 
-def _create_scan_job(client: TestClient, access_token: str, project_id: str, version_id: str) -> str:
+def _create_scan_job(
+    client: TestClient, access_token: str, project_id: str, version_id: str
+) -> str:
     response = client.post(
         "/api/v1/scan-jobs",
         headers={"Authorization": f"Bearer {access_token}"},

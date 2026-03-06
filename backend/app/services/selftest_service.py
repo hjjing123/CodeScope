@@ -5,15 +5,12 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.core.errors import AppError
 from app.db.session import SessionLocal
 from app.models import (
-    Rule,
-    RuleVersion,
     SelfTestJob,
     SelfTestJobStage,
     SelfTestJobStatus,
@@ -23,6 +20,9 @@ from app.models import (
     utc_now,
 )
 from app.services.audit_service import append_audit_log
+from app.services.rule_file_service import (
+    resolve_rule_content as resolve_file_rule_content,
+)
 from app.services.rule_validation_service import validate_rule_content_for_publish
 from app.services.scan_external.neo4j_runner import split_cypher_statements
 from app.services.task_log_service import append_task_log
@@ -321,35 +321,11 @@ def _resolve_rule_content(
     rule_key = str(job.rule_key or "").strip()
     if not rule_key:
         raise AppError(code="RULE_NOT_FOUND", status_code=404, message="规则不存在")
-    rule = db.get(Rule, rule_key)
-    if rule is None:
-        raise AppError(code="RULE_NOT_FOUND", status_code=404, message="规则不存在")
-
-    target_version = job.rule_version
-    version: RuleVersion | None
-    if target_version is not None:
-        version = db.scalar(
-            select(RuleVersion).where(
-                RuleVersion.rule_key == rule_key,
-                RuleVersion.version == target_version,
-            )
-        )
-    else:
-        version = db.scalar(
-            select(RuleVersion)
-            .where(RuleVersion.rule_key == rule_key)
-            .order_by(RuleVersion.version.desc())
-        )
-
-    if version is None:
-        raise AppError(
-            code="RULE_DRAFT_NOT_FOUND", status_code=404, message="规则草稿不存在"
-        )
-
-    normalized = validate_rule_content_for_publish(
-        rule_key=rule_key, content=version.content
+    resolved_rule_key, resolved_version, normalized = resolve_file_rule_content(
+        rule_key=rule_key,
+        rule_version=job.rule_version,
     )
-    return rule_key, version.version, normalized
+    return resolved_rule_key, resolved_version, normalized
 
 
 def _resolve_target(db: Session, *, payload: dict[str, object]) -> dict[str, object]:

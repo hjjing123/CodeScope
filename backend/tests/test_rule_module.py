@@ -15,6 +15,9 @@ from app.models import SystemRole, User
 from app.security.password import hash_password
 
 
+pytestmark = pytest.mark.usefixtures("rule_file_settings")
+
+
 def _create_user(
     db,
     *,
@@ -139,6 +142,26 @@ def selftest_log_settings(tmp_path):
         shutil.rmtree(selftest_log_root, ignore_errors=True)
 
 
+@pytest.fixture()
+def rule_file_settings(tmp_path):
+    settings = get_settings()
+    old_rules_dir = settings.scan_external_rules_dir
+    old_rule_sets_dir = settings.scan_external_rule_sets_dir
+    rules_dir = tmp_path / "rules"
+    rule_sets_dir = tmp_path / "rule-sets"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    rule_sets_dir.mkdir(parents=True, exist_ok=True)
+    settings.scan_external_rules_dir = str(rules_dir)
+    settings.scan_external_rule_sets_dir = str(rule_sets_dir)
+    try:
+        yield
+    finally:
+        settings.scan_external_rules_dir = old_rules_dir
+        settings.scan_external_rule_sets_dir = old_rule_sets_dir
+        shutil.rmtree(rules_dir, ignore_errors=True)
+        shutil.rmtree(rule_sets_dir, ignore_errors=True)
+
+
 def test_rule_lifecycle_create_draft_publish_and_rollback(client, db_session):
     admin = _create_user(
         db_session,
@@ -250,20 +273,20 @@ def test_rule_set_create_and_bind_published_rules(client, db_session):
     create_set_resp = client.post(
         "/api/v1/rule-sets",
         headers=_auth_header(tokens["access_token"]),
-        json={"name": "default-java-rules", "description": "default set"},
+        json={
+            "key": "default-java-rules",
+            "name": "default-java-rules",
+            "description": "default set",
+        },
     )
     assert create_set_resp.status_code == 201
     rule_set_id = create_set_resp.json()["data"]["id"]
+    assert create_set_resp.json()["data"]["key"] == "default-java-rules"
 
     bind_resp = client.post(
         f"/api/v1/rule-sets/{rule_set_id}/rules",
         headers=_auth_header(tokens["access_token"]),
-        json={
-            "items": [
-                {"rule_key": "demo.ruleset.one", "rule_version": 1},
-                {"rule_key": "demo.ruleset.two", "rule_version": 1},
-            ]
-        },
+        json={"rule_keys": ["demo.ruleset.one", "demo.ruleset.two"]},
     )
     assert bind_resp.status_code == 200
     assert len(bind_resp.json()["data"]["items"]) == 2
@@ -273,6 +296,7 @@ def test_rule_set_create_and_bind_published_rules(client, db_session):
         headers=_auth_header(tokens["access_token"]),
     )
     assert detail_resp.status_code == 200
+    assert detail_resp.json()["data"]["key"] == "default-java-rules"
     assert len(detail_resp.json()["data"]["items"]) == 2
 
     list_resp = client.get(
@@ -317,7 +341,7 @@ def test_rule_publish_requires_valid_query_content(client, db_session):
     assert publish_resp.json()["error"]["code"] == "RULE_VALIDATION_FAILED"
 
 
-def test_rule_set_bind_rejects_same_rule_key_with_multiple_versions(client, db_session):
+def test_rule_set_bind_rejects_unknown_rule(client, db_session):
     admin = _create_user(
         db_session,
         email="rule-dup-bind-admin@example.com",
@@ -326,29 +350,17 @@ def test_rule_set_bind_rejects_same_rule_key_with_multiple_versions(client, db_s
     )
     tokens = _login(client, email=admin.email, password="Password123!")
 
-    _create_rule(client, tokens["access_token"], rule_key="demo.bind.dup.rule")
-    _publish_rule(client, tokens["access_token"], rule_key="demo.bind.dup.rule")
-    patch_resp = client.patch(
-        "/api/v1/rules/demo.bind.dup.rule/draft",
-        headers=_auth_header(tokens["access_token"]),
-        json={
-            "content": {
-                "query": "MATCH (n) RETURN n LIMIT 2",
-                "timeout_ms": 7000,
-            }
-        },
-    )
-    assert patch_resp.status_code == 200
-    publish_v2_resp = client.post(
-        "/api/v1/rules/demo.bind.dup.rule/publish",
-        headers=_auth_header(tokens["access_token"]),
-    )
-    assert publish_v2_resp.status_code == 200
+    _create_rule(client, tokens["access_token"], rule_key="demo.bind.known.rule")
+    _publish_rule(client, tokens["access_token"], rule_key="demo.bind.known.rule")
 
     create_set_resp = client.post(
         "/api/v1/rule-sets",
         headers=_auth_header(tokens["access_token"]),
-        json={"name": "dup-bind-rules", "description": "dup bind"},
+        json={
+            "key": "dup-bind-rules",
+            "name": "dup-bind-rules",
+            "description": "dup bind",
+        },
     )
     assert create_set_resp.status_code == 201
     rule_set_id = create_set_resp.json()["data"]["id"]
@@ -356,12 +368,7 @@ def test_rule_set_bind_rejects_same_rule_key_with_multiple_versions(client, db_s
     bind_resp = client.post(
         f"/api/v1/rule-sets/{rule_set_id}/rules",
         headers=_auth_header(tokens["access_token"]),
-        json={
-            "items": [
-                {"rule_key": "demo.bind.dup.rule", "rule_version": 1},
-                {"rule_key": "demo.bind.dup.rule", "rule_version": 2},
-            ]
-        },
+        json={"rule_keys": ["demo.bind.known.rule", "demo.bind.missing.rule"]},
     )
     assert bind_resp.status_code == 422
     assert bind_resp.json()["error"]["code"] == "INVALID_ARGUMENT"
@@ -510,7 +517,7 @@ def test_rule_stats_are_aggregated_async_after_scan(client, db_session):
             "project_id": project_id,
             "version_id": version_id,
             "scan_mode": "FULL",
-            "rule_set_ids": ["demo.stats.rule"],
+            "rule_keys": ["demo.stats.rule"],
         },
     )
     assert scan_resp.status_code == 202
