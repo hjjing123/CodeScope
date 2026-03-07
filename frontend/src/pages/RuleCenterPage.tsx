@@ -38,6 +38,7 @@ const RuleCenterPage: React.FC = () => {
   const [total, setTotal] = useState(0);
   const [enabledCount, setEnabledCount] = useState(0);
   const [disabledCount, setDisabledCount] = useState(0);
+  const [togglingRuleKeys, setTogglingRuleKeys] = useState<string[]>([]);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const navigate = useNavigate();
@@ -125,13 +126,34 @@ const RuleCenterPage: React.FC = () => {
   };
 
   const handleToggleRule = async (rule: Rule, checked: boolean) => {
+    if (togglingRuleKeys.includes(rule.rule_key)) {
+      return;
+    }
+    const prevEnabled = rule.enabled;
+    const shouldAdjustStats = prevEnabled !== checked;
+    setTogglingRuleKeys((prev) => [...prev, rule.rule_key]);
+    setData((prev) =>
+      prev.map((item) => (item.rule_key === rule.rule_key ? { ...item, enabled: checked } : item))
+    );
+    if (shouldAdjustStats) {
+      setEnabledCount((prev) => Math.max(prev + (checked ? 1 : -1), 0));
+      setDisabledCount((prev) => Math.max(prev + (checked ? -1 : 1), 0));
+    }
     try {
       await toggle(rule.rule_key, checked);
       message.success(`${checked ? '启用' : '禁用'}规则成功`);
-      fetchData(pagination.current, pagination.pageSize, filters);
-      fetchStats(); // Update stats
+      fetchStats();
     } catch {
+      setData((prev) =>
+        prev.map((item) => (item.rule_key === rule.rule_key ? { ...item, enabled: prevEnabled } : item))
+      );
+      if (shouldAdjustStats) {
+        setEnabledCount((prev) => Math.max(prev + (checked ? -1 : 1), 0));
+        setDisabledCount((prev) => Math.max(prev + (checked ? 1 : -1), 0));
+      }
       message.error('操作失败');
+    } finally {
+      setTogglingRuleKeys((prev) => prev.filter((key) => key !== rule.rule_key));
     }
   };
 
@@ -223,6 +245,7 @@ const RuleCenterPage: React.FC = () => {
         <RuleListTable
           loading={loading}
           dataSource={data}
+          togglingRuleKeys={togglingRuleKeys}
           pagination={{
             ...pagination,
             total,

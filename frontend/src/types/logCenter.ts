@@ -29,29 +29,6 @@ export interface AuditLogItem {
   created_at: string;
 }
 
-export interface RuntimeLogItem {
-  id: string;
-  occurred_at: string;
-  level: string;
-  service: string;
-  module: string;
-  event: string;
-  message: string;
-  request_id: string;
-  operator_user_id: string | null;
-  project_id: string | null;
-  resource_type: string | null;
-  resource_id: string | null;
-  task_type: string | null;
-  task_id: string | null;
-  status_code: number | null;
-  duration_ms: number | null;
-  error_code: string | null;
-  is_high_value: boolean;
-  detail_json: Record<string, unknown>;
-  created_at: string;
-}
-
 export interface TaskLogEntry {
   stage: string;
   lines: string[];
@@ -76,7 +53,6 @@ export interface TaskLogPreviewItem {
 
 export interface LogCorrelationPayload {
   audit_logs: AuditLogItem[];
-  runtime_logs: RuntimeLogItem[];
   task_log_previews: TaskLogPreviewItem[];
 }
 
@@ -97,28 +73,8 @@ export interface AuditLogQuery {
   page_size?: number;
 }
 
-export interface RuntimeLogQuery {
-  level?: string;
-  service?: string;
-  module?: string;
-  event?: string;
-  request_id?: string;
-  operator_user_id?: string;
-  project_id?: string;
-  task_type?: string;
-  task_id?: string;
-  status_code?: number;
-  error_code?: string;
-  keyword?: string;
-  high_value_only?: boolean;
-  start_time?: string;
-  end_time?: string;
-  page?: number;
-  page_size?: number;
-}
-
 export interface BatchDeleteLogsPayload {
-  log_kind?: 'OPERATION' | 'RUNTIME';
+  log_kind?: 'OPERATION';
   request_id?: string;
   task_type?: string;
   task_id?: string;

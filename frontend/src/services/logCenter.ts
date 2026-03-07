@@ -8,8 +8,6 @@ import type {
   CorrelationQuery,
   LogCorrelationPayload,
   PagedPayload,
-  RuntimeLogItem,
-  RuntimeLogQuery,
   TaskLogPayload,
   TaskType,
 } from '../types/logCenter';
@@ -26,10 +24,6 @@ const resolveTaskPath = (taskType: TaskType, taskId: string): string => {
 
 export const getAuditLogs = (params: AuditLogQuery) => {
   return request.get<any, ApiResponse<PagedPayload<AuditLogItem>>>('/audit-logs', { params });
-};
-
-export const getRuntimeLogs = (params: RuntimeLogQuery) => {
-  return request.get<any, ApiResponse<PagedPayload<RuntimeLogItem>>>('/runtime-logs', { params });
 };
 
 export const getLogCorrelation = (params: CorrelationQuery) => {

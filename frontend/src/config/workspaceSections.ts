@@ -223,16 +223,16 @@ export const workspaceSections: WorkspaceSection[] = [
     route: 'log-center',
     path: '/log-center',
     label: '日志中心',
-    tagline: '统一检索操作、运行与任务日志，快速复盘问题链路。',
+    tagline: '统一检索操作与任务日志，快速复盘问题链路。',
     badge: 'Trace Hub',
     intro:
       '日志中心用于调试和审计复盘。通过 request_id、task_id 和 project_id 组合检索，可以在同一页面快速还原系统行为与任务执行过程。',
     icon: FileSearchOutlined,
-    highlights: ['操作与运行日志统一检索', '任务阶段日志按类型聚合与下载', '关联追踪支持 request_id 全链路回放'],
+    highlights: ['操作日志快速检索与筛选', '任务阶段日志按类型聚合与下载', '关联追踪支持 request_id 全链路回放'],
     blocks: [
       {
         title: '系统日志检索区',
-        description: '支持操作日志与运行日志切换，按时间、动作、级别快速筛选。',
+        description: '默认展示操作日志，支持按时间、动作、结果快速筛选。',
         status: 'skeleton',
       },
       {

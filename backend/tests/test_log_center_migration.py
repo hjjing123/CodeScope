@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -34,8 +36,27 @@ class OpRecorder:
     def drop_column(self, table_name: str, column_name: str) -> None:
         self.dropped_columns.append((table_name, column_name))
 
+    def f(self, value: str) -> str:
+        return value
 
-def _load_migration_module():
+
+def _load_migration_module(monkeypatch):
+    class _Column:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    sqlalchemy_stub = types.ModuleType("sqlalchemy")
+    sqlalchemy_stub.Column = lambda name, *_args, **_kwargs: _Column(name)
+    sqlalchemy_stub.String = lambda *args, **kwargs: ("String", args, kwargs)
+    sqlalchemy_stub.Boolean = lambda *args, **kwargs: ("Boolean", args, kwargs)
+    sqlalchemy_stub.false = lambda: False
+
+    alembic_stub = types.ModuleType("alembic")
+    alembic_stub.op = types.SimpleNamespace(f=lambda value: value)
+
+    monkeypatch.setitem(sys.modules, "sqlalchemy", sqlalchemy_stub)
+    monkeypatch.setitem(sys.modules, "alembic", alembic_stub)
+
     migration_path = (
         Path(__file__).resolve().parents[1]
         / "alembic"
@@ -51,7 +72,7 @@ def _load_migration_module():
 
 
 def test_log_center_migration_upgrade_operations(monkeypatch):
-    module = _load_migration_module()
+    module = _load_migration_module(monkeypatch)
     recorder = OpRecorder()
     monkeypatch.setattr(module, "op", recorder)
 
@@ -74,7 +95,7 @@ def test_log_center_migration_upgrade_operations(monkeypatch):
 
 
 def test_log_center_migration_downgrade_operations(monkeypatch):
-    module = _load_migration_module()
+    module = _load_migration_module(monkeypatch)
     recorder = OpRecorder()
     monkeypatch.setattr(module, "op", recorder)
 

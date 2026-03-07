@@ -1005,9 +1005,8 @@ def test_log_endpoints_tolerate_non_object_detail_json(client, db_session):
     )
     assert correlation_resp.status_code == 200
     correlation_data = correlation_resp.json()["data"]
-    assert len(correlation_data["runtime_logs"]) >= 1
     assert len(correlation_data["audit_logs"]) >= 1
-    assert correlation_data["runtime_logs"][0]["detail_json"] == {}
+    assert "runtime_logs" not in correlation_data
     assert correlation_data["audit_logs"][0]["detail_json"] == {}
 
 
@@ -1152,7 +1151,7 @@ def test_runtime_http_logging_uses_high_value_strategy(client, db_session):
     assert failed_logs[0].detail_json.get("capture_reason") == "error"
 
 
-def test_log_center_delete_endpoints_and_audit(client, db_session):
+def test_log_center_delete_endpoints_without_audit(client, db_session):
     admin = _create_user(
         db_session,
         email="log-delete-admin@example.com",
@@ -1234,4 +1233,4 @@ def test_log_center_delete_endpoints_and_audit(client, db_session):
         params={"action": "log.delete"},
     )
     assert audit_resp.status_code == 200
-    assert audit_resp.json()["data"]["total"] >= 2
+    assert audit_resp.json()["data"]["total"] == 0

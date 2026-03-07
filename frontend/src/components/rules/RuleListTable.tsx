@@ -9,6 +9,7 @@ import type { Rule } from '../../types/rule';
 interface RuleListTableProps {
   loading: boolean;
   dataSource: Rule[];
+  togglingRuleKeys: string[];
   pagination: TablePaginationConfig;
   onChange: (
     pagination: TablePaginationConfig,
@@ -32,6 +33,7 @@ const severityColors: Record<string, string> = {
 const RuleListTable: React.FC<RuleListTableProps> = ({
   loading,
   dataSource,
+  togglingRuleKeys,
   pagination,
   onChange,
   onEdit,
@@ -79,6 +81,8 @@ const RuleListTable: React.FC<RuleListTableProps> = ({
       render: (enabled, record) => (
         <Switch
           checked={enabled}
+          loading={togglingRuleKeys.includes(record.rule_key)}
+          disabled={togglingRuleKeys.includes(record.rule_key)}
           onChange={(checked) => onToggle(record, checked)}
           checkedChildren="启用"
           unCheckedChildren="禁用"
@@ -127,7 +131,7 @@ const RuleListTable: React.FC<RuleListTableProps> = ({
       loading={loading}
       pagination={pagination}
       onChange={onChange}
-      rowKey="rule_key"
+      rowKey={(record, index) => `${record.rule_key}-${index ?? 0}`}
       size={size}
     />
   );

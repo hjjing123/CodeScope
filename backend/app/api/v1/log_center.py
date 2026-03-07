@@ -9,22 +9,18 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
-from app.core.response import get_request_id, success_response
+from app.core.response import success_response
 from app.db.session import get_db
 from app.dependencies.auth import require_platform_action
 from app.models import SystemLog, SystemLogKind, TaskLogIndex, TaskLogType
 from app.schemas.audit_log import AuditLogPayload
 from app.schemas.log_center import LogCenterCorrelationPayload, TaskLogPreviewPayload
-from app.schemas.runtime_log import RuntimeLogPayload
-from app.services.audit_service import append_audit_log
 from app.services.auth_service import AuthPrincipal
 from app.services.log_center_service import (
-    build_log_delete_outcome,
     build_log_keyword_condition,
     coalesce_json,
     normalize_action_groups,
     resolve_action_zh,
-    summarize_log_delete_scope,
     to_int_or_none,
 )
 from app.services.task_log_service import sync_task_log_index
@@ -44,31 +40,6 @@ class BatchDeleteLogsRequest(BaseModel):
     keyword: str | None = None
     action_group: str | None = None
     high_value_only: bool = False
-
-
-def _runtime_payload(item: SystemLog) -> RuntimeLogPayload:
-    return RuntimeLogPayload(
-        id=item.id,
-        occurred_at=item.occurred_at,
-        level=item.level or "",
-        service=item.service or "",
-        module=item.module or "",
-        event=item.event or "",
-        message=item.message or "",
-        request_id=item.request_id or "",
-        operator_user_id=item.operator_user_id,
-        project_id=item.project_id,
-        resource_type=item.resource_type,
-        resource_id=item.resource_id,
-        task_type=item.task_type,
-        task_id=item.task_id,
-        status_code=item.status_code,
-        duration_ms=item.duration_ms,
-        error_code=item.error_code,
-        is_high_value=bool(item.is_high_value),
-        detail_json=coalesce_json(item.detail_json),
-        created_at=item.created_at,
-    )
 
 
 def _audit_payload(item: SystemLog) -> AuditLogPayload:
@@ -170,29 +141,22 @@ def correlate_logs(
         )
 
     audit_conditions = []
-    runtime_conditions = []
     task_conditions = []
 
     if normalized_request_id:
         audit_conditions.append(SystemLog.request_id == normalized_request_id)
-        runtime_conditions.append(SystemLog.request_id == normalized_request_id)
     if project_id is not None:
         audit_conditions.append(SystemLog.project_id == project_id)
-        runtime_conditions.append(SystemLog.project_id == project_id)
         task_conditions.append(TaskLogIndex.project_id == project_id)
     if task_id is not None:
-        runtime_conditions.append(SystemLog.task_id == task_id)
         task_conditions.append(TaskLogIndex.task_id == task_id)
     if normalized_task_type:
-        runtime_conditions.append(SystemLog.task_type == normalized_task_type)
         task_conditions.append(TaskLogIndex.task_type == normalized_task_type)
     if start_time is not None:
         audit_conditions.append(SystemLog.occurred_at >= start_time)
-        runtime_conditions.append(SystemLog.occurred_at >= start_time)
         task_conditions.append(TaskLogIndex.updated_at >= start_time)
     if end_time is not None:
         audit_conditions.append(SystemLog.occurred_at <= end_time)
-        runtime_conditions.append(SystemLog.occurred_at <= end_time)
         task_conditions.append(TaskLogIndex.updated_at <= end_time)
 
     if task_id is not None and normalized_task_type:
@@ -212,17 +176,6 @@ def correlate_logs(
         audit_stmt.order_by(SystemLog.occurred_at.desc()).limit(limit)
     ).all()
 
-    runtime_stmt = select(SystemLog).where(
-        SystemLog.log_kind == SystemLogKind.RUNTIME.value
-    )
-    if runtime_conditions:
-        runtime_stmt = runtime_stmt.where(*runtime_conditions)
-    runtime_rows = db.scalars(
-        runtime_stmt.order_by(
-            SystemLog.occurred_at.desc(), SystemLog.created_at.desc()
-        ).limit(limit)
-    ).all()
-
     task_stmt = select(TaskLogIndex)
     if task_conditions:
         task_stmt = task_stmt.where(*task_conditions)
@@ -232,7 +185,6 @@ def correlate_logs(
 
     payload = LogCenterCorrelationPayload(
         audit_logs=[_audit_payload(item) for item in audit_rows],
-        runtime_logs=[_runtime_payload(item) for item in runtime_rows],
         task_log_previews=[
             TaskLogPreviewPayload(
                 task_type=item.task_type or "",
@@ -253,33 +205,12 @@ def delete_single_log(
     request: Request,
     log_id: uuid.UUID,
     db: Session = Depends(get_db),
-    principal: AuthPrincipal = Depends(require_platform_action("system:auditlog")),
+    _principal: AuthPrincipal = Depends(require_platform_action("system:auditlog")),
 ):
     target = db.get(SystemLog, log_id)
     if target is None:
         raise AppError(code="NOT_FOUND", status_code=404, message="日志不存在")
-    target_kind = target.log_kind
-    target_request_id = target.request_id
-    target_project_id = target.project_id
     db.delete(target)
-    append_audit_log(
-        db,
-        request_id=get_request_id(request),
-        operator_user_id=principal.user.id,
-        action="log.delete",
-        resource_type="SYSTEM_LOG",
-        resource_id=str(log_id),
-        project_id=target_project_id,
-        detail_json={
-            "context": {
-                "mode": "single",
-                "target_log_kind": target_kind,
-                "target_request_id": target_request_id,
-            },
-            "change": {"deleted_ids": [str(log_id)]},
-            "outcome": build_log_delete_outcome(deleted_count=1),
-        },
-    )
     db.commit()
     return success_response(request, data={"deleted": True, "deleted_count": 1})
 
@@ -289,7 +220,7 @@ def batch_delete_logs(
     request: Request,
     payload: BatchDeleteLogsRequest,
     db: Session = Depends(get_db),
-    principal: AuthPrincipal = Depends(require_platform_action("system:auditlog")),
+    _principal: AuthPrincipal = Depends(require_platform_action("system:auditlog")),
 ):
     conditions = _build_delete_conditions(
         log_kind=payload.log_kind,
@@ -310,42 +241,11 @@ def batch_delete_logs(
             message="批量删除必须至少提供一个筛选条件",
         )
 
-    rows_stmt = select(SystemLog.id, SystemLog.project_id).where(*conditions)
+    rows_stmt = select(SystemLog.id).where(*conditions)
     rows = db.execute(rows_stmt).all()
     target_ids = [row.id for row in rows]
     if not target_ids:
         return success_response(request, data={"deleted_count": 0})
-    project_id_value = next((row.project_id for row in rows if row.project_id is not None), None)
     db.execute(delete(SystemLog).where(SystemLog.id.in_(target_ids)))
-
-    groups = normalize_action_groups(payload.action_group)
-    append_audit_log(
-        db,
-        request_id=get_request_id(request),
-        operator_user_id=principal.user.id,
-        action="log.delete",
-        resource_type="SYSTEM_LOG",
-        resource_id=f"batch:{len(target_ids)}",
-        project_id=project_id_value,
-        detail_json={
-            "context": {
-                "mode": "batch",
-                "scope": summarize_log_delete_scope(
-                    log_kind=(payload.log_kind or "").strip().upper() or None,
-                    action_groups=groups,
-                    high_value_only=bool(payload.high_value_only),
-                    keyword=payload.keyword,
-                    request_id=payload.request_id,
-                    task_type=payload.task_type,
-                    task_id=str(payload.task_id) if payload.task_id is not None else None,
-                    project_id=str(payload.project_id)
-                    if payload.project_id is not None
-                    else None,
-                ),
-            },
-            "change": {"deleted_count_before_audit": len(target_ids)},
-            "outcome": build_log_delete_outcome(deleted_count=len(target_ids)),
-        },
-    )
     db.commit()
     return success_response(request, data={"deleted_count": len(target_ids)})

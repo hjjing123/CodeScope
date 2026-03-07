@@ -5,7 +5,6 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from app.schemas.audit_log import AuditLogPayload
-from app.schemas.runtime_log import RuntimeLogPayload
 
 
 class TaskLogPreviewPayload(BaseModel):
@@ -19,5 +18,4 @@ class TaskLogPreviewPayload(BaseModel):
 
 class LogCenterCorrelationPayload(BaseModel):
     audit_logs: list[AuditLogPayload]
-    runtime_logs: list[RuntimeLogPayload]
     task_log_previews: list[TaskLogPreviewPayload]
