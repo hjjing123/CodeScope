@@ -85,7 +85,7 @@ def _seed_user(db: Session) -> None:
         email="full-smoke@example.com",
         password_hash=hash_password("Password123!"),
         display_name="full-smoke",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
         is_active=True,
         must_change_password=False,
     )
@@ -125,7 +125,7 @@ def _configure_settings(*, settings, temp_root: Path) -> None:
         workspace_root / "infra" / "tools" / "joern-cli"
     )
     settings.scan_external_joern_bin = str(
-        workspace_root / "infra" / "tools" / "joern-cli" / "joern.bat"
+        workspace_root / "infra" / "tools" / "joern-cli" / "joern"
     )
     settings.scan_external_joern_export_script = str(
         backend_root / "assets" / "scan" / "joern" / "export_java_min.sc"
@@ -169,7 +169,7 @@ def _configure_settings(*, settings, temp_root: Path) -> None:
     settings.scan_external_neo4j_runtime_restart_mode = "docker"
     settings.scan_external_neo4j_runtime_container_name = os.getenv(
         "CODESCOPE_SCAN_EXTERNAL_NEO4J_CONTAINER_NAME",
-        "neo4j",
+        "CodeScope_neo4j",
     )
     settings.scan_external_neo4j_runtime_restart_wait_seconds = 8
 

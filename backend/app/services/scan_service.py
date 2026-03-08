@@ -132,7 +132,7 @@ def normalize_scan_mode(value: str) -> str:
         raise AppError(
             code="INVALID_ARGUMENT",
             status_code=422,
-            message="scan_mode 仅支持 FULL/VERIFY/FAST",
+            message="scan_mode 仅支持 FULL/FAST/VERIFY",
             detail={"allowed_values": sorted(valid)},
         )
     return normalized
@@ -794,7 +794,7 @@ def _run_stub_scan(*, job: Job) -> ScanExecutionResult:
     findings: list[dict[str, str]] = []
     if scan_mode == ScanMode.VERIFY.value:
         rule_key = target_rule_id or (
-            rule_keys[0] if rule_keys else "verify.default.rule"
+            rule_keys[0] if rule_keys else "focused.snapshot.check"
         )
         findings.append({"rule_key": rule_key, "severity": FindingSeverity.MED.value})
     elif scan_mode == ScanMode.FAST.value:

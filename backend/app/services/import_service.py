@@ -235,7 +235,6 @@ def _create_version_from_source(
     note: str | None,
     git_repo_url: str | None,
     git_ref: str | None,
-    baseline_of_version_id: uuid.UUID | None = None,
 ) -> Version:
     version_id = uuid.uuid4()
     object_key = persist_snapshot_from_directory(
@@ -249,7 +248,6 @@ def _create_version_from_source(
         note=note,
         git_repo_url=git_repo_url,
         git_ref=git_ref,
-        baseline_of_version_id=baseline_of_version_id,
         snapshot_object_key=object_key,
         status=VersionStatus.READY.value,
     )

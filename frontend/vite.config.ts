@@ -6,6 +6,11 @@ const hmrClientPort = Number(process.env.VITE_HMR_CLIENT_PORT || 0)
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    setupFiles: './src/test/setup.ts',
+    css: true,
+  },
   server: {
     hmr: hmrClientPort > 0 ? { clientPort: hmrClientPort } : undefined,
     proxy: {

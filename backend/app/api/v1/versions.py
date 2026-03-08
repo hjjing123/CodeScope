@@ -16,7 +16,6 @@ from app.dependencies.auth import (
 )
 from app.models import Project, Version, VersionSource, VersionStatus
 from app.schemas.version import (
-    VersionBaselinePayload,
     VersionCreateRequest,
     VersionFilePayload,
     VersionListPayload,
@@ -43,9 +42,9 @@ def _get_existing_version(
 ) -> Version:
     version = db.get(Version, version_id)
     if version is None:
-        raise AppError(code="NOT_FOUND", status_code=404, message="版本不存在")
+        raise AppError(code="NOT_FOUND", status_code=404, message="代码快照不存在")
     if not allow_deleted and version.status == VersionStatus.DELETED.value:
-        raise AppError(code="NOT_FOUND", status_code=404, message="版本不存在")
+        raise AppError(code="NOT_FOUND", status_code=404, message="代码快照不存在")
     return version
 
 
@@ -55,15 +54,13 @@ def _validate_version_source(source: str) -> str:
         raise AppError(
             code="INVALID_ARGUMENT",
             status_code=422,
-            message="版本来源值不合法",
+            message="代码来源值不合法",
             detail={"allowed_sources": sorted(valid)},
         )
     return source
 
 
-def _version_payload(
-    *, version: Version, baseline_version_id: uuid.UUID | None
-) -> VersionPayload:
+def _version_payload(*, version: Version) -> VersionPayload:
     return VersionPayload(
         id=version.id,
         project_id=version.project_id,
@@ -73,10 +70,8 @@ def _version_payload(
         tag=version.tag,
         git_repo_url=version.git_repo_url,
         git_ref=version.git_ref,
-        baseline_of_version_id=version.baseline_of_version_id,
         snapshot_object_key=version.snapshot_object_key,
         status=version.status,
-        is_baseline=version.id == baseline_version_id,
         created_at=version.created_at,
         updated_at=version.updated_at,
     )
@@ -112,14 +107,8 @@ def list_versions(
     ).all()
 
     data = VersionListPayload(
-        items=[
-            _version_payload(
-                version=item, baseline_version_id=project.baseline_version_id
-            )
-            for item in rows
-        ],
+        items=[_version_payload(version=item) for item in rows],
         total=total,
-        baseline_version_id=project.baseline_version_id,
     )
     return success_response(request, data=data.model_dump())
 
@@ -137,20 +126,12 @@ def create_version(
         raise AppError(code="NOT_FOUND", status_code=404, message="项目不存在")
 
     source = _validate_version_source(payload.source)
-    if payload.baseline_of_version_id is not None:
-        baseline_version = db.get(Version, payload.baseline_of_version_id)
-        if baseline_version is None or baseline_version.project_id != project_id:
-            raise AppError(
-                code="INVALID_ARGUMENT",
-                status_code=422,
-                message="baseline_of_version_id 不属于当前项目",
-            )
 
     if payload.snapshot_object_key is None or not payload.snapshot_object_key.strip():
         raise AppError(
             code="INVALID_ARGUMENT",
             status_code=422,
-            message="创建版本时必须提供 snapshot_object_key",
+            message="创建代码快照时必须提供 snapshot_object_key",
         )
 
     version_name = payload.name.strip()
@@ -158,7 +139,7 @@ def create_version(
         raise AppError(
             code="INVALID_ARGUMENT",
             status_code=422,
-            message="版本名称不能为空",
+            message="代码快照名称不能为空",
         )
 
     version_id = uuid.uuid4()
@@ -176,7 +157,6 @@ def create_version(
         tag=payload.tag,
         git_repo_url=payload.git_repo_url,
         git_ref=payload.git_ref,
-        baseline_of_version_id=payload.baseline_of_version_id,
         snapshot_object_key=snapshot_object_key,
         status=VersionStatus.READY.value,
     )
@@ -203,9 +183,7 @@ def create_version(
     db.refresh(project)
     return success_response(
         request,
-        data=_version_payload(
-            version=version, baseline_version_id=project.baseline_version_id
-        ).model_dump(),
+        data=_version_payload(version=version).model_dump(),
         status_code=201,
     )
 
@@ -224,64 +202,10 @@ def get_version(
     ),
 ):
     version = _get_existing_version(db=db, version_id=version_id)
-    project = db.get(Project, version.project_id)
-    baseline_version_id = project.baseline_version_id if project is not None else None
     return success_response(
         request,
-        data=_version_payload(
-            version=version, baseline_version_id=baseline_version_id
-        ).model_dump(),
+        data=_version_payload(version=version).model_dump(),
     )
-
-
-@router.post("/api/v1/versions/{version_id}/baseline")
-def set_baseline(
-    request: Request,
-    version_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    principal: AuthPrincipal = Depends(
-        require_project_resource_action(
-            "version:baseline",
-            resource_type="VERSION",
-            resource_id_param="version_id",
-        )
-    ),
-):
-    version = _get_existing_version(db=db, version_id=version_id)
-    if version.status != VersionStatus.READY.value:
-        raise AppError(
-            code="VERSION_NOT_READY", status_code=409, message="仅 READY 版本可设为基线"
-        )
-
-    project = db.get(Project, version.project_id)
-    if project is None:
-        raise AppError(code="NOT_FOUND", status_code=404, message="项目不存在")
-
-    previous_baseline = project.baseline_version_id
-    project.baseline_version_id = version.id
-    append_audit_log(
-        db,
-        request_id=get_request_id(request),
-        operator_user_id=principal.user.id,
-        action="version.baseline.set",
-        resource_type="VERSION",
-        resource_id=str(version.id),
-        project_id=project.id,
-        detail_json={
-            "context": {"project_id": str(project.id)},
-            "change": {
-                "before_baseline_version_id": str(previous_baseline)
-                if previous_baseline is not None
-                else None,
-                "baseline_version_id": str(version.id),
-            },
-            "outcome": {"status": "SUCCEEDED"},
-        },
-    )
-    db.commit()
-
-    data = VersionBaselinePayload(project_id=project.id, baseline_version_id=version.id)
-    return success_response(request, data=data.model_dump())
 
 
 @router.post("/api/v1/versions/{version_id}/archive")
@@ -304,8 +228,6 @@ def archive_version(
         raise AppError(code="NOT_FOUND", status_code=404, message="项目不存在")
 
     version.status = VersionStatus.ARCHIVED.value
-    if project.baseline_version_id == version.id:
-        project.baseline_version_id = None
     refresh_project_status(db, project=project)
 
     append_audit_log(
@@ -337,8 +259,6 @@ def delete_version(
     version = _get_existing_version(db=db, version_id=version_id)
 
     project = db.get(Project, version.project_id)
-    if project is not None and project.baseline_version_id == version.id:
-        project.baseline_version_id = None
     version.status = VersionStatus.DELETED.value
     if project is not None:
         refresh_project_status(db, project=project)

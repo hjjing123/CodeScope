@@ -59,11 +59,13 @@ class Settings(BaseSettings):
     scan_external_reports_dir: str = (
         "./storage/workspaces/scans/{job_id}/external/reports"
     )
+    scan_external_runtime_profile: str = "wsl"
+    scan_external_container_compat_mode: bool = False
 
     scan_external_runner_command: str = ""
     scan_external_timeout_seconds: int = 3600
-    scan_external_joern_home: str = "../infra/tools/joern-cli"
-    scan_external_joern_bin: str = "../infra/tools/joern-cli/joern.bat"
+    scan_external_joern_home: str = "/opt/joern"
+    scan_external_joern_bin: str = "/opt/joern/joern"
     scan_external_joern_export_script: str = "./assets/scan/joern/export_java_min.sc"
 
     scan_external_stage_joern_command: str = "builtin:joern"
@@ -80,6 +82,7 @@ class Settings(BaseSettings):
     scan_external_rules_dir: str = "./assets/scan/rules"
     scan_external_rule_sets_dir: str = "./assets/scan/rule_sets"
     scan_external_rules_max_count: int = 0
+    scan_external_rules_failure_mode: str = "permissive"
 
     scan_external_neo4j_uri: str = "bolt://127.0.0.1:7687"
     scan_external_neo4j_user: str = "neo4j"
@@ -89,7 +92,8 @@ class Settings(BaseSettings):
     scan_external_neo4j_connect_wait_seconds: int = 2
 
     scan_external_import_docker_image: str = "neo4j:5.26"
-    scan_external_import_data_mount: str = "data"
+    scan_external_import_data_mount: str = "/var/lib/neo4j/data"
+    scan_external_import_csv_host_path: str = ""
     scan_external_import_database: str = "neo4j"
     scan_external_import_id_type: str = "string"
     scan_external_import_array_delimiter: str = "\\001"
@@ -97,9 +101,10 @@ class Settings(BaseSettings):
     scan_external_import_multiline_fields: bool = True
     scan_external_import_multiline_fields_format: str = ""
     scan_external_import_preflight: bool = True
+    scan_external_import_preflight_check_docker: bool = True
 
     scan_external_neo4j_runtime_restart_mode: str = "none"
-    scan_external_neo4j_runtime_container_name: str = "neo4j"
+    scan_external_neo4j_runtime_container_name: str = "CodeScope_neo4j"
     scan_external_neo4j_runtime_restart_wait_seconds: int = 10
 
     celery_broker_url: str = "redis://127.0.0.1:6379/0"

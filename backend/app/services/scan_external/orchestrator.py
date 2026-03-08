@@ -91,6 +91,15 @@ def run_external_scan(
     audit_summary = _load_external_audit_summary(reports_dir=context.reports_dir, round_number=round_number)
     audit_cases = sum(_safe_int(item.get("cases", 0)) for item in audit_summary)
 
+    execution_summary_raw = (
+        round_report.get("execution_summary")
+        if isinstance(round_report.get("execution_summary"), dict)
+        else {}
+    )
+    failed_rule_keys = _normalize_failed_rule_keys(
+        execution_summary_raw.get("failed_rule_keys")
+    )
+
     summary_extra: dict[str, object] = {
         "external_round": round_number,
         "total_rules": _safe_int(rule_summary_raw.get("total_rules"), default=len(rule_rows)),
@@ -102,6 +111,16 @@ def run_external_scan(
         "total_rows": _safe_int(rule_summary_raw.get("total_rows"), default=sum(rule_rows.values())),
         "exported_rule_count": len(audit_summary),
         "exported_case_count": audit_cases,
+        "succeeded_rules": _safe_int(
+            execution_summary_raw.get("succeeded_rules"),
+            default=max(0, len(rule_rows) - len(_normalize_partial_failures(round_report.get("partial_failures")))),
+        ),
+        "failed_rules": _safe_int(
+            execution_summary_raw.get("failed_rules"),
+            default=len(_normalize_partial_failures(round_report.get("partial_failures"))),
+        ),
+        "failed_rule_keys": failed_rule_keys,
+        "rules_failure_mode": str(execution_summary_raw.get("failure_mode") or "permissive"),
         "partial_failures": _normalize_partial_failures(round_report.get("partial_failures")),
         "external_stages": [item.to_summary() for item in stage_results],
         "reports_dir": str(context.reports_dir),
@@ -357,6 +376,25 @@ def _normalize_partial_failures(value: object) -> list[dict[str, object]]:
         if not isinstance(item, dict):
             continue
         normalized.append(dict(item))
+    return normalized
+
+
+def _normalize_failed_rule_keys(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        key = item.strip()
+        if not key:
+            continue
+        marker = key.lower()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        normalized.append(key)
     return normalized
 
 

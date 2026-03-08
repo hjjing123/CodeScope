@@ -1,6 +1,65 @@
 from __future__ import annotations
 
+import sys
+from types import ModuleType
+from typing import TYPE_CHECKING
+
 import pytest
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
+
+
+def _install_overlapped_stub() -> None:
+    module = ModuleType("_overlapped")
+    module.INVALID_HANDLE_VALUE = -1
+    module.ERROR_IO_PENDING = 997
+    module.ERROR_NETNAME_DELETED = 64
+    module.ERROR_OPERATION_ABORTED = 995
+    module.ERROR_PIPE_BUSY = 231
+    module.SO_UPDATE_ACCEPT_CONTEXT = 0x700B
+    module.SO_UPDATE_CONNECT_CONTEXT = 0x7010
+
+    class Overlapped:
+        def __init__(self, *_args, **_kwargs):
+            self.pending = False
+            self.address = 0
+
+        def getresult(self):
+            raise OSError("overlapped operations are unavailable")
+
+        def cancel(self):
+            return None
+
+    def _unavailable(*_args, **_kwargs):
+        raise OSError("overlapped operations are unavailable")
+
+    module.Overlapped = Overlapped
+    module.CreateIoCompletionPort = _unavailable
+    module.GetQueuedCompletionStatus = _unavailable
+    module.RegisterWaitWithQueue = _unavailable
+    module.UnregisterWait = lambda *_args, **_kwargs: None
+    module.UnregisterWaitEx = lambda *_args, **_kwargs: None
+    module.CreateEvent = lambda *_args, **_kwargs: 0
+    module.ConnectPipe = _unavailable
+    module.WSAConnect = _unavailable
+    module.BindLocal = _unavailable
+    sys.modules["_overlapped"] = module
+
+
+def _ensure_windows_asyncio_importable() -> None:
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import _overlapped  # noqa: F401
+    except OSError:
+        _install_overlapped_stub()
+    import asyncio
+
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+_ensure_windows_asyncio_importable()
 
 
 def _is_asyncio_init_error(exc: BaseException) -> bool:
@@ -56,7 +115,6 @@ def db_session():
 @pytest.fixture()
 def client(db_session, celery_eager_mode):
     try:
-        from fastapi import Request
         from fastapi.testclient import TestClient
         from app.db.session import get_db
         from app.main import app

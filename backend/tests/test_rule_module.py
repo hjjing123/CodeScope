@@ -255,13 +255,13 @@ def test_rule_list_supports_keyword_search(client, db_session):
 
 
 def test_rule_write_requires_admin_scope(client, db_session):
-    developer = _create_user(
+    user = _create_user(
         db_session,
-        email="rule-developer@example.com",
+        email="rule-user@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
-    tokens = _login(client, email=developer.email, password="Password123!")
+    tokens = _login(client, email=user.email, password="Password123!")
 
     denied_resp = client.post(
         "/api/v1/rules",

@@ -1,16 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { Table, Button, Space, Tag, Modal, message, Tooltip } from 'antd';
+import { Table, Button, Space, Tag, Modal, message, Tooltip, Form, Select, Input } from 'antd';
 import {
   PlusOutlined,
   CodeOutlined,
   DeleteOutlined,
-  FlagOutlined,
   SyncOutlined,
   ExclamationCircleOutlined,
+  RadarChartOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { getVersions, deleteVersion, setBaselineVersion } from '../../services/projectVersion';
-import type { Version } from '../../types/projectVersion';
+import { useNavigate } from 'react-router-dom';
+import { getVersions, deleteVersion, triggerGitSync, triggerScanJob } from '../../services/projectVersion';
+import type { ScanMode, Version } from '../../types/projectVersion';
 import ImportWizard from './ImportWizard';
 import CodeBrowser from './CodeBrowser';
 
@@ -25,7 +26,14 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
   return fallback;
 };
 
+const scanModeOptions: { value: ScanMode; label: string }[] = [
+  { value: 'FULL', label: '全量扫描' },
+  { value: 'FAST', label: '快速扫描' },
+  { value: 'VERIFY', label: '快速确认扫描（非修复闭环）' },
+];
+
 const VersionList: React.FC<VersionListProps> = ({ projectId }) => {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<Version[]>([]);
   const [total, setTotal] = useState(0);
@@ -33,6 +41,11 @@ const VersionList: React.FC<VersionListProps> = ({ projectId }) => {
   const [pageSize, setPageSize] = useState(10);
 
   const [importVisible, setImportVisible] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [scanSubmitting, setScanSubmitting] = useState(false);
+  const [scanModalVisible, setScanModalVisible] = useState(false);
+  const [scanTargetVersion, setScanTargetVersion] = useState<Version | null>(null);
+  const [scanForm] = Form.useForm<{ scan_mode: ScanMode; note?: string }>();
 
   const [codeBrowserVisible, setCodeBrowserVisible] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<Version | null>(null);
@@ -44,7 +57,7 @@ const VersionList: React.FC<VersionListProps> = ({ projectId }) => {
       setData(res.data.items);
       setTotal(res.data.total);
     } catch (error) {
-      message.error(`Failed to load versions: ${getErrorMessage(error, 'Unknown error')}`);
+      message.error(`加载代码快照失败：${getErrorMessage(error, '未知错误')}`);
     } finally {
       setLoading(false);
     }
@@ -60,7 +73,7 @@ const VersionList: React.FC<VersionListProps> = ({ projectId }) => {
     Modal.confirm({
       title: '确认删除',
       icon: <ExclamationCircleOutlined />,
-      content: `确定要删除版本 "${version.name}" 吗？此操作不可恢复。`,
+      content: `确定要删除代码快照 "${version.name}" 吗？此操作不可恢复。`,
       onOk: async () => {
         try {
           await deleteVersion(version.id);
@@ -73,27 +86,56 @@ const VersionList: React.FC<VersionListProps> = ({ projectId }) => {
     });
   };
 
-  const handleSetBaseline = async (version: Version) => {
+  const handleGitSync = async () => {
     try {
-      await setBaselineVersion(version.id);
-      message.success(`已将 "${version.name}" 设为基线版本`);
+      setSyncing(true);
+      await triggerGitSync(projectId);
+      message.success('Git 同步任务已触发');
       void fetchVersions(currentPage, pageSize);
     } catch (error) {
-      message.error(`设置基线失败: ${getErrorMessage(error, '未知错误')}`);
+      message.error(`Git 同步失败: ${getErrorMessage(error, '未知错误')}`);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const openScanModal = (version: Version) => {
+    setScanTargetVersion(version);
+    scanForm.setFieldsValue({ scan_mode: 'FULL', note: '' });
+    setScanModalVisible(true);
+  };
+
+  const handleStartScan = async () => {
+    if (!scanTargetVersion) {
+      return;
+    }
+    const values = await scanForm.validateFields();
+    try {
+      setScanSubmitting(true);
+      const response = await triggerScanJob({
+        project_id: projectId,
+        version_id: scanTargetVersion.id,
+        scan_mode: values.scan_mode,
+        note: values.note?.trim() || undefined,
+      });
+      const jobId = response.data.job_id;
+      message.success(`扫描任务已创建：${jobId}`);
+      setScanModalVisible(false);
+      setScanTargetVersion(null);
+      navigate(`/log-center?task_type=SCAN&task_id=${jobId}&tail=300`);
+    } catch (error) {
+      message.error(`发起扫描失败：${getErrorMessage(error, '未知错误')}`);
+    } finally {
+      setScanSubmitting(false);
     }
   };
 
   const columns: ColumnsType<Version> = [
     {
-      title: '版本名称',
+      title: '代码快照名称',
       dataIndex: 'name',
       key: 'name',
-      render: (text, record) => (
-        <Space>
-          <span style={{ fontWeight: 500 }}>{text}</span>
-          {record.is_baseline && <Tag color="green">基线</Tag>}
-        </Space>
-      ),
+      render: (text) => <span style={{ fontWeight: 500 }}>{text}</span>,
     },
     {
       title: '来源',
@@ -139,22 +181,19 @@ const VersionList: React.FC<VersionListProps> = ({ projectId }) => {
               }}
             />
           </Tooltip>
-
-          <Tooltip title="设为基线">
+          <Tooltip title="使用代码快照发起扫描">
             <Button
-              icon={<FlagOutlined />}
+              icon={<RadarChartOutlined />}
               type="text"
-              disabled={record.is_baseline}
-              onClick={() => handleSetBaseline(record)}
+              onClick={() => openScanModal(record)}
             />
           </Tooltip>
 
-          <Tooltip title="删除版本">
+          <Tooltip title="删除代码快照">
             <Button
               icon={<DeleteOutlined />}
               type="text"
               danger
-              disabled={record.is_baseline}
               onClick={() => handleDelete(record)}
             />
           </Tooltip>
@@ -165,13 +204,17 @@ const VersionList: React.FC<VersionListProps> = ({ projectId }) => {
 
   return (
     <div>
+      <h3 style={{ margin: '0 0 16px' }}>代码快照列表</h3>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
         <Button
           type="primary"
           icon={<PlusOutlined />}
           onClick={() => setImportVisible(true)}
         >
-          导入新版本
+          导入代码
+        </Button>
+        <Button icon={<SyncOutlined />} onClick={() => void handleGitSync()} loading={syncing}>
+          Git 同步
         </Button>
         <Button
           icon={<SyncOutlined />}
@@ -202,7 +245,7 @@ const VersionList: React.FC<VersionListProps> = ({ projectId }) => {
         onCancel={() => setImportVisible(false)}
         onSuccess={() => {
           setImportVisible(false);
-          fetchVersions(1, pageSize); // Refresh list
+          fetchVersions(1, pageSize);
         }}
         projectId={projectId}
       />
@@ -218,6 +261,31 @@ const VersionList: React.FC<VersionListProps> = ({ projectId }) => {
           versionName={selectedVersion.name}
         />
       )}
+      <Modal
+        title={scanTargetVersion ? `发起扫描：${scanTargetVersion.name}` : '发起扫描'}
+        open={scanModalVisible}
+        onCancel={() => {
+          setScanModalVisible(false);
+          setScanTargetVersion(null);
+        }}
+        okText="开始扫描"
+        cancelText="取消"
+        confirmLoading={scanSubmitting}
+        onOk={() => void handleStartScan()}
+      >
+        <Form form={scanForm} layout="vertical" initialValues={{ scan_mode: 'FULL', note: '' }}>
+          <Form.Item
+            name="scan_mode"
+            label="扫描模式"
+            rules={[{ required: true, message: '请选择扫描模式' }]}
+          >
+            <Select options={scanModeOptions} />
+          </Form.Item>
+          <Form.Item name="note" label="任务说明">
+            <Input.TextArea rows={3} placeholder="可选：输入本次扫描目的或备注" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 };

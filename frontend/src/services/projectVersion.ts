@@ -6,7 +6,6 @@ import type {
   ProjectListResponse,
   ProjectUpdateRequest,
   Version,
-  VersionBaselineResponse,
   VersionCreateRequest,
   VersionFileResponse,
   VersionListResponse,
@@ -16,6 +15,8 @@ import type {
   GitImportTestResponse,
   ImportJobTriggerResponse,
   ImportJob,
+  ScanJobCreateRequest,
+  ScanJobTriggerResponse,
   TaskLogResponse,
 } from '../types/projectVersion';
 
@@ -61,18 +62,16 @@ export const getVersion = (versionId: string) => {
   return request.get<unknown, ApiResponse<Version>>(`/versions/${versionId}`);
 };
 
-export const setBaselineVersion = (versionId: string) => {
-  return request.post<unknown, ApiResponse<VersionBaselineResponse>>(
-    `/versions/${versionId}/baseline`
-  );
-};
-
 export const archiveVersion = (versionId: string) => {
   return request.post<unknown, ApiResponse<{ archived: boolean }>>(`/versions/${versionId}/archive`);
 };
 
 export const deleteVersion = (versionId: string) => {
   return request.delete<unknown, ApiResponse<{ deleted: boolean }>>(`/versions/${versionId}`);
+};
+
+export const triggerScanJob = (data: ScanJobCreateRequest) => {
+  return request.post<unknown, ApiResponse<ScanJobTriggerResponse>>('/scan-jobs', data);
 };
 
 // Source Browser
@@ -97,6 +96,14 @@ export const triggerGitImport = (projectId: string, data: GitImportRequest) => {
   return request.post<unknown, ApiResponse<ImportJobTriggerResponse>>(
     `/projects/${projectId}/imports/git`,
     data
+  );
+};
+
+export const triggerGitSync = (projectId: string, params?: { note?: string }) => {
+  return request.post<unknown, ApiResponse<ImportJobTriggerResponse>>(
+    `/projects/${projectId}/imports/git/sync`,
+    null,
+    { params }
   );
 };
 

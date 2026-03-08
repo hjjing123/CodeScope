@@ -33,12 +33,9 @@ _AUDIT_ACTION_META: dict[str, AuditActionMeta] = {
     "project.member.remove": AuditActionMeta(
         "project.member.remove", "移除项目成员", "project"
     ),
-    "version.create": AuditActionMeta("version.create", "创建版本", "version"),
-    "version.baseline.set": AuditActionMeta(
-        "version.baseline.set", "设置基线版本", "version"
-    ),
-    "version.archive": AuditActionMeta("version.archive", "归档版本", "version"),
-    "version.delete": AuditActionMeta("version.delete", "删除版本", "version"),
+    "version.create": AuditActionMeta("version.create", "创建代码快照", "version"),
+    "version.archive": AuditActionMeta("version.archive", "归档代码快照", "version"),
+    "version.delete": AuditActionMeta("version.delete", "删除代码快照", "version"),
     "scan.triggered": AuditActionMeta("scan.triggered", "触发扫描", "scan"),
     "scan.retry.triggered": AuditActionMeta("scan.retry.triggered", "重试扫描", "scan"),
     "scan.succeeded": AuditActionMeta("scan.succeeded", "扫描成功", "scan"),
@@ -80,7 +77,6 @@ _AUDIT_ACTION_META: dict[str, AuditActionMeta] = {
     "rule_set.update": AuditActionMeta("rule_set.update", "更新规则集", "rule_set"),
     "rule_set.bind_rules": AuditActionMeta("rule_set.bind_rules", "绑定规则集规则", "rule_set"),
     "finding.label": AuditActionMeta("finding.label", "标记漏洞", "finding"),
-    "finding.mark_fixed": AuditActionMeta("finding.mark_fixed", "标记漏洞已修复", "finding"),
     "user.update": AuditActionMeta("user.update", "更新用户信息", "user"),
     "log.delete": AuditActionMeta("log.delete", "删除日志", "log"),
 }
@@ -147,16 +143,6 @@ def normalize_audit_detail(
         change["after_enabled"] = bool(after_enabled)
         outcome.setdefault("status", "SUCCEEDED")
 
-    if action == "version.baseline.set":
-        context["project_id"] = context.get("project_id") or payload.get("project_id")
-        change["baseline_version_id"] = (
-            change.get("baseline_version_id")
-            or payload.get("baseline_version_id")
-            or payload.get("version_id")
-            or payload.get("resource_id")
-        )
-        outcome.setdefault("status", "SUCCEEDED")
-
     return {"context": context, "change": change, "outcome": outcome}
 
 
@@ -174,11 +160,6 @@ def build_audit_summary_zh(*, action: str, detail_json: dict[str, object]) -> st
         if rule_key:
             return f"规则 {rule_key} 已{state}"
         return f"规则状态已切换为{state}"
-    if action == "version.baseline.set" and isinstance(change, dict):
-        baseline_version_id = str(change.get("baseline_version_id") or "")
-        if baseline_version_id:
-            return f"项目基线版本已设置为 {baseline_version_id}"
-        return "项目基线版本已更新"
     return meta.action_zh
 
 

@@ -24,6 +24,10 @@ SessionLocal = sessionmaker(
 
 
 def get_db(request: Request) -> Generator[Session, None, None]:
+    existing = getattr(request.state, "db_session", None)
+    if isinstance(existing, Session):
+        yield existing
+        return
     db = SessionLocal()
     request.state.db_session = db
     try:

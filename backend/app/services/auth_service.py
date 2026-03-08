@@ -20,7 +20,7 @@ from app.security.tokens import (
 )
 
 
-REGISTERABLE_ROLES = {SystemRole.DEVELOPER.value, SystemRole.RED_TEAM.value}
+SELF_REGISTER_ROLE = SystemRole.USER.value
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -63,15 +63,22 @@ def register(
     email: str,
     password_hash: str,
     display_name: str,
-    role: str,
+    role: str | None,
 ) -> User:
-    normalized_role = role.strip()
-    if normalized_role not in REGISTERABLE_ROLES:
+    normalized_role = role.strip() if role is not None else ""
+    if normalized_role == SystemRole.ADMIN.value:
+        raise AppError(
+            code="INVALID_ARGUMENT",
+            status_code=422,
+            message="自注册不支持 Admin 角色",
+            detail={"allowed_roles": [SELF_REGISTER_ROLE]},
+        )
+    if normalized_role not in {"", SELF_REGISTER_ROLE}:
         raise AppError(
             code="INVALID_ARGUMENT",
             status_code=422,
             message="注册角色不合法",
-            detail={"allowed_roles": sorted(REGISTERABLE_ROLES)},
+            detail={"allowed_roles": [SELF_REGISTER_ROLE]},
         )
 
     normalized_display_name = display_name.strip()
@@ -94,7 +101,7 @@ def register(
         email=normalized_email,
         password_hash=password_hash,
         display_name=normalized_display_name,
-        role=normalized_role,
+        role=SELF_REGISTER_ROLE,
         is_active=True,
         must_change_password=False,
     )

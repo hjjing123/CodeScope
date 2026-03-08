@@ -13,7 +13,6 @@ class VersionCreateRequest(BaseModel):
     tag: str | None = Field(default=None, max_length=64)
     git_repo_url: str | None = Field(default=None, max_length=1024)
     git_ref: str | None = Field(default=None, max_length=255)
-    baseline_of_version_id: uuid.UUID | None = None
     snapshot_object_key: str | None = Field(default=None, max_length=255)
 
 
@@ -26,10 +25,8 @@ class VersionPayload(BaseModel):
     tag: str | None
     git_repo_url: str | None
     git_ref: str | None
-    baseline_of_version_id: uuid.UUID | None
     snapshot_object_key: str | None
     status: str
-    is_baseline: bool
     created_at: datetime
     updated_at: datetime
 
@@ -37,12 +34,6 @@ class VersionPayload(BaseModel):
 class VersionListPayload(BaseModel):
     items: list[VersionPayload]
     total: int
-    baseline_version_id: uuid.UUID | None
-
-
-class VersionBaselinePayload(BaseModel):
-    project_id: uuid.UUID
-    baseline_version_id: uuid.UUID
 
 
 class VersionTreeEntryPayload(BaseModel):

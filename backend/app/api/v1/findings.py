@@ -29,7 +29,6 @@ from app.schemas.finding import (
     FindingLabelPayload,
     FindingLabelRequest,
     FindingListPayload,
-    FindingMarkFixedRequest,
     FindingPathListPayload,
     FindingPathNodeContextPayload,
     FindingPathPayload,
@@ -426,53 +425,6 @@ def label_finding(
             "status": next_status,
             "fp_reason": fp_reason,
         },
-    )
-    db.commit()
-    db.refresh(finding)
-    db.refresh(label)
-
-    data = FindingLabelActionPayload(finding=_finding_payload(finding), label=_label_payload(label))
-    return success_response(request, data=data.model_dump())
-
-
-@router.post("/api/v1/findings/{finding_id}/mark-fixed")
-def mark_finding_fixed(
-    request: Request,
-    finding_id: uuid.UUID,
-    payload: FindingMarkFixedRequest | None = None,
-    db: Session = Depends(get_db),
-    principal: AuthPrincipal = Depends(
-        require_project_resource_action(
-            "finding:patch",
-            resource_type="FINDING",
-            resource_id_param="finding_id",
-        )
-    ),
-):
-    finding = db.get(Finding, finding_id)
-    if finding is None:
-        raise AppError(code="NOT_FOUND", status_code=404, message="漏洞不存在")
-
-    comment = _normalize_text(payload.comment if payload is not None else None)
-    finding.status = FindingStatus.FIXED.value
-    label = FindingLabel(
-        finding_id=finding.id,
-        status=FindingStatus.FIXED.value,
-        comment=comment,
-        created_by=principal.user.id,
-    )
-    db.add(label)
-    db.flush()
-
-    append_audit_log(
-        db,
-        request_id=get_request_id(request),
-        operator_user_id=principal.user.id,
-        action="finding.mark_fixed",
-        resource_type="FINDING",
-        resource_id=str(finding.id),
-        project_id=finding.project_id,
-        detail_json={"comment": comment},
     )
     db.commit()
     db.refresh(finding)

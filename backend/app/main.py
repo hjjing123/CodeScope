@@ -6,6 +6,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from types import GeneratorType
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -17,6 +18,7 @@ from app.api.router import api_router
 from app.config import get_settings
 from app.core.errors import AppError
 from app.core.response import error_response, success_response
+from app.db.session import get_db
 from app.services.log_center_service import should_record_runtime_request
 from app.services.runtime_log_service import (
     append_runtime_log,
@@ -103,6 +105,15 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def request_id_middleware(request: Request, call_next):
+        provider = app.dependency_overrides.get(get_db, get_db)
+        session_generator = provider(request)
+        owns_session = isinstance(session_generator, GeneratorType)
+        if owns_session:
+            try:
+                next(session_generator)
+            except StopIteration:
+                owns_session = False
+
         request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
         request.state.request_id = request_id
         start = time.perf_counter()
@@ -142,8 +153,7 @@ def create_app() -> FastAPI:
                 user_agent=request.headers.get("User-Agent"),
             )
             detail_json["capture_reason"] = capture_reason
-            db_for_runtime = getattr(request.state, "db_session", None)
-            if db_for_runtime is not None and should_record:
+            if should_record:
                 append_runtime_log(
                     level=normalize_level_for_status(status_code),
                     service="api",
@@ -157,13 +167,20 @@ def create_app() -> FastAPI:
                     error_code=error_code,
                     high_value=is_high_value,
                     detail_json=detail_json,
-                    db=db_for_runtime,
+                    db=getattr(request.state, "db_session", None),
                 )
 
-        if response is None:
-            response = PlainTextResponse("Internal Server Error", status_code=500)
-        response.headers["X-Request-Id"] = request_id
-        return response
+        try:
+            if response is None:
+                response = PlainTextResponse("Internal Server Error", status_code=500)
+            response.headers["X-Request-Id"] = request_id
+            return response
+        finally:
+            if owns_session:
+                try:
+                    next(session_generator)
+                except StopIteration:
+                    pass
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError):

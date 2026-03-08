@@ -42,7 +42,7 @@ const ProjectList: React.FC<ProjectListProps> = ({ onProjectSelect }) => {
       }));
     } catch (error) {
       console.error('Failed to fetch projects:', error);
-      message.error('Failed to fetch projects');
+      message.error('获取项目列表失败');
     } finally {
       setLoading(false);
     }
@@ -61,11 +61,11 @@ const ProjectList: React.FC<ProjectListProps> = ({ onProjectSelect }) => {
   const handleDelete = async (id: string) => {
     try {
       await deleteProject(id);
-      message.success('Project deleted successfully');
+      message.success('项目删除成功');
       void fetchData(pagination.current, pagination.pageSize);
     } catch (error) {
       console.error('Failed to delete project:', error);
-      message.error('Failed to delete project');
+      message.error('项目删除失败');
     }
   };
 
@@ -73,13 +73,13 @@ const ProjectList: React.FC<ProjectListProps> = ({ onProjectSelect }) => {
     if (onProjectSelect) {
       onProjectSelect(project.id);
     } else {
-      navigate(`/projects/${project.id}`);
+      navigate('/code-management');
     }
   };
 
   const columns: ColumnsType<Project> = [
     {
-      title: 'Project Name',
+      title: '项目名称',
       dataIndex: 'name',
       key: 'name',
       render: (text: string, record: Project) => (
@@ -89,43 +89,43 @@ const ProjectList: React.FC<ProjectListProps> = ({ onProjectSelect }) => {
       ),
     },
     {
-      title: 'Description',
+      title: '描述',
       dataIndex: 'description',
       key: 'description',
       ellipsis: true,
     },
     {
-      title: 'Status',
+      title: '状态',
       dataIndex: 'status',
       key: 'status',
       width: 100,
     },
     {
-      title: 'Created At',
+      title: '创建时间',
       dataIndex: 'created_at',
       key: 'created_at',
       width: 180,
       render: (text: string) => new Date(text).toLocaleString(),
     },
     {
-      title: 'Actions',
+      title: '操作',
       key: 'actions',
       width: 150,
       render: (_, record) => (
         <Space size="middle">
-          <Tooltip title="Open Project">
+          <Tooltip title="进入项目">
             <Button 
               type="text" 
               icon={<FolderOpenOutlined />} 
               onClick={() => handleProjectClick(record)} 
             />
           </Tooltip>
-          <Tooltip title="Delete Project">
+          <Tooltip title="删除项目">
             <Popconfirm
-              title="Are you sure to delete this project?"
+              title="确认删除该项目吗？"
               onConfirm={() => handleDelete(record.id)}
-              okText="Yes"
-              cancelText="No"
+              okText="确认"
+              cancelText="取消"
             >
               <Button type="text" danger icon={<DeleteOutlined />} />
             </Popconfirm>
@@ -138,16 +138,16 @@ const ProjectList: React.FC<ProjectListProps> = ({ onProjectSelect }) => {
   return (
     <div style={{ padding: '24px', background: '#fff', minHeight: '100%' }}>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2>Projects</h2>
+        <h2>项目列表</h2>
         <Space>
           <Button
             icon={<ReloadOutlined />}
             onClick={() => void fetchData(pagination.current, pagination.pageSize)}
           >
-            Refresh
+            刷新
           </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalVisible(true)}>
-            New Project
+            新建项目
           </Button>
         </Space>
       </div>

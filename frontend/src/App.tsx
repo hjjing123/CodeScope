@@ -55,7 +55,8 @@ function App() {
             }
           >
             <Route index element={<Navigate to="dashboard" replace />} />
-            <Route path="projects" element={<ProjectVersionPage />} />
+            <Route path="code-management" element={<ProjectVersionPage />} />
+            <Route path="projects" element={<Navigate to="/code-management" replace />} />
             <Route path="log-center" element={<LogCenterPage />} />
             <Route path="rules" element={<RuleCenterPage />} />
             <Route path="rules/:ruleKey" element={<RuleDetailPage />} />

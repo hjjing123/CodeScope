@@ -148,7 +148,7 @@ const taskTypeOptions: { label: string; value: TaskType }[] = [
 const actionGroupOptions = [
   { label: '认证与会话', value: 'AUTH' },
   { label: '权限与成员', value: 'PERMISSION' },
-  { label: '项目与版本', value: 'PROJECT' },
+  { label: '项目与代码快照', value: 'PROJECT' },
   { label: '规则与规则集', value: 'RULE' },
   { label: '导入与扫描', value: 'SCAN' },
   { label: '结果与修复', value: 'FINDING' },

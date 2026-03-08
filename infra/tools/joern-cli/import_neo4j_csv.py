@@ -205,7 +205,7 @@ def parse_args(argv):
     parser.add_argument("--logs-dir", default=DEFAULT_LOGS_DIR)
     parser.add_argument("--image", default="neo4j")
     parser.add_argument("--database", default="neo4j")
-    parser.add_argument("--container-name", default="neo4j")
+    parser.add_argument("--container-name", default="CodeScope_neo4j")
     parser.add_argument("--password", default="neo4j@1234")
     parser.add_argument("--http-port", type=int, default=7474)
     parser.add_argument("--bolt-port", type=int, default=7687)

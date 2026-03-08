@@ -18,11 +18,40 @@ from app.services.rule_file_service import (
 )
 
 from .contracts import ExternalScanContext
-from .neo4j_runner import execute_cypher_file
+from .neo4j_runner import execute_cypher_file, split_cypher_statements
 
 
 NODE_HEADER_RE = re.compile(r"^nodes_(.+)_header\.csv$", re.IGNORECASE)
 EDGE_HEADER_RE = re.compile(r"^edges_(.+)_header\.csv$", re.IGNORECASE)
+REQUIRED_JOERN_EXPORT_FILES = (
+    "nodes_File_header.csv",
+    "nodes_File_data.csv",
+    "nodes_Method_header.csv",
+    "nodes_Method_data.csv",
+    "nodes_Call_header.csv",
+    "nodes_Call_data.csv",
+    "nodes_Var_header.csv",
+    "nodes_Var_data.csv",
+    "edges_IN_FILE_header.csv",
+    "edges_IN_FILE_data.csv",
+    "edges_HAS_CALL_header.csv",
+    "edges_HAS_CALL_data.csv",
+    "edges_ARG_header.csv",
+    "edges_ARG_data.csv",
+)
+WSL_RUNTIME_PROFILE = "wsl"
+CONTAINER_COMPAT_RUNTIME_PROFILE = "container_compat"
+RUNTIME_ALLOWED_STATEMENT_PREFIXES = {
+    "MATCH",
+    "OPTIONAL",
+    "WITH",
+    "UNWIND",
+    "RETURN",
+    "CALL",
+}
+RUNTIME_FORBIDDEN_WRITE_CLAUSE_RE = re.compile(
+    r"\b(CREATE|MERGE|DELETE|DETACH|DROP|REMOVE|SET)\b", re.IGNORECASE
+)
 
 
 def run_builtin_stage(
@@ -97,20 +126,33 @@ def _run_builtin_joern(
             code="SCAN_EXTERNAL_NOT_CONFIGURED",
             status_code=501,
             message="Joern 导出脚本不存在",
-            detail={"export_script": str(export_script)},
+            detail={
+                "export_script": str(export_script),
+                "cpg_file": str(context.cpg_file),
+                "import_dir": str(context.import_dir),
+            },
         )
 
-    javasrc2cpg_bin = _resolve_joern_binary(
-        joern_home=joern_home,
-        windows_name="javasrc2cpg.bat",
-        unix_name="javasrc2cpg",
+    append_log(
+        "ANALYZE",
+        (
+            "[joern] 路径准备: "
+            f"source_dir={context.source_dir}, cpg_file={context.cpg_file}, "
+            f"import_dir={context.import_dir}, joern_bin={joern_bin}, export_script={export_script}"
+        ),
     )
-    if not javasrc2cpg_bin.exists() or not javasrc2cpg_bin.is_file():
+
+    joern_parse_bin = _resolve_joern_binary(
+        joern_home=joern_home,
+        windows_name="joern-parse.bat",
+        unix_name="joern-parse",
+    )
+    if not joern_parse_bin.exists() or not joern_parse_bin.is_file():
         raise AppError(
             code="SCAN_EXTERNAL_NOT_CONFIGURED",
             status_code=501,
-            message="javasrc2cpg 可执行文件不存在",
-            detail={"javasrc2cpg_bin": str(javasrc2cpg_bin)},
+            message="joern-parse 可执行文件不存在",
+            detail={"joern_parse_bin": str(joern_parse_bin)},
         )
 
     _clear_directory(context.import_dir)
@@ -119,21 +161,46 @@ def _run_builtin_joern(
         context.cpg_file.unlink(missing_ok=True)
 
     parse_cmd = [
-        str(javasrc2cpg_bin),
+        str(joern_parse_bin),
         str(context.source_dir),
-        "-o",
+        "--output",
         str(context.cpg_file),
     ]
+    parse_command_text = _command_to_text(parse_cmd)
+    append_log(
+        "ANALYZE",
+        (
+            "[joern] 执行 parse 命令: "
+            f"command={parse_command_text}, script={export_script}, "
+            f"cpg_file={context.cpg_file}, import_dir={context.import_dir}"
+        ),
+    )
     parse_result = _run_command_with_deadline(parse_cmd, deadline=deadline)
     if parse_result.returncode != 0:
+        parse_stdout_tail = _tail_text(parse_result.stdout)
+        parse_stderr_tail = _tail_text(parse_result.stderr)
+        append_log(
+            "ANALYZE",
+            (
+                f"[joern] parse 失败: exit_code={parse_result.returncode}, "
+                f"command={parse_command_text}, script={export_script}, "
+                f"cpg_file={context.cpg_file}, import_dir={context.import_dir}, "
+                f"stdout_tail={parse_stdout_tail}, stderr_tail={parse_stderr_tail}"
+            ),
+        )
         raise AppError(
             code="SCAN_EXTERNAL_JOERN_FAILED",
             status_code=422,
-            message="javasrc2cpg 执行失败",
+            message="joern-parse 执行失败",
             detail={
                 "exit_code": parse_result.returncode,
-                "stdout_tail": _tail_text(parse_result.stdout),
-                "stderr_tail": _tail_text(parse_result.stderr),
+                "command": parse_cmd,
+                "source_dir": str(context.source_dir),
+                "cpg_file": str(context.cpg_file),
+                "import_dir": str(context.import_dir),
+                "export_script": str(export_script),
+                "stdout_tail": parse_stdout_tail,
+                "stderr_tail": parse_stderr_tail,
             },
         )
 
@@ -152,34 +219,90 @@ def _run_builtin_joern(
     export_env["ENABLE_REF"] = "true" if enable_ref else "false"
     export_env["AST_MODE"] = ast_mode
 
-    export_cmd = [str(joern_bin), "--script", str(export_script)]
+    export_cmd = [
+        str(joern_bin),
+        "--script",
+        str(export_script),
+        "--param",
+        f"cpgFile={context.cpg_file}",
+        "--param",
+        f"outDir={context.import_dir}",
+        "--param",
+        f"ENABLE_CALLS={export_env['ENABLE_CALLS']}",
+        "--param",
+        f"ENABLE_REF={export_env['ENABLE_REF']}",
+        "--param",
+        f"AST_MODE={export_env['AST_MODE']}",
+    ]
+    export_command_text = _command_to_text(export_cmd)
+    append_log(
+        "ANALYZE",
+        (
+            "[joern] 执行 export 命令: "
+            f"command={export_command_text}, script={export_script}, "
+            f"cpg_file={context.cpg_file}, import_dir={context.import_dir}"
+        ),
+    )
     export_result = _run_command_with_deadline(
         export_cmd, deadline=deadline, env=export_env
     )
     if export_result.returncode != 0:
+        export_stdout_tail = _tail_text(export_result.stdout)
+        export_stderr_tail = _tail_text(export_result.stderr)
+        append_log(
+            "ANALYZE",
+            (
+                f"[joern] export 失败: exit_code={export_result.returncode}, "
+                f"command={export_command_text}, script={export_script}, "
+                f"cpg_file={context.cpg_file}, import_dir={context.import_dir}, "
+                f"stdout_tail={export_stdout_tail}, stderr_tail={export_stderr_tail}"
+            ),
+        )
         raise AppError(
             code="SCAN_EXTERNAL_JOERN_FAILED",
             status_code=422,
             message="Joern 导出执行失败",
             detail={
                 "exit_code": export_result.returncode,
-                "stdout_tail": _tail_text(export_result.stdout),
-                "stderr_tail": _tail_text(export_result.stderr),
+                "command": export_cmd,
+                "source_dir": str(context.source_dir),
+                "cpg_file": str(context.cpg_file),
+                "import_dir": str(context.import_dir),
+                "export_script": str(export_script),
+                "stdout_tail": export_stdout_tail,
+                "stderr_tail": export_stderr_tail,
             },
         )
 
-    nodes, rels = _collect_csv_pairs(context.import_dir)
-    if not nodes and not rels:
+    nodes, rels = _collect_csv_pairs(
+        context.import_dir, failure_code="SCAN_EXTERNAL_JOERN_FAILED"
+    )
+    missing_required_files = _find_missing_required_csv_files(context.import_dir)
+    if missing_required_files:
         raise AppError(
             code="SCAN_EXTERNAL_JOERN_FAILED",
             status_code=422,
-            message="Joern 导出未产出 CSV 文件",
-            detail={"import_dir": str(context.import_dir)},
+            message="Joern 导出关键 CSV 产物缺失",
+            detail={
+                "source_dir": str(context.source_dir),
+                "cpg_file": str(context.cpg_file),
+                "import_dir": str(context.import_dir),
+                "export_script": str(export_script),
+                "missing_files": missing_required_files,
+            },
         )
 
+    export_stdout_tail = _tail_text(export_result.stdout)
+    export_stderr_tail = _tail_text(export_result.stderr)
     append_log(
         "ANALYZE",
-        f"[joern] 导出完成: nodes={len(nodes)}, relationships={len(rels)}, import_dir={context.import_dir}",
+        (
+            "[joern] 导出完成: "
+            f"command={export_command_text}, script={export_script}, "
+            f"cpg_file={context.cpg_file}, import_dir={context.import_dir}, "
+            f"stdout_tail={export_stdout_tail}, stderr_tail={export_stderr_tail}, "
+            f"nodes={len(nodes)}, relationships={len(rels)}"
+        ),
     )
     stdout = "\n".join(
         [
@@ -201,6 +324,7 @@ def _run_builtin_neo4j_import(
     append_log: Callable[[str, str], None],
     deadline: float,
 ) -> tuple[str, str]:
+    _ensure_docker_cli_available()
     image = str(settings.scan_external_import_docker_image or "").strip()
     data_mount_raw = str(settings.scan_external_import_data_mount or "").strip()
     database = str(settings.scan_external_import_database or "neo4j").strip() or "neo4j"
@@ -209,16 +333,19 @@ def _run_builtin_neo4j_import(
             code="SCAN_EXTERNAL_NOT_CONFIGURED",
             status_code=501,
             message="未配置 Neo4j 导入镜像",
+            detail={"required": "scan_external_import_docker_image"},
         )
     if not data_mount_raw:
         raise AppError(
             code="SCAN_EXTERNAL_NOT_CONFIGURED",
             status_code=501,
             message="未配置 Neo4j data 挂载点",
-            detail={"setting": "scan_external_import_data_mount"},
+            detail={"required": "scan_external_import_data_mount"},
         )
 
-    nodes, rels = _collect_csv_pairs(context.import_dir)
+    nodes, rels = _collect_csv_pairs(
+        context.import_dir, failure_code="SCAN_EXTERNAL_IMPORT_FAILED"
+    )
     if not nodes and not rels:
         raise AppError(
             code="SCAN_EXTERNAL_IMPORT_FAILED",
@@ -227,10 +354,15 @@ def _run_builtin_neo4j_import(
             detail={"import_dir": str(context.import_dir)},
         )
 
-    import_host = _normalize_host_path_for_docker(str(context.import_dir.resolve()))
+    runtime_profile = _resolve_runtime_profile(context=context)
+    import_host = _resolve_import_host_mount_path(
+        context=context, runtime_profile=runtime_profile
+    )
     data_mount = _resolve_data_mount(data_mount_raw)
 
     if bool(settings.scan_external_import_preflight):
+        if bool(getattr(settings, "scan_external_import_preflight_check_docker", True)):
+            _preflight_check_docker_daemon(deadline=deadline)
         _preflight_check_import_mount(import_host=import_host, deadline=deadline)
 
     restart_mode = (
@@ -254,6 +386,11 @@ def _run_builtin_neo4j_import(
                 "ANALYZE", f"[neo4j_import] 停止运行中的 Neo4j 容器: {container_name}"
             )
             _stop_container(container_name=container_name, deadline=deadline)
+        else:
+            append_log(
+                "ANALYZE",
+                f"[neo4j_import] 导入前 Neo4j 容器未运行，导入后将启动: {container_name}",
+            )
 
     import_error: AppError | None = None
     import_result: subprocess.CompletedProcess[str] | None = None
@@ -292,26 +429,51 @@ def _run_builtin_neo4j_import(
             "-lc",
             admin_cmd,
         ]
+        append_log(
+            "ANALYZE",
+            (
+                "[neo4j_import] 执行导入命令: "
+                f"image={image}, database={database}, data_mount={data_mount}, "
+                f"import_host={import_host}, command={_command_to_text(docker_cmd)}"
+            ),
+        )
         import_result = _run_command_with_deadline(docker_cmd, deadline=deadline)
         if import_result.returncode != 0:
+            import_stdout_tail = _tail_text(import_result.stdout)
+            import_stderr_tail = _tail_text(import_result.stderr)
+            append_log(
+                "ANALYZE",
+                (
+                    "[neo4j_import] 导入失败: "
+                    f"exit_code={import_result.returncode}, image={image}, "
+                    f"database={database}, data_mount={data_mount}, "
+                    f"import_host={import_host}, command={_command_to_text(docker_cmd)}, "
+                    f"stdout_tail={import_stdout_tail}, stderr_tail={import_stderr_tail}"
+                ),
+            )
             raise AppError(
                 code="SCAN_EXTERNAL_IMPORT_FAILED",
                 status_code=422,
                 message="neo4j-admin import 执行失败",
                 detail={
                     "exit_code": import_result.returncode,
-                    "stdout_tail": _tail_text(import_result.stdout),
-                    "stderr_tail": _tail_text(import_result.stderr),
+                    "command": docker_cmd,
+                    "image": image,
+                    "database": database,
+                    "data_mount": data_mount,
+                    "import_host": import_host,
+                    "failure_kind": "neo4j_admin_import_failed",
+                    "stdout_tail": import_stdout_tail,
+                    "stderr_tail": import_stderr_tail,
                 },
             )
     except AppError as exc:
         import_error = exc
     finally:
-        if manage_runtime and was_running:
+        if manage_runtime:
             try:
-                append_log(
-                    "ANALYZE", f"[neo4j_import] 重启 Neo4j 容器: {container_name}"
-                )
+                action = "重启" if was_running else "启动"
+                append_log("ANALYZE", f"[neo4j_import] {action} Neo4j 容器: {container_name}")
                 _start_container(container_name=container_name, deadline=deadline)
                 if restart_wait_seconds > 0:
                     sleep_seconds = min(
@@ -457,12 +619,16 @@ def _run_builtin_rules(
             detail={"rules_dir": str(rules_dir)},
         )
 
+    failure_mode = _normalize_rules_failure_mode(
+        getattr(settings, "scan_external_rules_failure_mode", "permissive")
+    )
     rule_rows: dict[str, int] = {}
     partial_failures: list[dict[str, object]] = []
     succeeded_rule_count = 0
     for rule_file in rule_files:
         rule_key = _rule_key_from_file(rule_file)
         try:
+            _validate_runtime_rule_cypher(rule_file=rule_file, rule_key=rule_key)
             summary = execute_cypher_file(
                 cypher_file=rule_file,
                 uri=str(settings.scan_external_neo4j_uri or ""),
@@ -479,6 +645,18 @@ def _run_builtin_rules(
         except AppError as exc:
             if exc.code == "SCAN_EXTERNAL_NOT_CONFIGURED":
                 raise
+            if failure_mode == "strict":
+                raise AppError(
+                    code="SCAN_EXTERNAL_RULES_FAILED",
+                    status_code=422,
+                    message="规则执行失败（strict 模式）",
+                    detail={
+                        "failure_mode": failure_mode,
+                        "failed_rule": rule_key,
+                        "error_code": exc.code,
+                        "error_message": exc.message,
+                    },
+                ) from exc
             rule_rows[rule_key] = 0
             partial_failures.append(
                 {
@@ -500,12 +678,21 @@ def _run_builtin_rules(
         )
 
     rule_summary = _summarize_rule_rows(rule_rows)
+    failed_rule_keys = [str(item.get("rule") or "") for item in partial_failures if str(item.get("rule") or "")]
+    execution_summary = {
+        "total_rules": len(rule_rows),
+        "succeeded_rules": succeeded_rule_count,
+        "failed_rules": len(partial_failures),
+        "failed_rule_keys": failed_rule_keys,
+        "failure_mode": failure_mode,
+    }
     round_report = {
         "round": 1,
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "rule_rows": rule_rows,
         "rule_summary": rule_summary,
         "partial_failures": partial_failures,
+        "execution_summary": execution_summary,
     }
     report_path = context.reports_dir / "round_1.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -519,6 +706,8 @@ def _run_builtin_rules(
             "[rules] 执行完成: "
             f"total_rules={rule_summary['total_rules']}, "
             f"hit_rules={rule_summary['hit_rules']}, "
+            f"succeeded_rules={execution_summary['succeeded_rules']}, "
+            f"failed_rules={execution_summary['failed_rules']}, "
             f"partial_failures={len(partial_failures)}"
         ),
     )
@@ -527,6 +716,9 @@ def _run_builtin_rules(
             "report_path": str(report_path),
             "total_rules": rule_summary["total_rules"],
             "hit_rules": rule_summary["hit_rules"],
+            "succeeded_rules": execution_summary["succeeded_rules"],
+            "failed_rules": execution_summary["failed_rules"],
+            "failed_rule_keys": execution_summary["failed_rule_keys"],
             "partial_failures": len(partial_failures),
         },
         ensure_ascii=False,
@@ -586,6 +778,8 @@ def _clear_directory(path: Path) -> None:
 
 def _collect_csv_pairs(
     import_dir: Path,
+    *,
+    failure_code: str,
 ) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
     nodes: list[tuple[str, str, str]] = []
     rels: list[tuple[str, str, str]] = []
@@ -598,7 +792,7 @@ def _collect_csv_pairs(
         data = import_dir / f"nodes_{label}_data.csv"
         if not data.exists():
             raise AppError(
-                code="SCAN_EXTERNAL_JOERN_FAILED",
+                code=failure_code,
                 status_code=422,
                 message="节点 CSV 缺少 data 文件",
                 detail={"header": str(header), "data": str(data)},
@@ -613,7 +807,7 @@ def _collect_csv_pairs(
         data = import_dir / f"edges_{rel_type}_data.csv"
         if not data.exists():
             raise AppError(
-                code="SCAN_EXTERNAL_JOERN_FAILED",
+                code=failure_code,
                 status_code=422,
                 message="关系 CSV 缺少 data 文件",
                 detail={"header": str(header), "data": str(data)},
@@ -625,16 +819,54 @@ def _collect_csv_pairs(
     return nodes, rels
 
 
+def _find_missing_required_csv_files(import_dir: Path) -> list[str]:
+    return [
+        name
+        for name in REQUIRED_JOERN_EXPORT_FILES
+        if not (import_dir / name).exists()
+    ]
+
+
 def _resolve_joern_binary(
     *, joern_home: Path, windows_name: str, unix_name: str
 ) -> Path:
     if os.name == "nt":
+        windows_candidate = joern_home / windows_name
+        if windows_candidate.exists() and windows_candidate.is_file():
+            return windows_candidate
+    linux_candidate = joern_home / unix_name
+    if linux_candidate.exists() and linux_candidate.is_file():
+        return linux_candidate
+    if os.name == "nt":
         return joern_home / windows_name
-    return joern_home / unix_name
+    return linux_candidate
 
 
 def _normalize_host_path_for_docker(path_text: str) -> str:
     return path_text.strip().strip('"').replace("\\", "/")
+
+
+def _resolve_import_host_mount_path(
+    *, context: ExternalScanContext, runtime_profile: str
+) -> str:
+    configured = str(context.base_env.get("CODESCOPE_SCAN_IMPORT_HOST_PATH") or "").strip()
+    raw_path = configured or str(context.import_dir.resolve())
+    normalized_path = _normalize_host_path_for_docker(raw_path)
+    if (
+        runtime_profile == WSL_RUNTIME_PROFILE
+        and normalized_path
+        and not normalized_path.startswith("/")
+    ):
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="WSL 模式下导入目录必须为 Linux 绝对路径",
+            detail={
+                "runtime_profile": runtime_profile,
+                "import_host": normalized_path,
+            },
+        )
+    return normalized_path
 
 
 def _resolve_data_mount(raw_value: str) -> str:
@@ -644,6 +876,43 @@ def _resolve_data_mount(raw_value: str) -> str:
             str(Path(cleaned).expanduser().resolve())
         )
     return cleaned
+
+
+def _resolve_runtime_profile(*, context: ExternalScanContext) -> str:
+    profile = str(context.base_env.get("CODESCOPE_SCAN_RUNTIME_PROFILE") or "").strip().lower()
+    compat_flag = str(context.base_env.get("CODESCOPE_SCAN_CONTAINER_COMPAT_MODE") or "").strip()
+    if profile == CONTAINER_COMPAT_RUNTIME_PROFILE or compat_flag == "1":
+        return CONTAINER_COMPAT_RUNTIME_PROFILE
+    return WSL_RUNTIME_PROFILE
+
+
+def _ensure_docker_cli_available() -> None:
+    if shutil.which("docker"):
+        return
+    raise AppError(
+        code="SCAN_EXTERNAL_NOT_CONFIGURED",
+        status_code=501,
+        message="Docker CLI 不可用",
+        detail={"required_command": "docker"},
+    )
+
+
+def _preflight_check_docker_daemon(*, deadline: float) -> None:
+    _ensure_docker_cli_available()
+    cmd = ["docker", "info", "--format", "{{.ServerVersion}}"]
+    result = _run_command_with_deadline(cmd, deadline=deadline)
+    if result.returncode != 0:
+        raise AppError(
+            code="SCAN_EXTERNAL_IMPORT_FAILED",
+            status_code=422,
+            message="Docker daemon 不可达",
+            detail={
+                "failure_kind": "docker_daemon_unreachable",
+                "command": cmd,
+                "stdout": _tail_text(result.stdout),
+                "stderr": _tail_text(result.stderr),
+            },
+        )
 
 
 def _preflight_check_import_mount(*, import_host: str, deadline: float) -> None:
@@ -666,6 +935,8 @@ def _preflight_check_import_mount(*, import_host: str, deadline: float) -> None:
             status_code=422,
             message="Docker 挂载 /import 预检失败",
             detail={
+                "failure_kind": "import_mount_unreachable",
+                "command": cmd,
                 "import_host": import_host,
                 "stdout": _tail_text(result.stdout),
                 "stderr": _tail_text(result.stderr),
@@ -824,6 +1095,57 @@ def _rule_key_from_file(path: Path) -> str:
     return path.stem
 
 
+def _normalize_rules_failure_mode(value: object) -> str:
+    mode = str(value or "permissive").strip().lower()
+    if mode == "strict":
+        return "strict"
+    return "permissive"
+
+
+def _validate_runtime_rule_cypher(*, rule_file: Path, rule_key: str) -> None:
+    text = rule_file.read_text(encoding="utf-8", errors="replace")
+    statements = split_cypher_statements(text)
+    if not statements:
+        raise AppError(
+            code="SCAN_EXTERNAL_RULES_FAILED",
+            status_code=422,
+            message="规则语句运行时校验失败",
+            detail={"rule": rule_key, "reason": "empty_statement"},
+        )
+    for index, statement in enumerate(statements, start=1):
+        prefix = _statement_prefix(statement)
+        if prefix not in RUNTIME_ALLOWED_STATEMENT_PREFIXES:
+            raise AppError(
+                code="SCAN_EXTERNAL_RULES_FAILED",
+                status_code=422,
+                message="规则语句运行时校验失败",
+                detail={
+                    "rule": rule_key,
+                    "reason": "unsupported_prefix",
+                    "statement_index": index,
+                    "prefix": prefix,
+                },
+            )
+        if RUNTIME_FORBIDDEN_WRITE_CLAUSE_RE.search(statement):
+            raise AppError(
+                code="SCAN_EXTERNAL_RULES_FAILED",
+                status_code=422,
+                message="规则语句运行时校验失败",
+                detail={
+                    "rule": rule_key,
+                    "reason": "write_clause_detected",
+                    "statement_index": index,
+                },
+            )
+
+
+def _statement_prefix(statement: str) -> str:
+    token = statement.strip().split(maxsplit=1)
+    if not token:
+        return ""
+    return token[0].upper()
+
+
 def _summarize_rule_rows(rule_rows: dict[str, int]) -> dict[str, int]:
     total_rules = len(rule_rows)
     hit_rules = sum(1 for value in rule_rows.values() if int(value) > 0)
@@ -842,6 +1164,10 @@ def _tail_text(value: str | None, max_chars: int = 2000) -> str:
     if len(text) <= max_chars:
         return text
     return text[-max_chars:]
+
+
+def _command_to_text(command: list[str]) -> str:
+    return " ".join(command)
 
 
 def _normalize_requested_rule_names(value: object) -> list[str]:

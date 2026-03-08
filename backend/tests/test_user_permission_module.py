@@ -140,7 +140,7 @@ def test_login_and_me_success(client, db_session):
         db_session,
         email="dev@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
         display_name="dev",
     )
 
@@ -151,7 +151,7 @@ def test_login_and_me_success(client, db_session):
 
     assert me_resp.status_code == 200
     assert me_resp.json()["data"]["email"] == "dev@example.com"
-    assert me_resp.json()["data"]["role"] == SystemRole.DEVELOPER.value
+    assert me_resp.json()["data"]["role"] == SystemRole.USER.value
 
 
 def test_revoke_invalidates_existing_access_token(client, db_session):
@@ -159,7 +159,7 @@ def test_revoke_invalidates_existing_access_token(client, db_session):
         db_session,
         email="rev@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=user.email, password="Password123!")
 
@@ -221,7 +221,7 @@ def test_platform_admin_endpoint_requires_admin(client, db_session):
         db_session,
         email="dev2@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
 
     dev_tokens = _login(client, email=dev.email, password="Password123!")
@@ -261,7 +261,7 @@ def test_permissions_endpoint_project_scope_for_maintainer(client, db_session):
         db_session,
         email="maintainer-perm@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     project = _create_project(db_session, name="perm-project")
     _add_member(
@@ -288,7 +288,7 @@ def test_permissions_endpoint_project_scope_requires_membership(client, db_sessi
         db_session,
         email="nomember-perm@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     project = _create_project(db_session, name="perm-no-member")
 
@@ -306,7 +306,7 @@ def test_cross_project_member_access_is_blocked(client, db_session):
         db_session,
         email="cross@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     project_a = _create_project(db_session, name="A")
     project_b = _create_project(db_session, name="B")
@@ -331,19 +331,19 @@ def test_indirect_project_resource_access_allows_same_project(client, db_session
         db_session,
         email="owner-indirect@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     reader = _create_user(
         db_session,
         email="reader-indirect@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     target = _create_user(
         db_session,
         email="target-indirect@example.com",
         password="Password123!",
-        role=SystemRole.RED_TEAM.value,
+        role=SystemRole.USER.value,
     )
     project = _create_project(db_session, name="indirect-project")
     _add_member(
@@ -379,13 +379,13 @@ def test_indirect_project_resource_access_blocks_cross_project(client, db_sessio
         db_session,
         email="cross-indirect@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     other = _create_user(
         db_session,
         email="cross-indirect-other@example.com",
         password="Password123!",
-        role=SystemRole.RED_TEAM.value,
+        role=SystemRole.USER.value,
     )
     project_a = _create_project(db_session, name="indirect-A")
     project_b = _create_project(db_session, name="indirect-B")
@@ -455,7 +455,7 @@ def test_ensure_resource_action_blocks_cross_project_for_job(db_session):
         db_session,
         email="resolver-cross@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     project_a = _create_project(db_session, name="resolver-A")
     project_b = _create_project(db_session, name="resolver-B")
@@ -496,7 +496,7 @@ def test_last_owner_protected_on_delete(client, db_session):
         db_session,
         email="owner@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     project = _create_project(db_session, name="owner-project")
     _add_member(
@@ -531,54 +531,56 @@ def test_users_create_endpoint_removed(client, db_session):
             "email": "new-user-should-fail@example.com",
             "password": "Password123!",
             "display_name": "new-user",
-            "role": SystemRole.DEVELOPER.value,
+            "role": SystemRole.USER.value,
         },
     )
     assert create_resp.status_code == 405
 
 
-def test_register_supports_developer_and_redteam(client, db_session):
-    dev_resp = client.post(
+def test_register_assigns_user_role_by_default(client):
+    user_resp = client.post(
         "/api/v1/auth/register",
         json={
-            "email": "register-dev@example.com",
+            "email": "register-default-user@example.com",
             "password": "Password123!",
-            "display_name": "register-dev",
-            "role": SystemRole.DEVELOPER.value,
+            "display_name": "register-default-user",
         },
     )
-    assert dev_resp.status_code == 201
-    assert dev_resp.json()["data"]["role"] == SystemRole.DEVELOPER.value
+    assert user_resp.status_code == 201
+    assert user_resp.json()["data"]["role"] == SystemRole.USER.value
 
-    dev_tokens = _login(
-        client, email="register-dev@example.com", password="Password123!"
+    user_tokens = _login(
+        client, email="register-default-user@example.com", password="Password123!"
     )
-    dev_me = client.get(
-        "/api/v1/auth/me", headers=_auth_header(dev_tokens["access_token"])
+    user_me = client.get(
+        "/api/v1/auth/me", headers=_auth_header(user_tokens["access_token"])
     )
-    assert dev_me.status_code == 200
-    assert dev_me.json()["data"]["role"] == SystemRole.DEVELOPER.value
+    assert user_me.status_code == 200
+    assert user_me.json()["data"]["role"] == SystemRole.USER.value
 
-    redteam_resp = client.post(
+
+def test_register_rejects_admin_role_and_does_not_persist(client, db_session):
+    before_user = db_session.scalar(
+        select(User).where(User.email == "register-admin-reject@example.com")
+    )
+    assert before_user is None
+
+    admin_resp = client.post(
         "/api/v1/auth/register",
         json={
-            "email": "register-redteam@example.com",
+            "email": "register-admin-reject@example.com",
             "password": "Password123!",
-            "display_name": "register-redteam",
-            "role": SystemRole.RED_TEAM.value,
+            "display_name": "register-admin-reject",
+            "role": SystemRole.ADMIN.value,
         },
     )
-    assert redteam_resp.status_code == 201
-    assert redteam_resp.json()["data"]["role"] == SystemRole.RED_TEAM.value
+    assert admin_resp.status_code == 422
+    assert admin_resp.json()["error"]["code"] == "INVALID_ARGUMENT"
 
-    redteam_tokens = _login(
-        client, email="register-redteam@example.com", password="Password123!"
+    after_user = db_session.scalar(
+        select(User).where(User.email == "register-admin-reject@example.com")
     )
-    redteam_me = client.get(
-        "/api/v1/auth/me", headers=_auth_header(redteam_tokens["access_token"])
-    )
-    assert redteam_me.status_code == 200
-    assert redteam_me.json()["data"]["role"] == SystemRole.RED_TEAM.value
+    assert after_user is None
 
     logs = db_session.scalars(
         select(SystemLog).where(
@@ -586,17 +588,17 @@ def test_register_supports_developer_and_redteam(client, db_session):
             SystemLog.action == "auth.register",
         )
     ).all()
-    assert len(logs) >= 2
+    assert len(logs) == 0
 
 
-def test_register_rejects_admin_role(client):
+def test_register_rejects_unknown_role(client):
     resp = client.post(
         "/api/v1/auth/register",
         json={
-            "email": "register-admin-should-fail@example.com",
+            "email": "register-unknown-should-fail@example.com",
             "password": "Password123!",
-            "display_name": "register-admin",
-            "role": SystemRole.ADMIN.value,
+            "display_name": "register-unknown",
+            "role": "LegacyRole",
         },
     )
     assert resp.status_code == 422
@@ -610,7 +612,7 @@ def test_register_writes_audit_log(client, db_session):
             "email": "audit-register@example.com",
             "password": "Password123!",
             "display_name": "audit-register",
-            "role": SystemRole.DEVELOPER.value,
+            "role": SystemRole.USER.value,
         },
     )
     assert resp.status_code == 201
@@ -631,19 +633,19 @@ def test_maintainer_can_manage_members(client, db_session):
         db_session,
         email="owner2@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     maintainer = _create_user(
         db_session,
         email="maintainer@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     target = _create_user(
         db_session,
         email="target@example.com",
         password="Password123!",
-        role=SystemRole.RED_TEAM.value,
+        role=SystemRole.USER.value,
     )
     project = _create_project(db_session, name="maintainer-project")
     _add_member(
@@ -673,19 +675,19 @@ def test_reader_cannot_manage_members(client, db_session):
         db_session,
         email="owner3@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     reader = _create_user(
         db_session,
         email="reader@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     target = _create_user(
         db_session,
         email="target2@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     project = _create_project(db_session, name="reader-project")
     _add_member(
@@ -716,7 +718,7 @@ def test_owner_can_delete_own_project(client, db_session):
         db_session,
         email="owner-delete@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     owner_tokens = _login(client, email=owner.email, password="Password123!")
 
@@ -747,13 +749,13 @@ def test_maintainer_cannot_delete_project(client, db_session):
         db_session,
         email="owner-keep@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     maintainer = _create_user(
         db_session,
         email="maintainer-no-delete@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     owner_tokens = _login(client, email=owner.email, password="Password123!")
     maintainer_tokens = _login(client, email=maintainer.email, password="Password123!")
@@ -789,7 +791,7 @@ def test_admin_can_delete_any_project(client, db_session):
         db_session,
         email="owner-for-admin-delete@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     admin = _create_user(
         db_session,
@@ -833,7 +835,7 @@ def test_audit_logs_endpoint_admin_only(client, db_session):
         db_session,
         email="audit-list-dev@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
 
     dev_tokens = _login(client, email=developer.email, password="Password123!")
@@ -850,7 +852,7 @@ def test_audit_logs_endpoint_admin_only(client, db_session):
             "email": "audit-list-created@example.com",
             "password": "Password123!",
             "display_name": "audit-created",
-            "role": SystemRole.DEVELOPER.value,
+            "role": SystemRole.USER.value,
         },
     )
     assert create_resp.status_code == 201
@@ -875,7 +877,7 @@ def test_runtime_logs_and_log_center_endpoints_admin_only(client, db_session):
         db_session,
         email="runtime-dev@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
 
     dev_tokens = _login(client, email=developer.email, password="Password123!")
@@ -900,7 +902,7 @@ def test_runtime_logs_and_log_center_endpoints_admin_only(client, db_session):
             "email": "runtime-created@example.com",
             "password": "Password123!",
             "display_name": "runtime-created",
-            "role": SystemRole.DEVELOPER.value,
+            "role": SystemRole.USER.value,
         },
     )
     assert register_resp.status_code == 201
@@ -1023,13 +1025,12 @@ def test_audit_logs_support_keyword_group_and_zh_fields(client, db_session):
         db_session,
         request_id="req-audit-zh-1",
         operator_user_id=admin.id,
-        action="version.baseline.set",
+        action="version.create",
         resource_type="VERSION",
         resource_id="version-a",
         detail_json={
-            "context": {"project_id": "project-a"},
-            "change": {"baseline_version_id": "version-a"},
-            "outcome": {"status": "SUCCEEDED"},
+            "source": "UPLOAD",
+            "snapshot_object_key": "snapshots/version-a/snapshot.tar.gz",
         },
     )
     append_audit_log(
@@ -1048,7 +1049,7 @@ def test_audit_logs_support_keyword_group_and_zh_fields(client, db_session):
         headers=_auth_header(tokens["access_token"]),
         params={
             "action_group": "version",
-            "keyword": "基线",
+            "keyword": "代码快照",
             "high_value_only": "true",
         },
     )
@@ -1056,10 +1057,10 @@ def test_audit_logs_support_keyword_group_and_zh_fields(client, db_session):
     data = resp.json()["data"]
     assert data["total"] >= 1
     item = data["items"][0]
-    assert item["action"] == "version.baseline.set"
-    assert item["action_zh"] == "设置基线版本"
+    assert item["action"] == "version.create"
+    assert item["action_zh"] == "创建代码快照"
     assert item["action_group"] == "version"
-    assert "基线版本" in item["summary_zh"]
+    assert "创建代码快照" in item["summary_zh"]
     assert set(item["detail_json"].keys()) == {"context", "change", "outcome"}
 
 

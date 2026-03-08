@@ -9,9 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field
 class ScanJobCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    project_id: uuid.UUID
-    version_id: uuid.UUID
-    scan_mode: str = Field(default="FULL", min_length=1, max_length=16)
+    project_id: uuid.UUID = Field(description="项目 ID")
+    version_id: uuid.UUID = Field(description="代码快照 ID")
+    scan_mode: str = Field(
+        default="FULL",
+        min_length=1,
+        max_length=16,
+        description="扫描模式：FULL / FAST / VERIFY（快速确认）",
+    )
     rule_set_keys: list[str] = Field(default_factory=list)
     rule_keys: list[str] = Field(default_factory=list)
     note: str | None = Field(default=None, max_length=1024)

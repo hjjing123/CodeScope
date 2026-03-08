@@ -37,7 +37,6 @@ def _project_payload(
         name=project.name,
         description=project.description,
         status=project.status,
-        baseline_version_id=project.baseline_version_id,
         my_project_role=my_project_role,
         created_at=project.created_at,
         updated_at=project.updated_at,

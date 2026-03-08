@@ -169,16 +169,16 @@ def create_scan_job_endpoint(
 
     version = db.get(Version, payload.version_id)
     if version is None:
-        raise AppError(code="NOT_FOUND", status_code=404, message="版本不存在")
+        raise AppError(code="NOT_FOUND", status_code=404, message="代码快照不存在")
     if version.project_id != payload.project_id:
         raise AppError(
             code="INVALID_ARGUMENT",
             status_code=422,
-            message="version_id 不属于当前项目",
+            message="version_id 不属于当前项目的代码快照",
         )
     if version.status != VersionStatus.READY.value:
         raise AppError(
-            code="VERSION_NOT_READY", status_code=409, message="仅 READY 版本可发起扫描"
+            code="VERSION_NOT_READY", status_code=409, message="仅 READY 状态的代码快照可发起扫描"
         )
 
     request_fingerprint = compute_scan_request_fingerprint(
@@ -229,6 +229,7 @@ def create_scan_job_endpoint(
         resource_id=str(job.id),
         project_id=payload.project_id,
         detail_json={
+            "snapshot_id": str(payload.version_id),
             "version_id": str(payload.version_id),
             "scan_mode": scan_mode,
             "rule_set_count": len(normalized_rule_set_keys),

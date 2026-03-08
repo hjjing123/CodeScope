@@ -22,7 +22,6 @@ class ProjectPayload(BaseModel):
     name: str
     description: str | None
     status: str
-    baseline_version_id: uuid.UUID | None
     my_project_role: str | None
     created_at: datetime
     updated_at: datetime

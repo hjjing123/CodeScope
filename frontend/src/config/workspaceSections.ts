@@ -70,15 +70,15 @@ export const workspaceSections: WorkspaceSection[] = [
   },
   {
     key: 'projects',
-    route: 'projects',
-    path: '/projects',
-    label: '项目与版本',
-    tagline: '管理项目接入、版本快照与扫描上下文。',
+    route: 'code-management',
+    path: '/code-management',
+    label: '代码管理',
+    tagline: '管理项目接入、代码快照与扫描上下文。',
     badge: 'Source Scope',
     intro:
-      '项目与版本是所有扫描任务的上游输入。该模块优先稳定列表、筛选和版本详情，后续扩展导入与关联分析。',
+      '代码管理是所有扫描任务的上游输入。该模块优先稳定项目列表、代码快照与导入能力，后续扩展关联分析。',
     icon: FolderOpenOutlined,
-    highlights: ['项目生命周期状态管理', '版本快照与提交信息可追踪', '导入来源和凭据策略隔离'],
+    highlights: ['项目生命周期状态管理', '代码快照与提交信息可追踪', '导入来源和凭据策略隔离'],
     blocks: [
       {
         title: '项目列表框架',
@@ -86,8 +86,8 @@ export const workspaceSections: WorkspaceSection[] = [
         status: 'skeleton',
       },
       {
-        title: '版本时间轴容器',
-        description: '用于展示版本创建、扫描触发和结果产出时间节点。',
+        title: '代码快照时间轴容器',
+        description: '用于展示代码快照创建、扫描触发和结果产出时间节点。',
         status: 'planned',
       },
       {
@@ -96,7 +96,7 @@ export const workspaceSections: WorkspaceSection[] = [
         status: 'next',
       },
     ],
-    nextAction: '优先完成项目列表和版本时间轴的数据契约，再接入导入流程。',
+    nextAction: '优先完成项目列表和代码快照时间轴的数据契约，再接入导入流程。',
   },
   {
     key: 'rules',

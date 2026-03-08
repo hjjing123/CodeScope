@@ -156,7 +156,7 @@ def test_project_and_version_flow(client, db_session, storage_settings):
         db_session,
         email="proj-dev@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     admin = _create_user(
         db_session,
@@ -173,6 +173,7 @@ def test_project_and_version_flow(client, db_session, storage_settings):
     )
     assert create_project_resp.status_code == 201
     project_id = create_project_resp.json()["data"]["id"]
+    assert "baseline_version_id" not in create_project_resp.json()["data"]
     assert (
         create_project_resp.json()["data"]["my_project_role"] == ProjectRole.OWNER.value
     )
@@ -189,6 +190,8 @@ def test_project_and_version_flow(client, db_session, storage_settings):
     )
     assert create_version_resp.status_code == 201
     version_id = create_version_resp.json()["data"]["id"]
+    assert "baseline_of_version_id" not in create_version_resp.json()["data"]
+    assert "is_baseline" not in create_version_resp.json()["data"]
 
     project_after_version_resp = client.get(
         f"/api/v1/projects/{project_id}",
@@ -197,20 +200,13 @@ def test_project_and_version_flow(client, db_session, storage_settings):
     assert project_after_version_resp.status_code == 200
     assert project_after_version_resp.json()["data"]["status"] == "SCANNABLE"
 
-    baseline_resp = client.post(
-        f"/api/v1/versions/{version_id}/baseline",
-        headers=_auth_header(dev_tokens["access_token"]),
-    )
-    assert baseline_resp.status_code == 200
-    assert baseline_resp.json()["data"]["baseline_version_id"] == version_id
-
     list_versions_resp = client.get(
         f"/api/v1/projects/{project_id}/versions",
         headers=_auth_header(dev_tokens["access_token"]),
     )
     assert list_versions_resp.status_code == 200
-    assert list_versions_resp.json()["data"]["baseline_version_id"] == version_id
-    assert list_versions_resp.json()["data"]["items"][0]["is_baseline"] is True
+    assert "baseline_version_id" not in list_versions_resp.json()["data"]
+    assert "is_baseline" not in list_versions_resp.json()["data"]["items"][0]
 
     admin_tokens = _login(client, email=admin.email, password="Password123!")
     archive_resp = client.post(
@@ -247,7 +243,7 @@ def test_upload_import_success_and_code_browse(client, db_session, storage_setti
         db_session,
         email="upload-dev@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -330,7 +326,7 @@ def test_upload_zip_slip_marks_import_job_failed(client, db_session, storage_set
         db_session,
         email="zip-slip-dev@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -365,7 +361,7 @@ def test_git_import_and_sync(client, db_session, storage_settings, tmp_path: Pat
         db_session,
         email="git-dev@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -442,13 +438,13 @@ def test_import_job_requires_project_membership(client, db_session, storage_sett
         db_session,
         email="import-owner@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     outsider = _create_user(
         db_session,
         email="import-outsider@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     owner_tokens = _login(client, email=owner.email, password="Password123!")
     outsider_tokens = _login(client, email=outsider.email, password="Password123!")
@@ -488,7 +484,7 @@ def test_upload_import_idempotency_replay(client, db_session, storage_settings):
         db_session,
         email="idem-upload@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -527,7 +523,7 @@ def test_upload_import_idempotency_conflict(client, db_session, storage_settings
         db_session,
         email="idem-conflict@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -563,7 +559,7 @@ def test_deleted_project_blocks_import_and_new_version(client, db_session):
         db_session,
         email="deleted-block@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -608,7 +604,7 @@ def test_deleted_version_is_not_accessible(client, db_session, storage_settings)
         db_session,
         email="deleted-version@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     admin = _create_user(
         db_session,
@@ -653,13 +649,6 @@ def test_deleted_version_is_not_accessible(client, db_session, storage_settings)
     assert get_resp.status_code == 404
     assert get_resp.json()["error"]["code"] == "NOT_FOUND"
 
-    baseline_resp = client.post(
-        f"/api/v1/versions/{version_id}/baseline",
-        headers=_auth_header(tokens["access_token"]),
-    )
-    assert baseline_resp.status_code == 404
-    assert baseline_resp.json()["error"]["code"] == "NOT_FOUND"
-
     archive_resp = client.post(
         f"/api/v1/versions/{version_id}/archive",
         headers=_auth_header(admin_tokens["access_token"]),
@@ -695,7 +684,7 @@ def test_version_snapshot_path_traversal_rejected(client, db_session, storage_se
         db_session,
         email="path-traversal@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -748,7 +737,7 @@ def test_update_project_rejects_unknown_status_field(client, db_session):
         db_session,
         email="project-update-contract@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -783,7 +772,7 @@ def test_import_dispatch_failure_returns_structured_error(
         db_session,
         email="dispatch-fail@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -821,7 +810,7 @@ def test_delete_project_cleans_snapshot_and_import_artifacts(
         db_session,
         email="delete-cleanup@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -878,7 +867,7 @@ def test_git_credential_placeholder_returns_not_configured(
         db_session,
         email="credential-placeholder@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 

@@ -10,6 +10,9 @@ from app.models import Job, JobStage, ScanMode
 
 from .contracts import ExternalScanContext, ExternalStageSpec
 
+WSL_RUNTIME_PROFILE = "wsl"
+CONTAINER_COMPAT_RUNTIME_PROFILE = "container_compat"
+
 
 def build_external_scan_context(
     *, job: Job, settings: Any, backend_root: Path
@@ -57,6 +60,7 @@ def build_external_scan_context(
         source_dir=source_dir,
         import_dir=import_dir,
         cpg_file=cpg_file,
+        stage_specs=stage_specs,
     )
     return ExternalScanContext(
         reports_dir=reports_dir,
@@ -199,7 +203,9 @@ def _prepare_workspace_paths(
             message="未配置扫描工作目录",
         )
 
-    workspace_dir = workspace_root / str(job.id) / "external"
+    workspace_dir = (
+        workspace_root / str(job.project_id) / str(job.version_id) / "external"
+    )
     import_dir = workspace_dir / "import_csv"
     cpg_file = workspace_dir / "code.bin"
 
@@ -208,7 +214,7 @@ def _prepare_workspace_paths(
 
 
 def _build_stage_specs(*, settings: Any) -> list[ExternalStageSpec]:
-    legacy_command = (settings.scan_external_runner_command or "").strip()
+    legacy_command = (getattr(settings, "scan_external_runner_command", "") or "").strip()
     if legacy_command:
         return [
             ExternalStageSpec(
@@ -216,7 +222,8 @@ def _build_stage_specs(*, settings: Any) -> list[ExternalStageSpec]:
                 command=legacy_command,
                 log_stage=JobStage.QUERY.value,
                 timeout_seconds=_safe_timeout_seconds(
-                    settings.scan_external_timeout_seconds, default=3600
+                    getattr(settings, "scan_external_timeout_seconds", 3600),
+                    default=3600,
                 ),
                 failure_code="SCAN_EXTERNAL_RUN_FAILED",
                 timeout_code="SCAN_EXTERNAL_RUN_TIMEOUT",
@@ -226,44 +233,50 @@ def _build_stage_specs(*, settings: Any) -> list[ExternalStageSpec]:
     return [
         ExternalStageSpec(
             key="joern",
-            command=(settings.scan_external_stage_joern_command or "").strip(),
+            command=(
+                getattr(settings, "scan_external_stage_joern_command", "") or ""
+            ).strip(),
             log_stage=JobStage.ANALYZE.value,
             timeout_seconds=_safe_timeout_seconds(
-                settings.scan_external_stage_joern_timeout_seconds,
-                default=settings.scan_external_timeout_seconds,
+                getattr(settings, "scan_external_stage_joern_timeout_seconds", 3600),
+                default=getattr(settings, "scan_external_timeout_seconds", 3600),
             ),
             failure_code="SCAN_EXTERNAL_JOERN_FAILED",
             timeout_code="SCAN_EXTERNAL_JOERN_TIMEOUT",
         ),
         ExternalStageSpec(
             key="neo4j_import",
-            command=(settings.scan_external_stage_import_command or "").strip(),
+            command=(getattr(settings, "scan_external_stage_import_command", "") or "").strip(),
             log_stage=JobStage.ANALYZE.value,
             timeout_seconds=_safe_timeout_seconds(
-                settings.scan_external_stage_import_timeout_seconds,
-                default=settings.scan_external_timeout_seconds,
+                getattr(settings, "scan_external_stage_import_timeout_seconds", 3600),
+                default=getattr(settings, "scan_external_timeout_seconds", 3600),
             ),
             failure_code="SCAN_EXTERNAL_IMPORT_FAILED",
             timeout_code="SCAN_EXTERNAL_IMPORT_TIMEOUT",
         ),
         ExternalStageSpec(
             key="post_labels",
-            command=(settings.scan_external_stage_post_labels_command or "").strip(),
+            command=(
+                getattr(settings, "scan_external_stage_post_labels_command", "") or ""
+            ).strip(),
             log_stage=JobStage.QUERY.value,
             timeout_seconds=_safe_timeout_seconds(
-                settings.scan_external_stage_post_labels_timeout_seconds,
-                default=settings.scan_external_timeout_seconds,
+                getattr(
+                    settings, "scan_external_stage_post_labels_timeout_seconds", 1800
+                ),
+                default=getattr(settings, "scan_external_timeout_seconds", 3600),
             ),
             failure_code="SCAN_EXTERNAL_POST_LABELS_FAILED",
             timeout_code="SCAN_EXTERNAL_POST_LABELS_TIMEOUT",
         ),
         ExternalStageSpec(
             key="rules",
-            command=(settings.scan_external_stage_rules_command or "").strip(),
+            command=(getattr(settings, "scan_external_stage_rules_command", "") or "").strip(),
             log_stage=JobStage.QUERY.value,
             timeout_seconds=_safe_timeout_seconds(
-                settings.scan_external_stage_rules_timeout_seconds,
-                default=settings.scan_external_timeout_seconds,
+                getattr(settings, "scan_external_stage_rules_timeout_seconds", 3600),
+                default=getattr(settings, "scan_external_timeout_seconds", 3600),
             ),
             failure_code="SCAN_EXTERNAL_RULES_FAILED",
             timeout_code="SCAN_EXTERNAL_RULES_TIMEOUT",
@@ -280,7 +293,10 @@ def _build_scan_env(
     source_dir: Path,
     import_dir: Path,
     cpg_file: Path,
+    stage_specs: list[ExternalStageSpec] | None = None,
 ) -> dict[str, str]:
+    resolved_stage_specs = stage_specs or _build_stage_specs(settings=settings)
+    runtime_profile = _resolve_runtime_profile(settings=settings)
     env = dict(os.environ)
     scan_mode = str(job.payload.get("scan_mode", ScanMode.FULL.value))
     env["CODESCOPE_SCAN_JOB_ID"] = str(job.id)
@@ -290,6 +306,17 @@ def _build_scan_env(
     env["CODESCOPE_SCAN_REPORTS_DIR"] = str(reports_dir)
     env["CODESCOPE_SCAN_SOURCE_DIR"] = str(source_dir)
     env["CODESCOPE_SCAN_IMPORT_DIR"] = str(import_dir)
+    env["CODESCOPE_SCAN_RUNTIME_PROFILE"] = runtime_profile
+    env["CODESCOPE_SCAN_CONTAINER_COMPAT_MODE"] = (
+        "1" if runtime_profile == CONTAINER_COMPAT_RUNTIME_PROFILE else "0"
+    )
+    env["CODESCOPE_SCAN_IMPORT_HOST_PATH"] = _resolve_import_host_path(
+        settings=settings,
+        job=job,
+        backend_root=backend_root,
+        import_dir=import_dir,
+        runtime_profile=runtime_profile,
+    )
     env["CODESCOPE_SCAN_CPG_FILE"] = str(cpg_file)
     env["CODESCOPE_SCAN_RULE_SET_KEYS"] = _json_list_string(
         job.payload.get("rule_set_keys")
@@ -304,13 +331,21 @@ def _build_scan_env(
         job=job,
         backend_root=backend_root,
     )
-    joern_bin = resolve_external_path(
+    configured_joern_bin = resolve_external_path(
         raw_value=settings.scan_external_joern_bin or "",
         job=job,
         backend_root=backend_root,
     )
+    joern_bin = _resolve_joern_bin(
+        joern_home=joern_home,
+        configured_joern_bin=configured_joern_bin,
+        runtime_profile=runtime_profile,
+    )
+    joern_export_script_raw = str(settings.scan_external_joern_export_script or "").strip()
+    if not joern_export_script_raw:
+        joern_export_script_raw = "./assets/scan/joern/export_java_min.sc"
     joern_export_script = resolve_external_path(
-        raw_value=settings.scan_external_joern_export_script or "",
+        raw_value=joern_export_script_raw,
         job=job,
         backend_root=backend_root,
     )
@@ -344,15 +379,13 @@ def _build_scan_env(
         settings.scan_external_neo4j_database or ""
     )
 
-    joern_stage_enabled = bool(
-        (settings.scan_external_stage_joern_command or "").strip()
+    _validate_builtin_dependencies(
+        settings=settings,
+        stage_specs=resolved_stage_specs,
+        joern_home=joern_home,
+        joern_bin=joern_bin,
+        joern_export_script=joern_export_script,
     )
-    if joern_stage_enabled:
-        _validate_joern_paths(
-            joern_home=joern_home,
-            joern_bin=joern_bin,
-            joern_export_script=joern_export_script,
-        )
 
     return env
 
@@ -369,6 +402,37 @@ def _json_list_string(value: object) -> str:
         if text:
             cleaned.append(text)
     return json.dumps(cleaned, ensure_ascii=False)
+
+
+def _resolve_import_host_path(
+    *,
+    settings: Any,
+    job: Job,
+    backend_root: Path,
+    import_dir: Path,
+    runtime_profile: str,
+) -> str:
+    raw_host_path = str(settings.scan_external_import_csv_host_path or "").strip()
+    if runtime_profile == CONTAINER_COMPAT_RUNTIME_PROFILE and not raw_host_path:
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="容器兼容模式要求配置导入目录宿主机路径",
+            detail={
+                "required": "scan_external_import_csv_host_path",
+                "runtime_profile": runtime_profile,
+            },
+        )
+    if not raw_host_path:
+        return str(import_dir)
+    resolved = resolve_external_path(
+        raw_value=raw_host_path,
+        job=job,
+        backend_root=backend_root,
+    )
+    if resolved is None:
+        return str(import_dir)
+    return str(resolved)
 
 
 def _validate_joern_paths(
@@ -402,4 +466,119 @@ def _validate_joern_paths(
                 if joern_export_script
                 else ""
             },
+        )
+
+
+def _resolve_joern_bin(
+    *,
+    joern_home: Path | None,
+    configured_joern_bin: Path | None,
+    runtime_profile: str,
+) -> Path | None:
+    if joern_home is not None:
+        if runtime_profile == WSL_RUNTIME_PROFILE:
+            return joern_home / "joern"
+        if os.name == "nt":
+            windows_bin = joern_home / "joern.bat"
+            if windows_bin.exists() and windows_bin.is_file():
+                return windows_bin
+        return joern_home / "joern"
+    return configured_joern_bin
+
+
+def _resolve_runtime_profile(*, settings: Any) -> str:
+    configured = str(getattr(settings, "scan_external_runtime_profile", "") or "").strip().lower()
+    compat_mode = bool(getattr(settings, "scan_external_container_compat_mode", False))
+    if configured == CONTAINER_COMPAT_RUNTIME_PROFILE or compat_mode:
+        return CONTAINER_COMPAT_RUNTIME_PROFILE
+    return WSL_RUNTIME_PROFILE
+
+
+def _is_builtin_stage_enabled(
+    *, stage_specs: list[ExternalStageSpec], stage_key: str, builtin_key: str
+) -> bool:
+    for spec in stage_specs:
+        if spec.key != stage_key:
+            continue
+        command = (spec.command or "").strip().lower()
+        if command.startswith(f"builtin:{builtin_key}"):
+            return True
+    return False
+
+
+def _validate_builtin_dependencies(
+    *,
+    settings: Any,
+    stage_specs: list[ExternalStageSpec],
+    joern_home: Path | None,
+    joern_bin: Path | None,
+    joern_export_script: Path | None,
+) -> None:
+    if _is_builtin_stage_enabled(
+        stage_specs=stage_specs, stage_key="joern", builtin_key="joern"
+    ):
+        _validate_joern_paths(
+            joern_home=joern_home,
+            joern_bin=joern_bin,
+            joern_export_script=joern_export_script,
+        )
+
+    if _is_builtin_stage_enabled(
+        stage_specs=stage_specs, stage_key="neo4j_import", builtin_key="neo4j_import"
+    ):
+        _validate_import_settings(settings=settings)
+
+    if _is_builtin_stage_enabled(
+        stage_specs=stage_specs, stage_key="neo4j_import", builtin_key="neo4j_import"
+    ) or _is_builtin_stage_enabled(
+        stage_specs=stage_specs, stage_key="post_labels", builtin_key="post_labels"
+    ) or _is_builtin_stage_enabled(
+        stage_specs=stage_specs, stage_key="rules", builtin_key="rules"
+    ):
+        _validate_neo4j_settings(settings=settings)
+
+
+def _validate_import_settings(*, settings: Any) -> None:
+    image = str(settings.scan_external_import_docker_image or "").strip()
+    if not image:
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="未配置 Neo4j 导入镜像",
+            detail={"required": "scan_external_import_docker_image"},
+        )
+    data_mount = str(settings.scan_external_import_data_mount or "").strip()
+    if not data_mount:
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="未配置 Neo4j data 挂载点",
+            detail={"required": "scan_external_import_data_mount"},
+        )
+
+
+def _validate_neo4j_settings(*, settings: Any) -> None:
+    uri = str(settings.scan_external_neo4j_uri or "").strip()
+    if not uri:
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="未配置 Neo4j 连接地址",
+            detail={"required": "scan_external_neo4j_uri"},
+        )
+    user = str(settings.scan_external_neo4j_user or "").strip()
+    if not user:
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="未配置 Neo4j 用户名",
+            detail={"required": "scan_external_neo4j_user"},
+        )
+    database = str(settings.scan_external_neo4j_database or "").strip()
+    if not database:
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="未配置 Neo4j 数据库名",
+            detail={"required": "scan_external_neo4j_database"},
         )

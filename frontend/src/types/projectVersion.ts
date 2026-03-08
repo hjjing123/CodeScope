@@ -18,7 +18,6 @@ export interface Project {
   name: string;
   description?: string | null;
   status: string;
-  baseline_version_id?: string | null;
   my_project_role?: string | null;
   created_at: string;
   updated_at: string;
@@ -36,7 +35,6 @@ export interface VersionCreateRequest {
   tag?: string | null;
   git_repo_url?: string | null;
   git_ref?: string | null;
-  baseline_of_version_id?: string | null;
   snapshot_object_key?: string | null;
 }
 
@@ -49,10 +47,8 @@ export interface Version {
   tag?: string | null;
   git_repo_url?: string | null;
   git_ref?: string | null;
-  baseline_of_version_id?: string | null;
   snapshot_object_key?: string | null;
   status: string;
-  is_baseline: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -60,12 +56,6 @@ export interface Version {
 export interface VersionListResponse {
   items: Version[];
   total: number;
-  baseline_version_id?: string | null;
-}
-
-export interface VersionBaselineResponse {
-  project_id: string;
-  baseline_version_id: string;
 }
 
 export interface VersionTreeEntry {
@@ -105,6 +95,20 @@ export interface GitImportTestRequest {
 
 export interface ImportJobTriggerResponse {
   import_job_id: string;
+  idempotent_replay: boolean;
+}
+
+export type ScanMode = 'FULL' | 'FAST' | 'VERIFY';
+
+export interface ScanJobCreateRequest {
+  project_id: string;
+  version_id: string;
+  scan_mode: ScanMode;
+  note?: string;
+}
+
+export interface ScanJobTriggerResponse {
+  job_id: string;
   idempotent_replay: boolean;
 }
 

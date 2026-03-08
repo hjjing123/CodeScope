@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { Modal, Steps, Button, Form, Input, Upload, message, Select, Card, Space } from 'antd';
+import { Modal, Steps, Button, Form, Input, Upload, message, Select, Card, Space, Tag } from 'antd';
 import { GithubOutlined, InboxOutlined, LinkOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
-import { triggerGitImport, uploadImportFile } from '../../services/projectVersion';
+import { testGitImport, triggerGitImport, uploadImportFile } from '../../services/projectVersion';
 
 const { Dragger } = Upload;
 const { TextArea } = Input;
@@ -25,6 +25,8 @@ const ImportWizard: React.FC<ImportWizardProps> = ({ open, onCancel, onSuccess, 
   const [currentStep, setCurrentStep] = useState(0);
   const [importType, setImportType] = useState<'upload' | 'git'>('upload');
   const [loading, setLoading] = useState(false);
+  const [testingGit, setTestingGit] = useState(false);
+  const [gitTestResult, setGitTestResult] = useState<string | null>(null);
   const [form] = Form.useForm();
   const [fileList, setFileList] = useState<UploadFile[]>([]);
 
@@ -76,9 +78,29 @@ const ImportWizard: React.FC<ImportWizardProps> = ({ open, onCancel, onSuccess, 
   const reset = () => {
     setCurrentStep(0);
     setImportType('upload');
+    setGitTestResult(null);
     setFileList([]);
     form.resetFields();
     onCancel();
+  };
+
+  const handleTestGit = async () => {
+    try {
+      const values = await form.validateFields(['repoUrl', 'refType', 'refValue']);
+      setTestingGit(true);
+      const response = await testGitImport(projectId, {
+        repo_url: values.repoUrl,
+        ref_type: values.refType,
+        ref_value: values.refValue,
+      });
+      setGitTestResult(response.data.resolved_ref);
+      message.success('Git 仓库连通性测试成功');
+    } catch (error) {
+      setGitTestResult(null);
+      message.error(`Git 测试失败: ${getErrorMessage(error, '未知错误')}`);
+    } finally {
+      setTestingGit(false);
+    }
   };
 
   const steps: Array<{ title: string; content: React.ReactNode }> = [
@@ -115,11 +137,11 @@ const ImportWizard: React.FC<ImportWizardProps> = ({ open, onCancel, onSuccess, 
         <Form form={form} layout="vertical" style={{ marginTop: 24 }}>
           <Form.Item
             name="versionName"
-            label="版本名称"
-            rules={[{ required: true, message: '请输入版本名称' }]}
-            tooltip="建议使用语义化版本号，如 v1.0.0"
+            label="代码快照名称"
+            rules={[{ required: true, message: '请输入代码快照名称' }]}
+            tooltip="建议使用语义化命名，如 snapshot-2026-03-07"
           >
-            <Input placeholder="例如: v1.0.0-release" />
+            <Input placeholder="例如: snapshot-2026-03-07" />
           </Form.Item>
 
           {importType === 'upload' ? (
@@ -181,11 +203,17 @@ const ImportWizard: React.FC<ImportWizardProps> = ({ open, onCancel, onSuccess, 
                   <Input placeholder="main" />
                 </Form.Item>
               </Space>
+              <Space size={8} style={{ marginBottom: 12 }}>
+                <Button onClick={() => void handleTestGit()} loading={testingGit}>
+                  Git 测试
+                </Button>
+                {gitTestResult && <Tag color="success">解析到 {gitTestResult}</Tag>}
+              </Space>
             </>
           )}
 
           <Form.Item name="note" label="备注">
-            <TextArea rows={3} placeholder="可选：输入版本备注信息" />
+            <TextArea rows={3} placeholder="可选：输入代码快照备注信息" />
           </Form.Item>
         </Form>
       ),
@@ -194,7 +222,7 @@ const ImportWizard: React.FC<ImportWizardProps> = ({ open, onCancel, onSuccess, 
 
   return (
     <Modal
-      title="导入新版本"
+      title="导入代码"
       open={open}
       onCancel={reset}
       width={600}

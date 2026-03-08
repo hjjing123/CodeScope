@@ -74,7 +74,7 @@ const WorkspaceLayout: React.FC = () => {
           <span className="workspace-footer-tag">
             <ThunderboltOutlined /> 框架模式
           </span>
-          <p className="workspace-footer-title">统一视觉基线已就绪</p>
+          <p className="workspace-footer-title">统一视觉规范已就绪</p>
           <p className="workspace-footer-text">
             当前侧栏、头部和内容区使用同一套色板与组件节奏，后续新增页面可直接复用。
           </p>

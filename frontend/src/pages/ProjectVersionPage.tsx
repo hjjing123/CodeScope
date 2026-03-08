@@ -23,7 +23,7 @@ const ProjectVersionPage: React.FC = () => {
         setProject(response.data);
       })
       .catch(() => {
-        message.error('Failed to load project details');
+        message.error('加载项目详情失败');
         setSelectedProjectId(null);
       })
       .finally(() => {
@@ -42,7 +42,7 @@ const ProjectVersionPage: React.FC = () => {
           >
             返回项目列表
           </Button>
-          {loading ? <Spin /> : project && <h2 style={{ margin: 0 }}>{project.name} - 版本管理</h2>}
+          {loading ? <Spin /> : project && <h2 style={{ margin: 0 }}>{project.name} - 代码快照记录</h2>}
         </div>
         <VersionList projectId={selectedProjectId} />
       </div>

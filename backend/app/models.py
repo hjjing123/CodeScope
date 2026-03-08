@@ -27,8 +27,7 @@ def utc_now() -> datetime:
 
 class SystemRole(StrEnum):
     ADMIN = "Admin"
-    DEVELOPER = "Developer"
-    RED_TEAM = "RedTeam"
+    USER = "User"
 
 
 class ProjectRole(StrEnum):
@@ -201,7 +200,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(
-        String(32), nullable=False, default=SystemRole.DEVELOPER.value
+        String(32), nullable=False, default=SystemRole.USER.value
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     must_change_password: Mapped[bool] = mapped_column(

@@ -57,7 +57,7 @@ def _login(client, *, email: str, password: str) -> dict[str, object]:
     response = client.post(
         "/api/v1/auth/login", json={"email": email, "password": password}
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     return response.json()["data"]
 
 
@@ -143,6 +143,7 @@ def external_scan_settings(tmp_path: Path):
         "scan_external_neo4j_connect_wait_seconds",
         "scan_external_import_docker_image",
         "scan_external_import_data_mount",
+        "scan_external_import_csv_host_path",
         "scan_external_import_database",
         "scan_external_import_id_type",
         "scan_external_import_array_delimiter",
@@ -150,6 +151,7 @@ def external_scan_settings(tmp_path: Path):
         "scan_external_import_multiline_fields",
         "scan_external_import_multiline_fields_format",
         "scan_external_import_preflight",
+        "scan_external_import_preflight_check_docker",
         "scan_external_neo4j_runtime_restart_mode",
         "scan_external_neo4j_runtime_container_name",
         "scan_external_neo4j_runtime_restart_wait_seconds",
@@ -180,8 +182,10 @@ def external_scan_settings(tmp_path: Path):
 
     joern_home = tmp_path / "joern-cli"
     joern_home.mkdir(parents=True, exist_ok=True)
-    joern_bin = joern_home / "joern.bat"
-    joern_bin.write_text("@echo off\n", encoding="utf-8")
+    joern_bin = joern_home / "joern"
+    joern_bin.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    joern_parse_bin = joern_home / "joern-parse"
+    joern_parse_bin.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     joern_export_script = tmp_path / "export_java_min.sc"
     joern_export_script.write_text("// test export script\n", encoding="utf-8")
 
@@ -209,6 +213,7 @@ def external_scan_settings(tmp_path: Path):
     settings.scan_external_neo4j_connect_wait_seconds = 1
     settings.scan_external_import_docker_image = "neo4j:5.26"
     settings.scan_external_import_data_mount = "data"
+    settings.scan_external_import_csv_host_path = ""
     settings.scan_external_import_database = "neo4j"
     settings.scan_external_import_id_type = "string"
     settings.scan_external_import_array_delimiter = "\\001"
@@ -216,8 +221,9 @@ def external_scan_settings(tmp_path: Path):
     settings.scan_external_import_multiline_fields = True
     settings.scan_external_import_multiline_fields_format = ""
     settings.scan_external_import_preflight = False
+    settings.scan_external_import_preflight_check_docker = True
     settings.scan_external_neo4j_runtime_restart_mode = "none"
-    settings.scan_external_neo4j_runtime_container_name = "neo4j"
+    settings.scan_external_neo4j_runtime_container_name = "CodeScope_neo4j"
     settings.scan_external_neo4j_runtime_restart_wait_seconds = 0
     settings.scan_external_stage_joern_command = "stage-joern-{job_id}"
     settings.scan_external_stage_import_command = "stage-import-{job_id}"
@@ -280,7 +286,7 @@ def test_scan_job_create_and_get_succeeds(client, db_session):
         db_session,
         email="scan-dev@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -409,7 +415,7 @@ def test_scan_job_idempotency_replay(client, db_session):
         db_session,
         email="scan-idem@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -456,7 +462,7 @@ def test_scan_job_idempotency_conflict(client, db_session):
         db_session,
         email="scan-idem-conflict@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -500,7 +506,7 @@ def test_scan_job_rejects_legacy_rule_set_ids_field(client, db_session):
         db_session,
         email="scan-legacy-field@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -540,13 +546,13 @@ def test_scan_job_requires_project_membership(client, db_session):
         db_session,
         email="scan-owner@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     outsider = _create_user(
         db_session,
         email="scan-outsider@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     owner_tokens = _login(client, email=owner.email, password="Password123!")
     outsider_tokens = _login(client, email=outsider.email, password="Password123!")
@@ -590,7 +596,7 @@ def test_scan_job_cancel_running(client, db_session):
         db_session,
         email="scan-cancel@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     project = _create_project(db_session, name="scan-cancel-project")
     _add_member(
@@ -633,7 +639,7 @@ def test_scan_job_retry_failed(client, db_session):
         db_session,
         email="scan-retry@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     project = _create_project(db_session, name="scan-retry-project")
     _add_member(
@@ -687,7 +693,7 @@ def test_list_jobs_non_admin_is_project_scoped(client, db_session):
         db_session,
         email="scan-scope-user@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     admin = _create_user(
         db_session,
@@ -753,7 +759,7 @@ def test_scan_job_logs_endpoint_returns_stage_logs(client, db_session):
         db_session,
         email="scan-logs@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -798,7 +804,7 @@ def test_findings_list_supports_job_id_filter(client, db_session):
         db_session,
         email="scan-findings@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -877,7 +883,7 @@ def test_scan_job_external_stage_orchestration_succeeds(
         db_session,
         email="scan-external-success@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -914,7 +920,7 @@ def test_scan_job_external_stage_orchestration_succeeds(
     )
     assert detail_resp.status_code == 200
     payload = detail_resp.json()["data"]
-    assert payload["status"] == JobStatus.SUCCEEDED.value, payload
+    assert payload["status"] == JobStatus.SUCCEEDED.value
     assert payload["result_summary"]["engine_mode"] == "external"
     assert payload["result_summary"]["hit_rules"] == 1
     assert len(payload["result_summary"]["external_stages"]) == 4
@@ -948,7 +954,7 @@ def test_scan_job_external_joern_failure_maps_failure_code(
         db_session,
         email="scan-external-joern-failed@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -967,6 +973,79 @@ def test_scan_job_external_joern_failure_maps_failure_code(
             "source": "UPLOAD",
             "snapshot_object_key": _seed_snapshot_object_key(
                 {"README.md": "external-joern\n"}
+            ),
+        },
+    )
+    version_id = version_resp.json()["data"]["id"]
+
+    create_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(tokens["access_token"]),
+        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FULL"},
+    )
+    assert create_resp.status_code == 202
+    job_id = create_resp.json()["data"]["job_id"]
+
+    detail_resp = client.get(
+        f"/api/v1/jobs/{job_id}", headers=_auth_header(tokens["access_token"])
+    )
+    assert detail_resp.status_code == 200
+    payload = detail_resp.json()["data"]
+    assert payload["status"] == JobStatus.FAILED.value
+    assert payload["failure_code"] == "SCAN_EXTERNAL_JOERN_FAILED"
+
+
+def test_scan_job_external_builtin_joern_contract_failure_maps_failure_code(
+    client,
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+    external_scan_settings,
+):
+    from app.services.scan_external import builtin as builtin_module
+
+    settings = external_scan_settings["settings"]
+    settings.scan_external_stage_joern_command = "builtin:joern"
+    settings.scan_external_stage_import_command = "builtin:neo4j_import"
+    settings.scan_external_stage_post_labels_command = "builtin:post_labels"
+    settings.scan_external_stage_rules_command = "builtin:rules"
+
+    def _fake_run_builtin_command(command, *, deadline, env=None):
+        if "--script" in command:
+            out_dir = Path(env["outDir"]) if env else None
+            if out_dir is not None:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                (out_dir / "nodes_File_header.csv").write_text("h\n", encoding="utf-8")
+                (out_dir / "nodes_File_data.csv").write_text("d\n", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "export-ok", "")
+        return subprocess.CompletedProcess(command, 0, "parse-ok", "")
+
+    monkeypatch.setattr(
+        builtin_module, "_run_command_with_deadline", _fake_run_builtin_command
+    )
+
+    developer = _create_user(
+        db_session,
+        email="scan-external-builtin-joern-contract@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "scan-external-builtin-joern-contract-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "scan-external-builtin-joern-contract-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key(
+                {"README.md": "external-builtin-joern-contract\n"}
             ),
         },
     )
@@ -1010,7 +1089,7 @@ def test_scan_job_external_rules_timeout_maps_failure_code(
         db_session,
         email="scan-external-rules-timeout@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -1064,13 +1143,24 @@ def test_scan_job_external_builtin_stage_pipeline(
     settings.scan_external_stage_import_command = "builtin:neo4j_import"
     settings.scan_external_stage_post_labels_command = "builtin:post_labels"
     settings.scan_external_stage_rules_command = "builtin:rules"
+    joern_home = Path(settings.scan_external_joern_home)
+    windows_joern_bin = joern_home / "joern.bat"
+    windows_joern_bin.write_text("@echo off\n", encoding="utf-8")
+    settings.scan_external_joern_bin = str(windows_joern_bin)
 
     executed: list[str] = []
+    captured_paths: dict[str, str] = {}
 
     def _fake_builtin_stage(
         *, builtin_key, job, settings, context, append_log, timeout_seconds
     ):
         executed.append(str(builtin_key))
+        if builtin_key == "joern":
+            captured_paths["joern_bin"] = context.base_env.get(
+                "CODESCOPE_SCAN_JOERN_BIN", ""
+            )
+            captured_paths["import_dir"] = str(context.import_dir)
+            captured_paths["cpg_file"] = str(context.cpg_file)
         if builtin_key == "rules":
             _write_round_report(context.reports_dir)
         return f"{builtin_key} ok", ""
@@ -1081,7 +1171,7 @@ def test_scan_job_external_builtin_stage_pipeline(
         db_session,
         email="scan-external-builtin@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -1124,6 +1214,114 @@ def test_scan_job_external_builtin_stage_pipeline(
     payload = detail_resp.json()["data"]
     assert payload["status"] == JobStatus.SUCCEEDED.value
     assert executed == ["joern", "neo4j_import", "post_labels", "rules"]
+    assert captured_paths["joern_bin"] == str(joern_home / "joern")
+    assert Path(captured_paths["import_dir"]).parts[-4:] == (
+        project_id,
+        version_id,
+        "external",
+        "import_csv",
+    )
+    assert Path(captured_paths["cpg_file"]).parts[-4:] == (
+        project_id,
+        version_id,
+        "external",
+        "code.bin",
+    )
+
+
+def test_scan_job_external_builtin_stage_pipeline_paths_stable_across_retries(
+    client,
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+    external_scan_settings,
+):
+    from app.services.scan_external import orchestrator as orchestrator_module
+
+    settings = external_scan_settings["settings"]
+    settings.scan_external_stage_joern_command = "builtin:joern"
+    settings.scan_external_stage_import_command = "builtin:neo4j_import"
+    settings.scan_external_stage_post_labels_command = "builtin:post_labels"
+    settings.scan_external_stage_rules_command = "builtin:rules"
+
+    joern_runs: list[dict[str, str]] = []
+
+    def _fake_builtin_stage(
+        *, builtin_key, job, settings, context, append_log, timeout_seconds
+    ):
+        if builtin_key == "joern":
+            joern_runs.append(
+                {
+                    "import_dir": str(context.import_dir),
+                    "cpg_file": str(context.cpg_file),
+                }
+            )
+        if builtin_key == "rules":
+            _write_round_report(context.reports_dir)
+        return f"{builtin_key} ok", ""
+
+    monkeypatch.setattr(orchestrator_module, "run_builtin_stage", _fake_builtin_stage)
+
+    developer = _create_user(
+        db_session,
+        email="scan-external-builtin-stable@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "scan-external-builtin-stable-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "scan-external-builtin-stable-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key(
+                {"README.md": "external-builtin-stable\n"}
+            ),
+        },
+    )
+    version_id = version_resp.json()["data"]["id"]
+
+    for _ in range(2):
+        create_resp = client.post(
+            "/api/v1/scan-jobs",
+            headers=_auth_header(tokens["access_token"]),
+            json={
+                "project_id": project_id,
+                "version_id": version_id,
+                "scan_mode": "FULL",
+            },
+        )
+        assert create_resp.status_code == 202
+        job_id = create_resp.json()["data"]["job_id"]
+        detail_resp = client.get(
+            f"/api/v1/jobs/{job_id}", headers=_auth_header(tokens["access_token"])
+        )
+        assert detail_resp.status_code == 200
+        assert detail_resp.json()["data"]["status"] == JobStatus.SUCCEEDED.value
+
+    assert len(joern_runs) == 2
+    assert joern_runs[0]["import_dir"] == joern_runs[1]["import_dir"]
+    assert joern_runs[0]["cpg_file"] == joern_runs[1]["cpg_file"]
+    assert Path(joern_runs[0]["import_dir"]).parts[-4:] == (
+        project_id,
+        version_id,
+        "external",
+        "import_csv",
+    )
+    assert Path(joern_runs[0]["cpg_file"]).parts[-4:] == (
+        project_id,
+        version_id,
+        "external",
+        "code.bin",
+    )
 
 
 def test_scan_job_external_builtin_rules_honors_string_rule_names(
@@ -1159,7 +1357,7 @@ def test_scan_job_external_builtin_rules_honors_string_rule_names(
         db_session,
         email="scan-external-rule-filter@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -1263,7 +1461,7 @@ def test_scan_job_external_builtin_live_smoke(
         db_session,
         email="scan-external-live-smoke@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -1337,7 +1535,7 @@ def test_scan_job_external_builtin_live_full_smoke(
     backend_root = Path(__file__).resolve().parents[1]
     workspace_root = backend_root.parent
     joern_home = workspace_root / "infra" / "tools" / "joern-cli"
-    joern_bin = joern_home / "joern.bat"
+    joern_bin = joern_home / "joern"
     export_script = backend_root / "assets" / "scan" / "joern" / "export_java_min.sc"
     post_labels = backend_root / "assets" / "scan" / "query" / "post_labels.cypher"
     rules_dir = backend_root / "assets" / "scan" / "rules"
@@ -1380,7 +1578,7 @@ def test_scan_job_external_builtin_live_full_smoke(
     settings.scan_external_neo4j_runtime_restart_mode = "docker"
     settings.scan_external_neo4j_runtime_container_name = os.getenv(
         "CODESCOPE_SCAN_EXTERNAL_NEO4J_CONTAINER_NAME",
-        "neo4j",
+        "CodeScope_neo4j",
     )
     settings.scan_external_neo4j_runtime_restart_wait_seconds = 8
 
@@ -1388,7 +1586,7 @@ def test_scan_job_external_builtin_live_full_smoke(
         db_session,
         email="scan-external-live-full-smoke@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -1455,7 +1653,7 @@ def test_results_overview_and_finding_label_flow(client, db_session):
         db_session,
         email="result-flow-dev@example.com",
         password="Password123!",
-        role=SystemRole.DEVELOPER.value,
+        role=SystemRole.USER.value,
     )
     tokens = _login(client, email=developer.email, password="Password123!")
 
@@ -1515,19 +1713,10 @@ def test_results_overview_and_finding_label_flow(client, db_session):
     assert label_resp.status_code == 200
     assert label_resp.json()["data"]["finding"]["status"] == "TP"
 
-    fixed_resp = client.post(
-        f"/api/v1/findings/{finding_id}/mark-fixed",
-        headers=_auth_header(tokens["access_token"]),
-        json={"comment": "fixed manually"},
-    )
-    assert fixed_resp.status_code == 200
-    assert fixed_resp.json()["data"]["finding"]["status"] == "FIXED"
-
     labels = db_session.scalars(
         select(FindingLabel).where(FindingLabel.finding_id == uuid.UUID(finding_id))
     ).all()
     assert any(item.status == "TP" for item in labels)
-    assert any(item.status == "FIXED" for item in labels)
 
     path_resp = client.get(
         f"/api/v1/findings/{finding_id}/paths",
@@ -1554,7 +1743,7 @@ def test_job_logs_download_artifacts_and_version_download(
             db_session,
             email="artifact-dev@example.com",
             password="Password123!",
-            role=SystemRole.DEVELOPER.value,
+            role=SystemRole.USER.value,
         )
         tokens = _login(client, email=developer.email, password="Password123!")
 

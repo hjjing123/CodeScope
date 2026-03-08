@@ -50,10 +50,6 @@ class FindingLabelRequest(BaseModel):
     comment: str | None = Field(default=None, max_length=1024)
 
 
-class FindingMarkFixedRequest(BaseModel):
-    comment: str | None = Field(default=None, max_length=1024)
-
-
 class FindingLabelPayload(BaseModel):
     id: uuid.UUID
     finding_id: uuid.UUID

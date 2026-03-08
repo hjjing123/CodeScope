@@ -3,13 +3,13 @@ export interface LoginRequest {
   password: string;
 }
 
-export type RegisterRole = 'Developer' | 'RedTeam';
+export type RegisterRole = 'Admin' | 'User';
 
 export interface RegisterRequest {
   email: string;
   password: string;
   display_name: string;
-  role: RegisterRole;
+  role?: RegisterRole;
 }
 
 export interface AuthTokenPayload {

@@ -1,12 +1,11 @@
 import React, { useState } from 'react';
-import { Form, Input, Button, Card, Typography, Select, message } from 'antd';
+import { Form, Input, Button, Card, Typography, message } from 'antd';
 import {
   SafetyCertificateOutlined,
   UserAddOutlined,
   UserOutlined,
   MailOutlined,
   LockOutlined,
-  TeamOutlined,
   ArrowLeftOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -20,11 +19,6 @@ interface RegisterFormValues extends RegisterRequest {
   confirmPassword: string;
 }
 
-const roleOptions: Array<{ label: string; value: RegisterRequest['role'] }> = [
-  { label: '研发人员 (Developer)', value: 'Developer' },
-  { label: '红队成员 (RedTeam)', value: 'RedTeam' },
-];
-
 const Register: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
@@ -36,7 +30,6 @@ const Register: React.FC = () => {
         email: values.email,
         password: values.password,
         display_name: values.display_name.trim(),
-        role: values.role,
       });
       message.success('注册成功，请使用新账号登录');
       navigate('/login');
@@ -59,7 +52,7 @@ const Register: React.FC = () => {
             创建平台账号
           </Title>
           <Text className="register-subtitle">
-            注册后即可进入代码安全审计平台，按角色管理项目、规则和扫描任务。
+            注册后即可进入代码安全审计平台，使用普通用户权限管理项目、规则和扫描任务。
           </Text>
 
           <div className="register-cue-grid" aria-label="注册要点">
@@ -69,7 +62,7 @@ const Register: React.FC = () => {
             </div>
             <div className="register-cue-item">
               <span className="register-cue-key">Step 02</span>
-              <span className="register-cue-value">选择角色权限</span>
+                <span className="register-cue-value">设置并确认登录密码</span>
             </div>
             <div className="register-cue-item">
               <span className="register-cue-key">Step 03</span>
@@ -90,7 +83,6 @@ const Register: React.FC = () => {
             name="register"
             layout="vertical"
             requiredMark={false}
-            initialValues={{ role: 'Developer' }}
             onFinish={onFinish}
             className="register-form"
             size="large"
@@ -116,18 +108,6 @@ const Register: React.FC = () => {
               ]}
             >
               <Input prefix={<MailOutlined />} placeholder="name@example.com" autoComplete="email" />
-            </Form.Item>
-
-            <Form.Item
-              label="角色"
-              name="role"
-              rules={[{ required: true, message: '请选择角色!' }]}
-            >
-              <Select
-                options={roleOptions}
-                suffixIcon={<TeamOutlined />}
-                popupClassName="register-role-popup"
-              />
             </Form.Item>
 
             <Form.Item
