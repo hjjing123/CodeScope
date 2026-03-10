@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import re
+import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -101,10 +102,14 @@ def read_task_logs(
     task_type: str,
     task_id: uuid.UUID,
     stage: str | None,
-    tail: int,
+    tail: int | None,
 ) -> list[dict[str, object]]:
     normalized_task_type = _normalize_task_type(task_type)
-    safe_tail = min(max(1, int(tail)), 5000)
+    safe_tail: int | None = None
+    if tail is not None:
+        raw_tail = int(tail)
+        if raw_tail > 0:
+            safe_tail = min(raw_tail, 5000)
     stages = _resolve_stages(task_type=normalized_task_type, stage=stage)
 
     items: list[dict[str, object]] = []
@@ -118,15 +123,60 @@ def read_task_logs(
             continue
         lines = content.decode("utf-8", errors="replace").splitlines()
         line_count = len(lines)
+        selected_lines = lines if safe_tail is None else lines[-safe_tail:]
         items.append(
             {
                 "stage": stage_name,
-                "lines": lines[-safe_tail:],
+                "lines": selected_lines,
                 "line_count": line_count,
-                "truncated": line_count > safe_tail,
+                "truncated": safe_tail is not None and line_count > safe_tail,
             }
         )
     return items
+
+
+def read_task_log_events(
+    *,
+    task_type: str,
+    task_id: uuid.UUID,
+    stage: str | None,
+    after_seq: int = 0,
+    limit: int = 1000,
+) -> list[dict[str, object]]:
+    normalized_task_type = _normalize_task_type(task_type)
+    safe_after_seq = max(0, int(after_seq))
+    safe_limit = min(max(1, int(limit)), 5000)
+    stages = _resolve_stages(task_type=normalized_task_type, stage=stage)
+
+    events: list[dict[str, object]] = []
+    seq = 0
+    for stage_name in stages:
+        content = _read_stage_bytes(
+            task_type=normalized_task_type,
+            task_id=task_id,
+            stage=stage_name,
+        )
+        if content is None:
+            continue
+        lines = content.decode("utf-8", errors="replace").splitlines()
+        for line in lines:
+            seq += 1
+            if seq <= safe_after_seq:
+                continue
+            parsed = _parse_log_line(line)
+            events.append(
+                {
+                    "seq": seq,
+                    "stage": stage_name,
+                    "step_key": _infer_step_key(parsed["message"]),
+                    "timestamp": parsed["timestamp"],
+                    "line": parsed["message"],
+                    "raw_line": line,
+                }
+            )
+            if len(events) >= safe_limit:
+                return events
+    return events
 
 
 def build_task_stage_log_bytes(
@@ -258,6 +308,58 @@ def sync_task_log_index(
         db.rollback()
 
 
+def delete_task_logs(
+    *, task_type: str, task_id: uuid.UUID, db: Session | None = None
+) -> dict[str, int]:
+    normalized_task_type = _normalize_task_type(task_type)
+    deleted_log_files_count = 0
+    deleted_task_log_index_count = 0
+
+    for stage in TASK_ALLOWED_STAGES[normalized_task_type]:
+        local_path = _task_stage_local_path(
+            task_type=normalized_task_type,
+            task_id=task_id,
+            stage=stage,
+            create=False,
+        )
+        if local_path is not None and local_path.exists() and local_path.is_file():
+            try:
+                local_path.unlink()
+                deleted_log_files_count += 1
+            except OSError:
+                pass
+
+        object_key = _task_stage_object_key(
+            task_type=normalized_task_type,
+            task_id=task_id,
+            stage=stage,
+        )
+        _delete_from_minio(object_key)
+
+    log_dir = _task_log_dir(
+        task_type=normalized_task_type, task_id=task_id, create=False
+    )
+    if log_dir is not None and log_dir.exists() and log_dir.is_dir():
+        if not any(log_dir.iterdir()):
+            shutil.rmtree(log_dir, ignore_errors=True)
+
+    if db is not None:
+        rows = db.scalars(
+            select(TaskLogIndex).where(
+                TaskLogIndex.task_type == normalized_task_type,
+                TaskLogIndex.task_id == task_id,
+            )
+        ).all()
+        deleted_task_log_index_count = len(rows)
+        for row in rows:
+            db.delete(row)
+
+    return {
+        "deleted_log_files_count": deleted_log_files_count,
+        "deleted_task_log_index_count": deleted_task_log_index_count,
+    }
+
+
 def _normalize_task_type(task_type: str) -> str:
     normalized = str(task_type).strip().upper()
     if normalized not in TASK_ALLOWED_STAGES:
@@ -311,6 +413,23 @@ def _task_log_dir(*, task_type: str, task_id: uuid.UUID, create: bool) -> Path |
 
 def _safe_stage_name(stage: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", stage).strip("_") or "unknown"
+
+
+def _parse_log_line(line: str) -> dict[str, str]:
+    match = re.match(r"^\[(?P<timestamp>[^\]]+)\]\s*(?P<message>.*)$", line)
+    if match is None:
+        return {"timestamp": "", "message": line}
+    timestamp = str(match.group("timestamp") or "").strip()
+    message = str(match.group("message") or "").strip()
+    return {"timestamp": timestamp, "message": message}
+
+
+def _infer_step_key(message: str) -> str | None:
+    marker = re.match(r"^\[(?P<step_key>[A-Za-z0-9_-]+)\]", message)
+    if marker is None:
+        return None
+    step_key = str(marker.group("step_key") or "").strip().lower()
+    return step_key or None
 
 
 def _task_stage_local_path(
@@ -512,6 +631,21 @@ def _minio_object_exists(object_key: str) -> bool:
         return False
     try:
         client.stat_object(bucket_name=bucket, object_name=object_key)
+        return True
+    except Exception:
+        return False
+
+
+def _delete_from_minio(object_key: str) -> bool:
+    client = _minio_client()
+    if client is None:
+        return False
+    settings = get_settings()
+    bucket = settings.task_log_minio_bucket.strip()
+    if not bucket:
+        return False
+    try:
+        client.remove_object(bucket_name=bucket, object_name=object_key)
         return True
     except Exception:
         return False

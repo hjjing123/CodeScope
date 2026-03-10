@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import shutil
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -17,21 +18,27 @@ def list_job_artifacts(*, job: Job) -> list[dict[str, object]]:
 
     logs_root = Path(settings.scan_log_root) / str(job.id)
     if logs_root.exists() and logs_root.is_dir():
-        for item in sorted(logs_root.glob("*.log"), key=lambda p: p.name.lower()):
+        for item in sorted(logs_root.iterdir(), key=lambda p: p.name.lower()):
+            if not item.is_file():
+                continue
             rel = item.name
+            artifact_type = "LOG" if item.suffix.lower() == ".log" else "ARCHIVE"
+            display_prefix = "log" if artifact_type == "LOG" else "archive"
             artifacts.append(
                 _artifact_payload(
                     source="scan_log",
                     relative_path=rel,
-                    artifact_type="LOG",
-                    display_name=f"log/{rel}",
+                    artifact_type=artifact_type,
+                    display_name=f"{display_prefix}/{rel}",
                     size_bytes=_stat_size(item),
                 )
             )
 
     workspace_root = Path(settings.scan_workspace_root) / str(job.id)
     if workspace_root.exists() and workspace_root.is_dir():
-        for item in sorted(_iter_files(workspace_root), key=lambda p: p.as_posix().lower()):
+        for item in sorted(
+            _iter_files(workspace_root), key=lambda p: p.as_posix().lower()
+        ):
             artifacts.append(
                 _artifact_payload(
                     source="scan_workspace",
@@ -44,7 +51,9 @@ def list_job_artifacts(*, job: Job) -> list[dict[str, object]]:
 
     reports_root = _external_reports_root(job=job)
     if reports_root is not None and reports_root.exists() and reports_root.is_dir():
-        for item in sorted(_iter_files(reports_root), key=lambda p: p.as_posix().lower()):
+        for item in sorted(
+            _iter_files(reports_root), key=lambda p: p.as_posix().lower()
+        ):
             artifacts.append(
                 _artifact_payload(
                     source="external_reports",
@@ -55,7 +64,9 @@ def list_job_artifacts(*, job: Job) -> list[dict[str, object]]:
                 )
             )
 
-    archive_file = Path(settings.snapshot_storage_root) / str(job.version_id) / "snapshot.tar.gz"
+    archive_file = (
+        Path(settings.snapshot_storage_root) / str(job.version_id) / "snapshot.tar.gz"
+    )
     if archive_file.exists() and archive_file.is_file():
         artifacts.append(
             _artifact_payload(
@@ -70,7 +81,9 @@ def list_job_artifacts(*, job: Job) -> list[dict[str, object]]:
     return artifacts
 
 
-def resolve_job_artifact(*, job: Job, artifact_id: str) -> tuple[Path, dict[str, object]]:
+def resolve_job_artifact(
+    *, job: Job, artifact_id: str
+) -> tuple[Path, dict[str, object]]:
     source, relative_path = decode_artifact_id(artifact_id)
     root = _artifact_root(job=job, source=source)
     if root is None or not root.exists() or not root.is_dir():
@@ -93,11 +106,15 @@ def build_job_logs_zip_bytes(*, job_id: str) -> bytes:
     settings = get_settings()
     root = Path(settings.scan_log_root) / job_id
     if not root.exists() or not root.is_dir():
-        raise AppError(code="JOB_LOG_NOT_FOUND", status_code=404, message="任务日志不存在")
+        raise AppError(
+            code="JOB_LOG_NOT_FOUND", status_code=404, message="任务日志不存在"
+        )
 
     files = sorted(root.glob("*.log"), key=lambda item: item.name.lower())
     if not files:
-        raise AppError(code="JOB_LOG_NOT_FOUND", status_code=404, message="任务日志不存在")
+        raise AppError(
+            code="JOB_LOG_NOT_FOUND", status_code=404, message="任务日志不存在"
+        )
 
     buffer = io.BytesIO()
     with ZipFile(buffer, mode="w", compression=ZIP_DEFLATED) as zf:
@@ -107,7 +124,9 @@ def build_job_logs_zip_bytes(*, job_id: str) -> bytes:
 
 
 def get_job_stage_log_path(*, job_id: str, stage: str) -> Path:
-    safe_stage = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in stage).strip("_")
+    safe_stage = "".join(
+        ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in stage
+    ).strip("_")
     if not safe_stage:
         safe_stage = "unknown"
 
@@ -115,24 +134,62 @@ def get_job_stage_log_path(*, job_id: str, stage: str) -> Path:
     root = Path(settings.scan_log_root) / job_id
     path = root / f"{safe_stage}.log"
     if not path.exists() or not path.is_file():
-        raise AppError(code="JOB_LOG_NOT_FOUND", status_code=404, message="任务阶段日志不存在")
+        raise AppError(
+            code="JOB_LOG_NOT_FOUND", status_code=404, message="任务阶段日志不存在"
+        )
     return path
+
+
+def delete_scan_job_artifacts(*, job: Job) -> dict[str, int]:
+    settings = get_settings()
+    logs_root = Path(settings.scan_log_root) / str(job.id)
+    reports_root = _external_reports_root(job=job)
+
+    deleted_archive_files_count = 0
+    deleted_report_files_count = 0
+
+    if logs_root.exists() and logs_root.is_dir():
+        for item in list(logs_root.iterdir()):
+            if not item.is_file() or item.suffix.lower() == ".log":
+                continue
+            try:
+                item.unlink()
+                deleted_archive_files_count += 1
+            except OSError:
+                pass
+        if not any(logs_root.iterdir()):
+            shutil.rmtree(logs_root, ignore_errors=True)
+
+    if reports_root is not None and reports_root.exists() and reports_root.is_dir():
+        deleted_report_files_count = sum(1 for _ in _iter_files(reports_root))
+        shutil.rmtree(reports_root, ignore_errors=True)
+
+    return {
+        "deleted_archive_files_count": deleted_archive_files_count,
+        "deleted_report_files_count": deleted_report_files_count,
+    }
 
 
 def decode_artifact_id(artifact_id: str) -> tuple[str, str]:
     token = artifact_id.strip()
     if not token:
-        raise AppError(code="INVALID_ARGUMENT", status_code=422, message="artifact_id 不能为空")
+        raise AppError(
+            code="INVALID_ARGUMENT", status_code=422, message="artifact_id 不能为空"
+        )
 
     padded = token + "=" * (-len(token) % 4)
     try:
         raw = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
     except (UnicodeDecodeError, binascii.Error) as exc:
-        raise AppError(code="INVALID_ARGUMENT", status_code=422, message="artifact_id 格式不正确") from exc
+        raise AppError(
+            code="INVALID_ARGUMENT", status_code=422, message="artifact_id 格式不正确"
+        ) from exc
 
     source, sep, rel = raw.partition("|")
     if not sep or not source or not rel:
-        raise AppError(code="INVALID_ARGUMENT", status_code=422, message="artifact_id 内容不正确")
+        raise AppError(
+            code="INVALID_ARGUMENT", status_code=422, message="artifact_id 内容不正确"
+        )
     return source, rel
 
 
@@ -179,7 +236,9 @@ def _external_reports_root(*, job: Job) -> Path | None:
 def _safe_join(root: Path, relative_path: str) -> Path:
     rel = Path(relative_path)
     if rel.is_absolute() or ".." in rel.parts:
-        raise AppError(code="INVALID_ARGUMENT", status_code=422, message="产物路径不合法")
+        raise AppError(
+            code="INVALID_ARGUMENT", status_code=422, message="产物路径不合法"
+        )
 
     target = (root / rel).resolve()
     root_resolved = root.resolve()

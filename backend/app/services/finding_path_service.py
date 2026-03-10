@@ -3,9 +3,11 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from app.config import get_settings
 from app.core.errors import AppError
-from app.models import Finding
+from app.models import Finding, Job
 from app.services.snapshot_storage_service import read_snapshot_file_context
 
 
@@ -32,9 +34,18 @@ LIMIT $limit
 """.strip()
 
 
-def query_finding_paths(*, finding: Finding, mode: str, limit: int) -> list[dict[str, object]]:
+def query_finding_paths(
+    *, db: Session, finding: Finding, mode: str, limit: int
+) -> list[dict[str, object]]:
     normalized_mode = _normalize_mode(mode)
     safe_limit = min(max(1, int(limit)), 20)
+
+    if not bool(getattr(finding, "has_path", False)):
+        raise AppError(
+            code="PATH_NOT_AVAILABLE",
+            status_code=409,
+            message="当前漏洞未记录可查询的证据链",
+        )
 
     source_file = (finding.source_file or "").strip()
     sink_file = (finding.sink_file or "").strip()
@@ -48,6 +59,7 @@ def query_finding_paths(*, finding: Finding, mode: str, limit: int) -> list[dict
         )
 
     settings = get_settings()
+    neo4j_target = resolve_finding_neo4j_target(db=db, finding=finding)
     try:
         from neo4j import GraphDatabase
         from neo4j.exceptions import DatabaseUnavailable, ServiceUnavailable
@@ -58,9 +70,13 @@ def query_finding_paths(*, finding: Finding, mode: str, limit: int) -> list[dict
             message="未安装 neo4j 驱动，无法查询证据链",
         ) from exc
 
-    uri = (settings.scan_external_neo4j_uri or "").strip()
+    uri = str(neo4j_target["uri"] or "").strip()
     if not uri:
-        raise AppError(code="PATH_QUERY_FAILED", status_code=501, message="Neo4j 未配置，无法查询证据链")
+        raise AppError(
+            code="PATH_QUERY_FAILED",
+            status_code=501,
+            message="Neo4j 未配置，无法查询证据链",
+        )
 
     query = _QUERY_SHORTEST if normalized_mode == "shortest" else _QUERY_ALL
     params: dict[str, object] = {
@@ -85,7 +101,7 @@ def query_finding_paths(*, finding: Finding, mode: str, limit: int) -> list[dict
             wait_seconds=wait_seconds,
             retry_errors=(ServiceUnavailable, DatabaseUnavailable),
         )
-        with driver.session(database=settings.scan_external_neo4j_database) as session:
+        with driver.session(database=str(neo4j_target["database"])) as session:
             rows = list(session.run(query, params))
 
         results: list[dict[str, object]] = []
@@ -113,7 +129,11 @@ def query_finding_paths(*, finding: Finding, mode: str, limit: int) -> list[dict
         raise
     except Exception as exc:
         msg = str(exc).lower()
-        code = "PATH_QUERY_TIMEOUT" if "timeout" in msg or "timed out" in msg else "PATH_QUERY_FAILED"
+        code = (
+            "PATH_QUERY_TIMEOUT"
+            if "timeout" in msg or "timed out" in msg
+            else "PATH_QUERY_FAILED"
+        )
         raise AppError(
             code=code,
             status_code=422,
@@ -126,14 +146,17 @@ def query_finding_paths(*, finding: Finding, mode: str, limit: int) -> list[dict
 
 def load_finding_path_context(
     *,
+    db: Session,
     finding: Finding,
     step_id: int,
     before: int = 3,
     after: int = 3,
 ) -> dict[str, object]:
-    paths = query_finding_paths(finding=finding, mode="shortest", limit=1)
+    paths = query_finding_paths(db=db, finding=finding, mode="shortest", limit=1)
     if not paths:
-        raise AppError(code="PATH_NOT_FOUND", status_code=404, message="未查询到证据链路径")
+        raise AppError(
+            code="PATH_NOT_FOUND", status_code=404, message="未查询到证据链路径"
+        )
 
     steps = paths[0].get("steps") or []
     if step_id < 0 or step_id >= len(steps):
@@ -181,6 +204,29 @@ def load_finding_path_context(
     }
 
 
+def resolve_finding_neo4j_target(*, db: Session, finding: Finding) -> dict[str, str]:
+    settings = get_settings()
+    target = {
+        "uri": str(settings.scan_external_neo4j_uri or "").strip(),
+        "database": str(settings.scan_external_neo4j_database or "neo4j").strip()
+        or "neo4j",
+    }
+    job = db.get(Job, finding.job_id)
+    if job is None or not isinstance(job.result_summary, dict):
+        return target
+    runtime = job.result_summary.get("neo4j_runtime")
+    if not isinstance(runtime, dict):
+        return target
+
+    uri = str(runtime.get("uri") or "").strip()
+    database = str(runtime.get("database") or "").strip()
+    if uri:
+        target["uri"] = uri
+    if database:
+        target["database"] = database
+    return target
+
+
 def _normalize_mode(mode: str) -> str:
     normalized = (mode or "shortest").strip().lower()
     if normalized not in {"shortest", "all"}:
@@ -201,7 +247,9 @@ def _path_steps(path: Any) -> list[dict[str, object]]:
 
     for idx, node in enumerate(nodes):
         props = dict(node.items()) if hasattr(node, "items") else {}
-        labels = sorted(str(item) for item in getattr(node, "labels", []) if str(item).strip())
+        labels = sorted(
+            str(item) for item in getattr(node, "labels", []) if str(item).strip()
+        )
         file_path = _to_str(props.get("file"))
         line = _to_int(props.get("line"))
         func_name = _to_str(props.get("method")) or _to_str(props.get("name"))
@@ -240,7 +288,9 @@ def _to_str(value: object) -> str | None:
     return text or None
 
 
-def _verify_connectivity(*, driver, retry: int, wait_seconds: int, retry_errors: tuple[type[Exception], ...]) -> None:
+def _verify_connectivity(
+    *, driver, retry: int, wait_seconds: int, retry_errors: tuple[type[Exception], ...]
+) -> None:
     for attempt in range(1, retry + 1):
         try:
             driver.verify_connectivity()

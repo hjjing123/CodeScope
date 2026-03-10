@@ -13,8 +13,10 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.models import (
+    Finding,
     FindingLabel,
     Job,
+    JobStepStatus,
     JobStage,
     JobStatus,
     JobType,
@@ -281,6 +283,33 @@ def _write_round_report(
     )
 
 
+def _parse_sse_events(body: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for block in body.split("\n\n"):
+        chunk = block.strip()
+        if not chunk:
+            continue
+        payload: dict[str, object] = {"event": "message", "id": None, "data": {}}
+        data_lines: list[str] = []
+        for line in chunk.splitlines():
+            if line.startswith("event:"):
+                payload["event"] = line.split(":", 1)[1].strip()
+                continue
+            if line.startswith("id:"):
+                raw_id = line.split(":", 1)[1].strip()
+                try:
+                    payload["id"] = int(raw_id)
+                except ValueError:
+                    payload["id"] = None
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].strip())
+        if data_lines:
+            payload["data"] = json.loads("\n".join(data_lines))
+        events.append(payload)
+    return events
+
+
 def test_scan_job_create_and_get_succeeds(client, db_session):
     developer = _create_user(
         db_session,
@@ -314,7 +343,6 @@ def test_scan_job_create_and_get_succeeds(client, db_session):
         json={
             "project_id": project_id,
             "version_id": version_id,
-            "scan_mode": "FULL",
             "rule_keys": ["any_any_xss", "any_any_urlredirect"],
         },
     )
@@ -330,6 +358,212 @@ def test_scan_job_create_and_get_succeeds(client, db_session):
     assert job_resp.json()["data"]["stage"] == JobStage.CLEANUP.value
     assert job_resp.json()["data"]["result_summary"]["engine_mode"] == "stub"
     assert job_resp.json()["data"]["result_summary"]["total_findings"] >= 1
+
+
+def test_scan_job_defaults_to_full_mode_and_all_rules(client, db_session):
+    developer = _create_user(
+        db_session,
+        email="scan-defaults@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "scan-default-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "scan-default-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key(
+                {"README.md": "scan-default\n"}
+            ),
+        },
+    )
+    version_id = version_resp.json()["data"]["id"]
+
+    create_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "project_id": project_id,
+            "version_id": version_id,
+        },
+    )
+    assert create_resp.status_code == 202
+    job_id = create_resp.json()["data"]["job_id"]
+
+    job_resp = client.get(
+        f"/api/v1/jobs/{job_id}", headers=_auth_header(tokens["access_token"])
+    )
+    assert job_resp.status_code == 200
+    payload = job_resp.json()["data"]["payload"]
+    assert "scan_mode" not in payload
+    assert payload["rule_set_keys"] == []
+    assert payload["rule_keys"] == []
+    assert len(payload["resolved_rule_keys"]) > 0
+
+
+def test_delete_scan_job_selected_content_keeps_job_record(client, db_session):
+    developer = _create_user(
+        db_session,
+        email="scan-delete-content@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "scan-delete-content-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "scan-delete-content-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key({"README.md": "scan\n"}),
+        },
+    )
+    version_id = version_resp.json()["data"]["id"]
+
+    create_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "project_id": project_id,
+            "version_id": version_id,
+            "rule_keys": ["any_any_xss"],
+        },
+    )
+    assert create_resp.status_code == 202
+    job_id = create_resp.json()["data"]["job_id"]
+
+    settings = get_settings()
+    external_workspace = (
+        Path(settings.scan_workspace_root) / project_id / job_id / "external"
+    )
+    external_workspace.mkdir(parents=True, exist_ok=True)
+    (external_workspace / "temp.txt").write_text("workspace", encoding="utf-8")
+    legacy_workspace = Path(settings.scan_workspace_root) / job_id
+    legacy_workspace.mkdir(parents=True, exist_ok=True)
+    (legacy_workspace / "legacy.txt").write_text("legacy", encoding="utf-8")
+
+    findings_before = db_session.scalars(
+        select(Finding.id).where(Finding.job_id == uuid.UUID(job_id))
+    ).all()
+    assert findings_before
+
+    delete_resp = client.post(
+        f"/api/v1/jobs/{job_id}/delete",
+        headers=_auth_header(tokens["access_token"]),
+        json={"targets": ["logs", "artifacts", "workspace"]},
+    )
+    assert delete_resp.status_code == 200, delete_resp.text
+    payload = delete_resp.json()["data"]
+    assert payload["deleted_job_record"] is False
+    assert payload["deleted_log_files_count"] >= 1
+    assert payload["deleted_archive_files_count"] >= 1
+    assert payload["deleted_workspace_paths_count"] >= 1
+
+    job_resp = client.get(
+        f"/api/v1/jobs/{job_id}", headers=_auth_header(tokens["access_token"])
+    )
+    assert job_resp.status_code == 200
+
+    logs_resp = client.get(
+        f"/api/v1/jobs/{job_id}/logs", headers=_auth_header(tokens["access_token"])
+    )
+    assert logs_resp.status_code == 200
+    assert logs_resp.json()["data"]["items"] == []
+
+    artifacts_resp = client.get(
+        f"/api/v1/jobs/{job_id}/artifacts", headers=_auth_header(tokens["access_token"])
+    )
+    assert artifacts_resp.status_code == 200
+    remaining_sources = {
+        item["source"] for item in artifacts_resp.json()["data"]["items"]
+    }
+    assert "scan_log" not in remaining_sources
+    assert "scan_workspace" not in remaining_sources
+    assert "external_reports" not in remaining_sources
+
+    findings_after = db_session.scalars(
+        select(Finding.id).where(Finding.job_id == uuid.UUID(job_id))
+    ).all()
+    assert len(findings_after) == len(findings_before)
+
+
+def test_delete_scan_job_record_forces_findings_removal(client, db_session):
+    developer = _create_user(
+        db_session,
+        email="scan-delete-job@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "scan-delete-job-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "scan-delete-job-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key({"README.md": "scan\n"}),
+        },
+    )
+    version_id = version_resp.json()["data"]["id"]
+
+    create_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "project_id": project_id,
+            "version_id": version_id,
+            "rule_keys": ["any_any_xss"],
+        },
+    )
+    assert create_resp.status_code == 202
+    job_id = create_resp.json()["data"]["job_id"]
+
+    delete_resp = client.post(
+        f"/api/v1/jobs/{job_id}/delete",
+        headers=_auth_header(tokens["access_token"]),
+        json={"targets": ["job_record"]},
+    )
+    assert delete_resp.status_code == 200, delete_resp.text
+    payload = delete_resp.json()["data"]
+    assert payload["deleted_job_record"] is True
+    assert payload["forced_targets"] == ["findings"]
+    assert payload["deleted_findings_count"] >= 1
+
+    job_resp = client.get(
+        f"/api/v1/jobs/{job_id}", headers=_auth_header(tokens["access_token"])
+    )
+    assert job_resp.status_code == 404
+
+    remaining_findings = db_session.scalars(
+        select(Finding.id).where(Finding.job_id == uuid.UUID(job_id))
+    ).all()
+    assert remaining_findings == []
 
 
 def test_scan_job_accepts_rule_set_keys_and_rule_keys_union(
@@ -388,7 +622,6 @@ def test_scan_job_accepts_rule_set_keys_and_rule_keys_union(
         json={
             "project_id": project_id,
             "version_id": version_id,
-            "scan_mode": "FULL",
             "rule_set_keys": ["scan-default"],
             "rule_keys": ["any_any_urlredirect"],
         },
@@ -441,7 +674,7 @@ def test_scan_job_idempotency_replay(client, db_session):
     first_resp = client.post(
         "/api/v1/scan-jobs",
         headers={**_auth_header(tokens["access_token"]), "Idempotency-Key": key},
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FAST"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     assert first_resp.status_code == 202
     first_job_id = first_resp.json()["data"]["job_id"]
@@ -450,7 +683,7 @@ def test_scan_job_idempotency_replay(client, db_session):
     second_resp = client.post(
         "/api/v1/scan-jobs",
         headers={**_auth_header(tokens["access_token"]), "Idempotency-Key": key},
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FAST"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     assert second_resp.status_code == 200
     assert second_resp.json()["data"]["idempotent_replay"] is True
@@ -488,14 +721,22 @@ def test_scan_job_idempotency_conflict(client, db_session):
     first_resp = client.post(
         "/api/v1/scan-jobs",
         headers={**_auth_header(tokens["access_token"]), "Idempotency-Key": key},
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FAST"},
+        json={
+            "project_id": project_id,
+            "version_id": version_id,
+            "rule_keys": ["any_any_xss"],
+        },
     )
     assert first_resp.status_code == 202
 
     second_resp = client.post(
         "/api/v1/scan-jobs",
         headers={**_auth_header(tokens["access_token"]), "Idempotency-Key": key},
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FULL"},
+        json={
+            "project_id": project_id,
+            "version_id": version_id,
+            "rule_keys": ["any_any_urlredirect"],
+        },
     )
     assert second_resp.status_code == 409
     assert second_resp.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
@@ -534,8 +775,51 @@ def test_scan_job_rejects_legacy_rule_set_ids_field(client, db_session):
         json={
             "project_id": project_id,
             "version_id": version_id,
-            "scan_mode": "FULL",
             "rule_set_ids": ["any_any_xss"],
+        },
+    )
+    assert create_resp.status_code == 422
+
+
+def test_scan_job_rejects_legacy_scan_mode_and_target_rule_id_fields(
+    client, db_session
+):
+    developer = _create_user(
+        db_session,
+        email="scan-legacy-mode@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "scan-legacy-mode-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "scan-legacy-mode-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key(
+                {"README.md": "legacy-mode\n"}
+            ),
+        },
+    )
+    version_id = version_resp.json()["data"]["id"]
+
+    create_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "project_id": project_id,
+            "version_id": version_id,
+            "scan_mode": "FULL",
+            "target_rule_id": "any_any_xss",
         },
     )
     assert create_resp.status_code == 422
@@ -578,7 +862,7 @@ def test_scan_job_requires_project_membership(client, db_session):
     scan_resp = client.post(
         "/api/v1/scan-jobs",
         headers=_auth_header(owner_tokens["access_token"]),
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FULL"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     assert scan_resp.status_code == 202
     job_id = scan_resp.json()["data"]["job_id"]
@@ -610,7 +894,7 @@ def test_scan_job_cancel_running(client, db_session):
         project_id=project.id,
         version_id=version.id,
         job_type=JobType.SCAN.value,
-        payload={"request_id": "req_cancel", "scan_mode": "FULL", "rule_keys": []},
+        payload={"request_id": "req_cancel", "rule_keys": []},
         status=JobStatus.RUNNING.value,
         stage=JobStage.QUERY.value,
         created_by=developer.id,
@@ -619,6 +903,14 @@ def test_scan_job_cancel_running(client, db_session):
     db_session.add(job)
     db_session.commit()
     db_session.refresh(job)
+    workspace_dir = (
+        Path(get_settings().scan_workspace_root)
+        / str(project.id)
+        / str(job.id)
+        / "external"
+    )
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "temp.txt").write_text("cancel\n", encoding="utf-8")
 
     tokens = _login(client, email=developer.email, password="Password123!")
     cancel_resp = client.post(
@@ -631,7 +923,14 @@ def test_scan_job_cancel_running(client, db_session):
         f"/api/v1/jobs/{job.id}", headers=_auth_header(tokens["access_token"])
     )
     assert detail_resp.status_code == 200
-    assert detail_resp.json()["data"]["status"] == JobStatus.CANCELED.value
+    payload = detail_resp.json()["data"]
+    assert payload["status"] == JobStatus.CANCELED.value
+    assert payload["progress"]["percent"] == 0
+    assert payload["result_summary"]["cleanup"]["workspace_released"] is True
+    assert all(
+        item["status"] == JobStepStatus.CANCELED.value for item in payload["steps"]
+    )
+    assert not workspace_dir.exists()
 
 
 def test_scan_job_retry_failed(client, db_session):
@@ -686,6 +985,8 @@ def test_scan_job_retry_failed(client, db_session):
     assert detail_resp.json()["data"]["payload"]["retry_of_job_id"] == str(
         failed_job.id
     )
+    assert "scan_mode" not in detail_resp.json()["data"]["payload"]
+    assert "target_rule_id" not in detail_resp.json()["data"]["payload"]
 
 
 def test_list_jobs_non_admin_is_project_scoped(client, db_session):
@@ -724,7 +1025,7 @@ def test_list_jobs_non_admin_is_project_scoped(client, db_session):
         project_id=project_a.id,
         version_id=version_a.id,
         job_type=JobType.SCAN.value,
-        payload={"request_id": "req_scope_a", "scan_mode": "FULL"},
+        payload={"request_id": "req_scope_a"},
         status=JobStatus.SUCCEEDED.value,
         stage=JobStage.CLEANUP.value,
         created_by=user.id,
@@ -735,7 +1036,7 @@ def test_list_jobs_non_admin_is_project_scoped(client, db_session):
         project_id=project_b.id,
         version_id=version_b.id,
         job_type=JobType.SCAN.value,
-        payload={"request_id": "req_scope_b", "scan_mode": "FULL"},
+        payload={"request_id": "req_scope_b"},
         status=JobStatus.SUCCEEDED.value,
         stage=JobStage.CLEANUP.value,
         created_by=admin.id,
@@ -784,7 +1085,7 @@ def test_scan_job_logs_endpoint_returns_stage_logs(client, db_session):
     create_resp = client.post(
         "/api/v1/scan-jobs",
         headers=_auth_header(tokens["access_token"]),
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FAST"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     assert create_resp.status_code == 202
     job_id = create_resp.json()["data"]["job_id"]
@@ -797,6 +1098,79 @@ def test_scan_job_logs_endpoint_returns_stage_logs(client, db_session):
     items = logs_resp.json()["data"]["items"]
     assert len(items) >= 1
     assert any(item["stage"] == JobStage.PREPARE.value for item in items)
+
+
+def test_scan_job_logs_endpoint_supports_full_log_output(client, db_session):
+    from app.services.task_log_service import append_task_log
+
+    developer = _create_user(
+        db_session,
+        email="scan-full-logs@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    project = _create_project(db_session, name="scan-full-logs-project")
+    _add_member(
+        db_session,
+        user_id=developer.id,
+        project_id=project.id,
+        role=ProjectRole.OWNER.value,
+    )
+    version = _create_version(
+        db_session, project_id=project.id, name="scan-full-logs-v1"
+    )
+    job = Job(
+        project_id=project.id,
+        version_id=version.id,
+        job_type=JobType.SCAN.value,
+        payload={"request_id": "req-full-logs"},
+        status=JobStatus.RUNNING.value,
+        stage=JobStage.QUERY.value,
+        created_by=developer.id,
+        started_at=utc_now(),
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    for index in range(205):
+        append_task_log(
+            task_type="SCAN",
+            task_id=job.id,
+            stage=JobStage.QUERY.value,
+            message=f"full-log-line-{index}",
+            project_id=project.id,
+        )
+
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    logs_resp = client.get(
+        f"/api/v1/jobs/{job.id}/logs",
+        headers=_auth_header(tokens["access_token"]),
+        params={"stage": JobStage.QUERY.value},
+    )
+    assert logs_resp.status_code == 200
+    default_item = logs_resp.json()["data"]["items"][0]
+    assert default_item["stage"] == JobStage.QUERY.value
+    assert default_item["truncated"] is True
+    assert default_item["line_count"] == 205
+    assert len(default_item["lines"]) == 200
+    assert "full-log-line-0" not in "\n".join(default_item["lines"])
+    assert "full-log-line-204" in default_item["lines"][-1]
+
+    full_logs_resp = client.get(
+        f"/api/v1/jobs/{job.id}/logs",
+        headers=_auth_header(tokens["access_token"]),
+        params={"stage": JobStage.QUERY.value, "tail": 0},
+    )
+    assert full_logs_resp.status_code == 200
+    full_item = full_logs_resp.json()["data"]["items"][0]
+    assert full_item["stage"] == JobStage.QUERY.value
+    assert full_item["truncated"] is False
+    assert full_item["line_count"] == 205
+    assert len(full_item["lines"]) == 205
+    assert "full-log-line-0" in full_item["lines"][0]
+    assert "full-log-line-204" in full_item["lines"][-1]
 
 
 def test_findings_list_supports_job_id_filter(client, db_session):
@@ -834,7 +1208,6 @@ def test_findings_list_supports_job_id_filter(client, db_session):
         json={
             "project_id": project_id,
             "version_id": version_id,
-            "scan_mode": "FULL",
             "rule_keys": ["any_any_xss", "any_any_urlredirect"],
         },
     )
@@ -852,6 +1225,230 @@ def test_findings_list_supports_job_id_filter(client, db_session):
     assert all(item["job_id"] == job_id for item in payload["items"])
     assert "rule_version" in payload["items"][0]
     assert "evidence_json" in payload["items"][0]
+
+
+def test_scan_job_result_summary_contains_finding_drafts_and_ai_payload(
+    client, db_session
+):
+    developer = _create_user(
+        db_session,
+        email="scan-draft-ai@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "scan-draft-ai-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "scan-draft-ai-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key(
+                {"src/Main.java": "class Main {}"}
+            ),
+        },
+    )
+    version_id = version_resp.json()["data"]["id"]
+
+    create_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "project_id": project_id,
+            "version_id": version_id,
+            "rule_keys": ["any_any_xss"],
+        },
+    )
+    assert create_resp.status_code == 202
+    job_id = create_resp.json()["data"]["job_id"]
+
+    detail_resp = client.get(
+        f"/api/v1/jobs/{job_id}",
+        headers=_auth_header(tokens["access_token"]),
+    )
+    assert detail_resp.status_code == 200
+    payload = detail_resp.json()["data"]
+    drafts = payload["result_summary"]["finding_drafts"]
+    assert drafts
+    first = drafts[0]
+    required = {
+        "rule_key",
+        "severity",
+        "file_path",
+        "line_start",
+        "line_end",
+        "source",
+        "sink",
+        "evidence",
+        "trace_summary",
+        "code_context",
+        "llm_payload",
+        "llm_prompt_block",
+    }
+    assert required.issubset(first.keys())
+    assert isinstance(first["code_context"], dict)
+    assert "focus" in first["code_context"]
+    assert isinstance(first["llm_payload"], dict)
+    assert isinstance(first["llm_prompt_block"], str)
+    assert isinstance(first["llm_payload"]["code_context"], dict)
+    assert first["llm_payload"]["why_flagged"]
+    assert "Code:" in first["llm_prompt_block"]
+    assert len(first["llm_prompt_block"]) <= 1600
+    assert payload["result_summary"]["ai_summary"]["code_context_ready"] >= 1
+
+
+def test_scan_job_skips_invalid_finding_draft_before_persist(
+    client, db_session, monkeypatch: pytest.MonkeyPatch
+):
+    from app.services import scan_service as scan_service_module
+
+    def fake_stub_scan(*, job):
+        return scan_service_module.ScanExecutionResult(
+            findings=[
+                {"rule_key": "", "severity": "HIGH"},
+                {"rule_key": "any_any_xss", "severity": "MED", "evidence": {"k": "v"}},
+            ],
+            result_summary={
+                "engine_mode": "stub",
+                "total_findings": 2,
+                "severity_counts": {"HIGH": 1, "MED": 1, "LOW": 0},
+                "hit_rule_count": 1,
+                "partial_failures": [],
+            },
+        )
+
+    monkeypatch.setattr(scan_service_module, "_run_stub_scan", fake_stub_scan)
+
+    developer = _create_user(
+        db_session,
+        email="scan-draft-validate@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "scan-draft-validate-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "scan-draft-validate-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key(
+                {"README.md": "validate\n"}
+            ),
+        },
+    )
+    version_id = version_resp.json()["data"]["id"]
+
+    create_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(tokens["access_token"]),
+        json={"project_id": project_id, "version_id": version_id},
+    )
+    assert create_resp.status_code == 202
+    job_id = create_resp.json()["data"]["job_id"]
+
+    detail_resp = client.get(
+        f"/api/v1/jobs/{job_id}",
+        headers=_auth_header(tokens["access_token"]),
+    )
+    assert detail_resp.status_code == 200
+    payload = detail_resp.json()["data"]
+    assert payload["status"] == JobStatus.SUCCEEDED.value
+    assert payload["result_summary"]["normalized_finding_count"] == 1
+
+    findings_resp = client.get(
+        "/api/v1/findings",
+        headers=_auth_header(tokens["access_token"]),
+        params={"job_id": job_id},
+    )
+    assert findings_resp.status_code == 200
+    assert findings_resp.json()["data"]["total"] == 1
+
+
+def test_scan_job_log_stream_supports_seq_resume_and_stage_filter(client, db_session):
+    developer = _create_user(
+        db_session,
+        email="scan-sse@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "scan-sse-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "scan-sse-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key({"README.md": "sse\n"}),
+        },
+    )
+    version_id = version_resp.json()["data"]["id"]
+
+    create_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(tokens["access_token"]),
+        json={"project_id": project_id, "version_id": version_id},
+    )
+    assert create_resp.status_code == 202
+    job_id = create_resp.json()["data"]["job_id"]
+
+    stream_resp = client.get(
+        f"/api/v1/jobs/{job_id}/logs/stream",
+        headers=_auth_header(tokens["access_token"]),
+    )
+    assert stream_resp.status_code == 200
+    assert "text/event-stream" in stream_resp.headers.get("content-type", "")
+    events = _parse_sse_events(stream_resp.text)
+    log_events = [item for item in events if item["event"] == "log"]
+    done_events = [item for item in events if item["event"] == "done"]
+    assert log_events
+    assert done_events
+    seqs = [int(item["data"]["seq"]) for item in log_events]
+    assert seqs == sorted(seqs)
+
+    resume_seq = seqs[max(0, len(seqs) // 2 - 1)]
+    resumed_resp = client.get(
+        f"/api/v1/jobs/{job_id}/logs/stream",
+        headers=_auth_header(tokens["access_token"]),
+        params={"seq": resume_seq},
+    )
+    assert resumed_resp.status_code == 200
+    resumed_events = _parse_sse_events(resumed_resp.text)
+    resumed_log_events = [item for item in resumed_events if item["event"] == "log"]
+    assert resumed_log_events
+    assert all(int(item["data"]["seq"]) > resume_seq for item in resumed_log_events)
+
+    stage_resp = client.get(
+        f"/api/v1/jobs/{job_id}/logs/stream",
+        headers=_auth_header(tokens["access_token"]),
+        params={"stage": "Prepare"},
+    )
+    assert stage_resp.status_code == 200
+    stage_events = _parse_sse_events(stage_resp.text)
+    stage_logs = [item for item in stage_events if item["event"] == "log"]
+    assert stage_logs
+    assert all(item["data"]["stage"] == JobStage.PREPARE.value for item in stage_logs)
 
 
 def test_scan_job_external_stage_orchestration_succeeds(
@@ -910,7 +1507,7 @@ def test_scan_job_external_stage_orchestration_succeeds(
     create_resp = client.post(
         "/api/v1/scan-jobs",
         headers=_auth_header(tokens["access_token"]),
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FULL"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     assert create_resp.status_code == 202
     job_id = create_resp.json()["data"]["job_id"]
@@ -921,14 +1518,30 @@ def test_scan_job_external_stage_orchestration_succeeds(
     assert detail_resp.status_code == 200
     payload = detail_resp.json()["data"]
     assert payload["status"] == JobStatus.SUCCEEDED.value
+    assert payload["progress"]["percent"] == 100
+    assert payload["progress"]["completed_steps"] == len(payload["steps"])
+    assert all(
+        item["status"] == JobStepStatus.SUCCEEDED.value for item in payload["steps"]
+    )
     assert payload["result_summary"]["engine_mode"] == "external"
     assert payload["result_summary"]["hit_rules"] == 1
+    assert "rule_execution" in payload["result_summary"]
+    assert "summary" in payload["result_summary"]["rule_execution"]
+    assert "rule_results" in payload["result_summary"]["rule_execution"]
     assert len(payload["result_summary"]["external_stages"]) == 4
     assert all(
         item["status"] == "succeeded"
         for item in payload["result_summary"]["external_stages"]
     )
     assert len(commands) == 4
+    workspace_dir = (
+        Path(external_scan_settings["settings"].scan_workspace_root)
+        / project_id
+        / job_id
+        / "external"
+    )
+    assert payload["result_summary"]["cleanup"]["workspace_released"] is True
+    assert not workspace_dir.exists()
 
 
 def test_scan_job_external_joern_failure_maps_failure_code(
@@ -981,7 +1594,7 @@ def test_scan_job_external_joern_failure_maps_failure_code(
     create_resp = client.post(
         "/api/v1/scan-jobs",
         headers=_auth_header(tokens["access_token"]),
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FULL"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     assert create_resp.status_code == 202
     job_id = create_resp.json()["data"]["job_id"]
@@ -993,6 +1606,18 @@ def test_scan_job_external_joern_failure_maps_failure_code(
     payload = detail_resp.json()["data"]
     assert payload["status"] == JobStatus.FAILED.value
     assert payload["failure_code"] == "SCAN_EXTERNAL_JOERN_FAILED"
+    step_by_key = {item["step_key"]: item for item in payload["steps"]}
+    assert step_by_key["prepare"]["status"] == JobStepStatus.SUCCEEDED.value
+    assert step_by_key["joern"]["status"] == JobStepStatus.FAILED.value
+    assert step_by_key["neo4j_import"]["status"] == JobStepStatus.CANCELED.value
+    workspace_dir = (
+        Path(external_scan_settings["settings"].scan_workspace_root)
+        / project_id
+        / job_id
+        / "external"
+    )
+    assert payload["result_summary"]["cleanup"]["workspace_released"] is True
+    assert not workspace_dir.exists()
 
 
 def test_scan_job_external_builtin_joern_contract_failure_maps_failure_code(
@@ -1054,7 +1679,7 @@ def test_scan_job_external_builtin_joern_contract_failure_maps_failure_code(
     create_resp = client.post(
         "/api/v1/scan-jobs",
         headers=_auth_header(tokens["access_token"]),
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FULL"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     assert create_resp.status_code == 202
     job_id = create_resp.json()["data"]["job_id"]
@@ -1116,7 +1741,7 @@ def test_scan_job_external_rules_timeout_maps_failure_code(
     create_resp = client.post(
         "/api/v1/scan-jobs",
         headers=_auth_header(tokens["access_token"]),
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FULL"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     assert create_resp.status_code == 202
     job_id = create_resp.json()["data"]["job_id"]
@@ -1128,6 +1753,17 @@ def test_scan_job_external_rules_timeout_maps_failure_code(
     payload = detail_resp.json()["data"]
     assert payload["status"] == JobStatus.TIMEOUT.value
     assert payload["failure_code"] == "SCAN_EXTERNAL_RULES_TIMEOUT"
+    step_by_key = {item["step_key"]: item for item in payload["steps"]}
+    assert step_by_key["rules"]["status"] == JobStepStatus.FAILED.value
+    assert step_by_key["aggregate"]["status"] == JobStepStatus.CANCELED.value
+    workspace_dir = (
+        Path(external_scan_settings["settings"].scan_workspace_root)
+        / project_id
+        / job_id
+        / "external"
+    )
+    assert payload["result_summary"]["cleanup"]["workspace_released"] is True
+    assert not workspace_dir.exists()
 
 
 def test_scan_job_external_builtin_stage_pipeline(
@@ -1202,7 +1838,7 @@ def test_scan_job_external_builtin_stage_pipeline(
     create_resp = client.post(
         "/api/v1/scan-jobs",
         headers=_auth_header(tokens["access_token"]),
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FULL"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     assert create_resp.status_code == 202
     job_id = create_resp.json()["data"]["job_id"]
@@ -1217,13 +1853,13 @@ def test_scan_job_external_builtin_stage_pipeline(
     assert captured_paths["joern_bin"] == str(joern_home / "joern")
     assert Path(captured_paths["import_dir"]).parts[-4:] == (
         project_id,
-        version_id,
+        job_id,
         "external",
         "import_csv",
     )
     assert Path(captured_paths["cpg_file"]).parts[-4:] == (
         project_id,
-        version_id,
+        job_id,
         "external",
         "code.bin",
     )
@@ -1289,18 +1925,16 @@ def test_scan_job_external_builtin_stage_pipeline_paths_stable_across_retries(
     )
     version_id = version_resp.json()["data"]["id"]
 
+    job_ids: list[str] = []
     for _ in range(2):
         create_resp = client.post(
             "/api/v1/scan-jobs",
             headers=_auth_header(tokens["access_token"]),
-            json={
-                "project_id": project_id,
-                "version_id": version_id,
-                "scan_mode": "FULL",
-            },
+            json={"project_id": project_id, "version_id": version_id},
         )
         assert create_resp.status_code == 202
         job_id = create_resp.json()["data"]["job_id"]
+        job_ids.append(job_id)
         detail_resp = client.get(
             f"/api/v1/jobs/{job_id}", headers=_auth_header(tokens["access_token"])
         )
@@ -1308,20 +1942,155 @@ def test_scan_job_external_builtin_stage_pipeline_paths_stable_across_retries(
         assert detail_resp.json()["data"]["status"] == JobStatus.SUCCEEDED.value
 
     assert len(joern_runs) == 2
-    assert joern_runs[0]["import_dir"] == joern_runs[1]["import_dir"]
-    assert joern_runs[0]["cpg_file"] == joern_runs[1]["cpg_file"]
+    assert joern_runs[0]["import_dir"] != joern_runs[1]["import_dir"]
+    assert joern_runs[0]["cpg_file"] != joern_runs[1]["cpg_file"]
     assert Path(joern_runs[0]["import_dir"]).parts[-4:] == (
         project_id,
-        version_id,
+        job_ids[0],
+        "external",
+        "import_csv",
+    )
+    assert Path(joern_runs[1]["import_dir"]).parts[-4:] == (
+        project_id,
+        job_ids[1],
         "external",
         "import_csv",
     )
     assert Path(joern_runs[0]["cpg_file"]).parts[-4:] == (
         project_id,
-        version_id,
+        job_ids[0],
         "external",
         "code.bin",
     )
+    assert Path(joern_runs[1]["cpg_file"]).parts[-4:] == (
+        project_id,
+        job_ids[1],
+        "external",
+        "code.bin",
+    )
+
+
+def test_builtin_neo4j_import_creates_runtime_container_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    external_scan_settings,
+):
+    from app.services.scan_external.builtin import _run_builtin_neo4j_import
+    from app.services.scan_external.context import build_external_scan_context
+
+    settings = external_scan_settings["settings"]
+    settings.scan_external_stage_joern_command = ""
+    settings.scan_external_stage_import_command = "builtin:neo4j_import"
+    settings.scan_external_stage_post_labels_command = ""
+    settings.scan_external_stage_rules_command = ""
+    settings.scan_external_neo4j_runtime_restart_mode = "docker"
+    settings.scan_external_neo4j_runtime_container_name = "CodeScope_neo4j"
+    settings.scan_external_import_data_mount = "codescope_neo4j_data"
+    settings.scan_external_neo4j_password = "codescope123"
+
+    project_id = uuid.uuid4()
+    version_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+    source_dir = Path(settings.snapshot_storage_root) / str(version_id) / "source"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    (source_dir / "README.md").write_text("scan\n", encoding="utf-8")
+
+    job = Job(
+        id=job_id,
+        project_id=project_id,
+        version_id=version_id,
+        job_type=JobType.SCAN.value,
+        status=JobStatus.RUNNING.value,
+        stage=JobStage.ANALYZE.value,
+        payload={},
+        result_summary={},
+    )
+    context = build_external_scan_context(
+        job=job,
+        settings=settings,
+        backend_root=Path(__file__).resolve().parents[1],
+    )
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "app.services.scan_external.builtin._ensure_docker_cli_available",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "app.services.scan_external.builtin._detect_neo4j_major",
+        lambda *, image, deadline: 5,
+    )
+    monkeypatch.setattr(
+        "app.services.scan_external.builtin._collect_csv_pairs",
+        lambda import_dir, *, failure_code: (
+            [("File", "nodes_File_header.csv", "nodes_File_data.csv")],
+            [("AST", "edges_AST_header.csv", "edges_AST_data.csv")],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.scan_external.builtin._build_admin_parts",
+        lambda **kwargs: ["neo4j-admin", "database", "import", "full", "neo4j"],
+    )
+    monkeypatch.setattr(
+        "app.services.scan_external.builtin._container_exists",
+        lambda *, container_name, deadline: False,
+    )
+    monkeypatch.setattr(
+        "app.services.scan_external.builtin._is_container_running",
+        lambda *, container_name, deadline: False,
+    )
+    monkeypatch.setattr(
+        "app.services.scan_external.builtin._resolve_import_host_mount_path",
+        lambda *, context, runtime_profile: "/tmp/import_csv",
+    )
+
+    def fake_run_command(command, *, deadline, env=None, cwd=None):
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="IMPORT DONE",
+            stderr="",
+        )
+
+    def fake_run_runtime_container(**kwargs):
+        captured["runtime_container"] = kwargs
+        return {}
+
+    def fake_wait_runtime_ready(**kwargs):
+        captured["runtime_ready"] = kwargs
+
+    monkeypatch.setattr(
+        "app.services.scan_external.builtin._run_command_with_deadline",
+        fake_run_command,
+    )
+    monkeypatch.setattr(
+        "app.services.scan_external.builtin._run_ephemeral_runtime_container",
+        fake_run_runtime_container,
+    )
+    monkeypatch.setattr(
+        "app.services.scan_external.builtin._wait_for_ephemeral_runtime_ready",
+        fake_wait_runtime_ready,
+    )
+    monkeypatch.setattr(
+        "app.services.scan_external.builtin._start_container",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("should not start existing container")
+        ),
+    )
+
+    stdout, stderr = _run_builtin_neo4j_import(
+        settings=settings,
+        context=context,
+        append_log=lambda stage, message: None,
+        deadline=1_000_000_000.0,
+    )
+
+    assert stdout == "IMPORT DONE"
+    assert stderr == ""
+    assert captured["runtime_container"]["container_name"] == "CodeScope_neo4j"
+    assert captured["runtime_container"]["data_mount"] == "codescope_neo4j_data"
+    assert captured["runtime_container"]["uri"] == "bolt://127.0.0.1:7687"
+    assert captured["runtime_ready"]["container_name"] == "CodeScope_neo4j"
 
 
 def test_scan_job_external_builtin_rules_honors_string_rule_names(
@@ -1387,7 +2156,6 @@ def test_scan_job_external_builtin_rules_honors_string_rule_names(
         json={
             "project_id": project_id,
             "version_id": version_id,
-            "scan_mode": "FULL",
             "rule_keys": ["rule_b"],
         },
     )
@@ -1488,7 +2256,7 @@ def test_scan_job_external_builtin_live_smoke(
     create_resp = client.post(
         "/api/v1/scan-jobs",
         headers=_auth_header(tokens["access_token"]),
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FULL"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     assert create_resp.status_code == 202
     job_id = create_resp.json()["data"]["job_id"]
@@ -1626,7 +2394,7 @@ def test_scan_job_external_builtin_live_full_smoke(
     create_resp = client.post(
         "/api/v1/scan-jobs",
         headers=_auth_header(tokens["access_token"]),
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FULL"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     assert create_resp.status_code == 202
     job_id = create_resp.json()["data"]["job_id"]
@@ -1682,7 +2450,7 @@ def test_results_overview_and_finding_label_flow(client, db_session):
     scan_resp = client.post(
         "/api/v1/scan-jobs",
         headers=_auth_header(tokens["access_token"]),
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FULL"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     assert scan_resp.status_code == 202
     job_id = scan_resp.json()["data"]["job_id"]
@@ -1776,11 +2544,7 @@ def test_job_logs_download_artifacts_and_version_download(
         scan_resp = client.post(
             "/api/v1/scan-jobs",
             headers=_auth_header(tokens["access_token"]),
-            json={
-                "project_id": project_id,
-                "version_id": version_id,
-                "scan_mode": "FULL",
-            },
+            json={"project_id": project_id, "version_id": version_id},
         )
         assert scan_resp.status_code == 202
         job_id = scan_resp.json()["data"]["job_id"]
@@ -1808,8 +2572,21 @@ def test_job_logs_download_artifacts_and_version_download(
         items = artifacts_resp.json()["data"]["items"]
         assert items
 
+        archive_items = [item for item in items if item["artifact_type"] == "ARCHIVE"]
+        assert archive_items
+
         snapshot_items = [item for item in items if item["artifact_type"] == "SNAPSHOT"]
         assert snapshot_items
+
+        result_archive_resp = client.get(
+            f"/api/v1/jobs/{job_id}/artifacts/{archive_items[0]['artifact_id']}/download",
+            headers=_auth_header(tokens["access_token"]),
+        )
+        assert result_archive_resp.status_code == 200
+        archive_payload = json.loads(result_archive_resp.text)
+        assert archive_payload["job_id"] == job_id
+        assert archive_payload["status"] == JobStatus.SUCCEEDED.value
+        assert isinstance(archive_payload["result_summary"], dict)
 
         artifact_download_resp = client.get(
             f"/api/v1/jobs/{job_id}/artifacts/{snapshot_items[0]['artifact_id']}/download",

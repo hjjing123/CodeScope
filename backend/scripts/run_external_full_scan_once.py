@@ -225,7 +225,7 @@ def _create_scan_job(
     response = client.post(
         "/api/v1/scan-jobs",
         headers={"Authorization": f"Bearer {access_token}"},
-        json={"project_id": project_id, "version_id": version_id, "scan_mode": "FULL"},
+        json={"project_id": project_id, "version_id": version_id},
     )
     response.raise_for_status()
     return response.json()["data"]["job_id"]

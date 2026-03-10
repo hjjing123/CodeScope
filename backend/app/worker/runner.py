@@ -13,7 +13,8 @@ def run_worker(*, queues: str, log_level: str) -> int:
         raise RuntimeError("Celery is not available in current environment")
 
     argv = ["worker", "-Q", queues, "-l", log_level]
-    return int(celery_app.worker_main(argv))
+    result = celery_app.worker_main(argv)
+    return 0 if result is None else int(result)
 
 
 def main() -> None:

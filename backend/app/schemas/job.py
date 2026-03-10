@@ -11,21 +11,31 @@ class ScanJobCreateRequest(BaseModel):
 
     project_id: uuid.UUID = Field(description="项目 ID")
     version_id: uuid.UUID = Field(description="代码快照 ID")
-    scan_mode: str = Field(
-        default="FULL",
-        min_length=1,
-        max_length=16,
-        description="扫描模式：FULL / FAST / VERIFY（快速确认）",
-    )
     rule_set_keys: list[str] = Field(default_factory=list)
     rule_keys: list[str] = Field(default_factory=list)
     note: str | None = Field(default=None, max_length=1024)
-    target_rule_id: str | None = Field(default=None, max_length=128)
 
 
 class JobTriggerPayload(BaseModel):
     job_id: uuid.UUID
     idempotent_replay: bool = False
+
+
+class JobStepPayload(BaseModel):
+    step_key: str
+    display_name: str
+    step_order: int
+    status: str
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_ms: int | None
+
+
+class JobProgressPayload(BaseModel):
+    total_steps: int
+    completed_steps: int
+    percent: int
+    current_step: str | None
 
 
 class JobPayload(BaseModel):
@@ -40,6 +50,8 @@ class JobPayload(BaseModel):
     failure_stage: str | None
     failure_category: str | None
     failure_hint: str | None
+    progress: JobProgressPayload
+    steps: list[JobStepPayload]
     result_summary: dict[str, object]
     created_by: uuid.UUID | None
     started_at: datetime | None
@@ -57,6 +69,28 @@ class JobActionPayload(BaseModel):
     ok: bool
     job_id: uuid.UUID
     status: str
+
+
+class JobDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    targets: list[str] = Field(default_factory=list)
+
+
+class JobDeletePayload(BaseModel):
+    ok: bool
+    job_id: uuid.UUID
+    deleted_targets: list[str]
+    forced_targets: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    deleted_findings_count: int = 0
+    deleted_job_steps_count: int = 0
+    deleted_task_log_index_count: int = 0
+    deleted_log_files_count: int = 0
+    deleted_archive_files_count: int = 0
+    deleted_report_files_count: int = 0
+    deleted_workspace_paths_count: int = 0
+    deleted_job_record: bool = False
 
 
 class JobLogEntryPayload(BaseModel):

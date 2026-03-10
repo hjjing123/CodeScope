@@ -27,7 +27,6 @@ class StageContext:
     job_id: str
     project_id: str
     version_id: str
-    scan_mode: str
     reports_dir: Path
     workspace_root: Path
     snapshot_root: Path
@@ -37,7 +36,6 @@ class StageContext:
     post_labels_script: Path | None
     rules_dir: Path | None
     rule_keys: list[str]
-    target_rule_id: str
     stage_timeout_seconds: int
 
     @classmethod
@@ -45,7 +43,6 @@ class StageContext:
         job_id = _required_env("CODESCOPE_SCAN_JOB_ID")
         project_id = _required_env("CODESCOPE_SCAN_PROJECT_ID")
         version_id = _required_env("CODESCOPE_SCAN_VERSION_ID")
-        scan_mode = _optional_env("CODESCOPE_SCAN_MODE", "FULL")
 
         reports_dir = _resolve_path(
             _optional_env("CODESCOPE_SCAN_REPORTS_DIR", "../graph_pipeline/reports")
@@ -78,13 +75,11 @@ class StageContext:
             default=3600,
         )
         rule_keys = _json_list_env("CODESCOPE_SCAN_RULE_KEYS")
-        target_rule_id = _optional_env("CODESCOPE_SCAN_TARGET_RULE_ID", "")
 
         return cls(
             job_id=job_id,
             project_id=project_id,
             version_id=version_id,
-            scan_mode=scan_mode,
             reports_dir=reports_dir,
             workspace_root=workspace_root,
             snapshot_root=snapshot_root,
@@ -94,7 +89,6 @@ class StageContext:
             post_labels_script=post_labels_script,
             rules_dir=rules_dir,
             rule_keys=rule_keys,
-            target_rule_id=target_rule_id,
             stage_timeout_seconds=max(1, stage_timeout_seconds),
         )
 
@@ -107,7 +101,6 @@ class StageContext:
             "{job_id}": self.job_id,
             "{project_id}": self.project_id,
             "{version_id}": self.version_id,
-            "{scan_mode}": self.scan_mode,
             "{reports_dir}": str(self.reports_dir),
             "{workspace_dir}": str(self.workspace_dir()),
             "{snapshot_root}": str(self.snapshot_root),

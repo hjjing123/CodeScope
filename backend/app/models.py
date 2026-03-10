@@ -80,6 +80,14 @@ class JobStage(StrEnum):
     CLEANUP = "Cleanup"
 
 
+class JobStepStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
 class JobFailureCategory(StrEnum):
     INPUT = "INPUT"
     ENV = "ENV"
@@ -89,12 +97,6 @@ class JobFailureCategory(StrEnum):
     AI = "AI"
     STORAGE = "STORAGE"
     SYSTEM = "SYSTEM"
-
-
-class ScanMode(StrEnum):
-    FULL = "FULL"
-    VERIFY = "VERIFY"
-    FAST = "FAST"
 
 
 class FindingSeverity(StrEnum):
@@ -310,6 +312,37 @@ class Job(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+
+class JobStep(Base):
+    __tablename__ = "job_steps"
+    __table_args__ = (
+        UniqueConstraint("job_id", "step_key", name="uq_job_steps_job_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    step_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    step_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=JobStepStatus.PENDING.value
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
@@ -692,7 +725,9 @@ class SystemLog(Base):
     task_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     action: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     action_zh: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    action_group: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    action_group: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     resource_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     resource_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result: Mapped[str | None] = mapped_column(String(16), nullable=True)

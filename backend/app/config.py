@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +21,7 @@ class Settings(BaseSettings):
         "postgresql+psycopg://codescope:codescope@127.0.0.1:5432/codescope"
     )
 
-    jwt_secret: str = "dev-only-change-me"
+    jwt_secret: str = "codescope-dev-jwt-secret-change-me-2026"
     jwt_algorithm: str = "HS256"
     access_token_ttl_minutes: int = 15
     refresh_token_ttl_days: int = 7
@@ -88,6 +89,7 @@ class Settings(BaseSettings):
     scan_external_neo4j_user: str = "neo4j"
     scan_external_neo4j_password: str = ""
     scan_external_neo4j_database: str = "neo4j"
+    scan_external_neo4j_cleanup_enabled: bool = False
     scan_external_neo4j_connect_retry: int = 15
     scan_external_neo4j_connect_wait_seconds: int = 2
 
@@ -105,6 +107,9 @@ class Settings(BaseSettings):
 
     scan_external_neo4j_runtime_restart_mode: str = "none"
     scan_external_neo4j_runtime_container_name: str = "CodeScope_neo4j"
+    scan_external_neo4j_runtime_network: str = ""
+    scan_external_neo4j_runtime_network_alias: str = ""
+    scan_external_neo4j_runtime_network_auto_create: bool = False
     scan_external_neo4j_runtime_restart_wait_seconds: int = 10
 
     celery_broker_url: str = "redis://127.0.0.1:6379/0"
@@ -115,6 +120,22 @@ class Settings(BaseSettings):
     runtime_http_log_sample_rate: float = 0.05
     runtime_http_log_slow_threshold_ms: int = 1200
     runtime_http_log_record_success: bool = False
+
+    @model_validator(mode="after")
+    def validate_security_settings(self) -> "Settings":
+        required_hmac_bytes = {
+            "HS256": 32,
+            "HS384": 48,
+            "HS512": 64,
+        }.get(self.jwt_algorithm.upper())
+        if required_hmac_bytes is not None:
+            actual_bytes = len(self.jwt_secret.encode("utf-8"))
+            if actual_bytes < required_hmac_bytes:
+                raise ValueError(
+                    "jwt_secret is too short for the configured HMAC algorithm; "
+                    f"expected at least {required_hmac_bytes} bytes"
+                )
+        return self
 
 
 @lru_cache

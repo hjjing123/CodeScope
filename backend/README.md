@@ -25,6 +25,13 @@ Run all backend and scan commands inside WSL Ubuntu.
 - `uv` installed in WSL
 - `infra/tools/joern-cli` exists (for builtin `joern`)
 
+Install `uv` once in WSL if needed:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc
+```
+
 ### 2) Prerequisite checks in WSL
 
 ```bash
@@ -39,6 +46,7 @@ docker info --format '{{.ServerVersion}}'
 
 ```bash
 cd /mnt/e/CodeScope/backend
+export UV_PROJECT_ENVIRONMENT=.venv-wsl
 uv sync --extra dev
 docker compose -f ../infra/docker-compose.yml up -d postgres redis minio neo4j
 uv run alembic upgrade head
@@ -49,8 +57,18 @@ Open another WSL terminal:
 
 ```bash
 cd /mnt/e/CodeScope/backend
+export UV_PROJECT_ENVIRONMENT=.venv-wsl
 uv run codescope-worker
 ```
+
+Or start the full dev stack from the repo root:
+
+```bash
+cd /mnt/e/CodeScope
+./start-dev-wsl.sh
+```
+
+`start-dev-wsl.sh` automatically syncs `backend/.venv-wsl` when `uv` is available, so it does not conflict with a Windows-created `backend/.venv`.
 
 ### 4) Recommended WSL scan-related env defaults
 
@@ -99,9 +117,9 @@ uv run alembic upgrade head
 - Neo4j auth/connection failures during import/post-labels/rules
   - Cause: invalid `CODESCOPE_SCAN_EXTERNAL_NEO4J_*` settings.
   - Fix: verify `bolt://127.0.0.1:7687`, username, password, and target database.
-- `SCAN_EXTERNAL_RULES_FAILED` + detail `reason=unsupported_prefix` or `reason=write_clause_detected`
-  - Cause: rule query contains non-readonly prefix or write clause in runtime validation.
-  - Fix: update rule query to readonly pattern (`MATCH/OPTIONAL/WITH/UNWIND/RETURN/CALL`) and remove write clauses.
+- `SCAN_EXTERNAL_RULES_FAILED` during rules stage
+  - Cause: rule query execution failed in Neo4j or the rule statement itself has a runtime problem.
+  - Fix: inspect the failed rule detail and verify the Cypher syntax, graph schema assumptions, and Neo4j runtime environment.
 - `SCAN_EXTERNAL_RULES_FAILED` + message `规则执行失败（strict 模式）`
   - Cause: `CODESCOPE_SCAN_EXTERNAL_RULES_FAILURE_MODE=strict` and at least one rule failed.
   - Fix: inspect failed rule detail and fix rule/Neo4j runtime issue, or switch to `permissive` mode.
@@ -120,6 +138,7 @@ Notes:
 - `alembic upgrade head` seeds/normalizes a bootstrap admin for local login debug.
 - Default bootstrap admin credentials are `admin@example.com / admin123` (override via `CODESCOPE_BOOTSTRAP_ADMIN_*`).
 - Backend serves frontend `dist` for `/`, `/login`, `/register`, `/dashboard`; run `npm run build` in `frontend/` before direct access via `http://127.0.0.1:8000/`.
+- In frontend dev-proxy mode, tune `FRONTEND_DEV_PROXY_TIMEOUT_SECONDS` if the first Vite render is slow while dependencies are being optimized.
 - Public registration endpoint: `POST /api/v1/auth/register` (`role` supports `Admin` / `User`).
 
 Code management module:

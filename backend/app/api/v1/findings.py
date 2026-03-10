@@ -38,8 +38,14 @@ from app.schemas.finding import (
 )
 from app.services.audit_service import append_audit_log
 from app.services.auth_service import AuthPrincipal
-from app.services.authorization_service import ensure_project_action, ensure_resource_action
-from app.services.finding_path_service import load_finding_path_context, query_finding_paths
+from app.services.authorization_service import (
+    ensure_project_action,
+    ensure_resource_action,
+)
+from app.services.finding_path_service import (
+    load_finding_path_context,
+    query_finding_paths,
+)
 
 
 router = APIRouter(tags=["findings"])
@@ -172,14 +178,22 @@ def get_project_results_overview(
         if version is None:
             raise AppError(code="NOT_FOUND", status_code=404, message="版本不存在")
         if version.project_id != project_id:
-            raise AppError(code="INVALID_ARGUMENT", status_code=422, message="version_id 不属于当前项目")
+            raise AppError(
+                code="INVALID_ARGUMENT",
+                status_code=422,
+                message="version_id 不属于当前项目",
+            )
 
     if job_id is not None:
         job = db.get(Job, job_id)
         if job is None:
             raise AppError(code="NOT_FOUND", status_code=404, message="任务不存在")
         if job.project_id != project_id:
-            raise AppError(code="INVALID_ARGUMENT", status_code=422, message="job_id 不属于当前项目")
+            raise AppError(
+                code="INVALID_ARGUMENT",
+                status_code=422,
+                message="job_id 不属于当前项目",
+            )
 
     conditions = [Finding.project_id == project_id]
     if version_id is not None:
@@ -205,9 +219,7 @@ def get_project_results_overview(
 
     status_dist = {item.value: 0 for item in FindingStatus}
     status_rows = db.execute(
-        select(Finding.status, func.count())
-        .where(*conditions)
-        .group_by(Finding.status)
+        select(Finding.status, func.count()).where(*conditions).group_by(Finding.status)
     ).all()
     for status, count in status_rows:
         if status in status_dist:
@@ -222,7 +234,9 @@ def get_project_results_overview(
         .order_by(func.count().desc(), Finding.vuln_type.asc())
         .limit(10)
     ).all()
-    top_vuln_types = [{"vuln_type": vuln_type, "count": int(count)} for vuln_type, count in vuln_rows]
+    top_vuln_types = [
+        {"vuln_type": vuln_type, "count": int(count)} for vuln_type, count in vuln_rows
+    ]
 
     payload = ProjectResultOverviewPayload(
         project_id=project_id,
@@ -317,10 +331,17 @@ def list_findings(
             )
         )
 
-    if principal.user.role != SystemRole.ADMIN.value and project_id is None and version_id is None and job_id is None:
+    if (
+        principal.user.role != SystemRole.ADMIN.value
+        and project_id is None
+        and version_id is None
+        and job_id is None
+    ):
         conditions.append(
             Finding.project_id.in_(
-                select(UserProjectRole.project_id).where(UserProjectRole.user_id == principal.user.id)
+                select(UserProjectRole.project_id).where(
+                    UserProjectRole.user_id == principal.user.id
+                )
             )
         )
 
@@ -340,7 +361,11 @@ def list_findings(
             (Finding.severity == FindingSeverity.LOW.value, 1),
             else_=0,
         )
-        order_expr = severity_rank.asc() if normalized_sort_order == "asc" else severity_rank.desc()
+        order_expr = (
+            severity_rank.asc()
+            if normalized_sort_order == "asc"
+            else severity_rank.desc()
+        )
         rows_stmt = rows_stmt.order_by(order_expr, Finding.created_at.desc())
     elif normalized_sort_by == "path_length":
         order_expr = (
@@ -350,12 +375,18 @@ def list_findings(
         )
         rows_stmt = rows_stmt.order_by(order_expr, Finding.created_at.desc())
     else:
-        order_expr = Finding.created_at.asc() if normalized_sort_order == "asc" else Finding.created_at.desc()
+        order_expr = (
+            Finding.created_at.asc()
+            if normalized_sort_order == "asc"
+            else Finding.created_at.desc()
+        )
         rows_stmt = rows_stmt.order_by(order_expr)
 
     rows = db.scalars(rows_stmt.offset((page - 1) * page_size).limit(page_size)).all()
 
-    payload = FindingListPayload(items=[_finding_payload(item) for item in rows], total=total)
+    payload = FindingListPayload(
+        items=[_finding_payload(item) for item in rows], total=total
+    )
     return success_response(request, data=payload.model_dump())
 
 
@@ -430,7 +461,9 @@ def label_finding(
     db.refresh(finding)
     db.refresh(label)
 
-    data = FindingLabelActionPayload(finding=_finding_payload(finding), label=_label_payload(label))
+    data = FindingLabelActionPayload(
+        finding=_finding_payload(finding), label=_label_payload(label)
+    )
     return success_response(request, data=data.model_dump())
 
 
@@ -453,7 +486,7 @@ def list_finding_paths(
     if finding is None:
         raise AppError(code="NOT_FOUND", status_code=404, message="漏洞不存在")
 
-    paths = query_finding_paths(finding=finding, mode=mode, limit=limit)
+    paths = query_finding_paths(db=db, finding=finding, mode=mode, limit=limit)
     payload = FindingPathListPayload(
         finding_id=finding.id,
         mode=mode,
@@ -490,6 +523,7 @@ def get_finding_path_node_context(
         raise AppError(code="NOT_FOUND", status_code=404, message="漏洞不存在")
 
     context = load_finding_path_context(
+        db=db,
         finding=finding,
         step_id=step_id,
         before=before,

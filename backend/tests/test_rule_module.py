@@ -566,7 +566,6 @@ def test_rule_stats_are_aggregated_async_after_scan(client, db_session):
         json={
             "project_id": project_id,
             "version_id": version_id,
-            "scan_mode": "FULL",
             "rule_keys": ["demo.stats.rule"],
         },
     )

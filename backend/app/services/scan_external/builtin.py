@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from app.core.errors import AppError
 from app.models import Job
@@ -18,7 +19,11 @@ from app.services.rule_file_service import (
 )
 
 from .contracts import ExternalScanContext
-from .neo4j_runner import execute_cypher_file, split_cypher_statements
+from .neo4j_runner import (
+    execute_cypher_file,
+    verify_neo4j_connectivity,
+)
+from .runtime_metadata import write_runtime_metadata
 
 
 NODE_HEADER_RE = re.compile(r"^nodes_(.+)_header\.csv$", re.IGNORECASE)
@@ -41,17 +46,7 @@ REQUIRED_JOERN_EXPORT_FILES = (
 )
 WSL_RUNTIME_PROFILE = "wsl"
 CONTAINER_COMPAT_RUNTIME_PROFILE = "container_compat"
-RUNTIME_ALLOWED_STATEMENT_PREFIXES = {
-    "MATCH",
-    "OPTIONAL",
-    "WITH",
-    "UNWIND",
-    "RETURN",
-    "CALL",
-}
-RUNTIME_FORBIDDEN_WRITE_CLAUSE_RE = re.compile(
-    r"\b(CREATE|MERGE|DELETE|DETACH|DROP|REMOVE|SET)\b", re.IGNORECASE
-)
+DOCKER_EPHEMERAL_RUNTIME_MODE = "docker_ephemeral"
 
 
 def run_builtin_stage(
@@ -159,6 +154,8 @@ def _run_builtin_joern(
     context.workspace_dir.mkdir(parents=True, exist_ok=True)
     if context.cpg_file.exists() and context.cpg_file.is_file():
         context.cpg_file.unlink(missing_ok=True)
+    joern_runtime_dir = context.workspace_dir / "joern-runtime"
+    joern_runtime_dir.mkdir(parents=True, exist_ok=True)
 
     parse_cmd = [
         str(joern_parse_bin),
@@ -175,7 +172,11 @@ def _run_builtin_joern(
             f"cpg_file={context.cpg_file}, import_dir={context.import_dir}"
         ),
     )
-    parse_result = _run_command_with_deadline(parse_cmd, deadline=deadline)
+    parse_result = _run_command_with_deadline(
+        parse_cmd,
+        deadline=deadline,
+        cwd=joern_runtime_dir,
+    )
     if parse_result.returncode != 0:
         parse_stdout_tail = _tail_text(parse_result.stdout)
         parse_stderr_tail = _tail_text(parse_result.stderr)
@@ -244,7 +245,10 @@ def _run_builtin_joern(
         ),
     )
     export_result = _run_command_with_deadline(
-        export_cmd, deadline=deadline, env=export_env
+        export_cmd,
+        deadline=deadline,
+        env=export_env,
+        cwd=joern_runtime_dir,
     )
     if export_result.returncode != 0:
         export_stdout_tail = _tail_text(export_result.stdout)
@@ -326,8 +330,17 @@ def _run_builtin_neo4j_import(
 ) -> tuple[str, str]:
     _ensure_docker_cli_available()
     image = str(settings.scan_external_import_docker_image or "").strip()
-    data_mount_raw = str(settings.scan_external_import_data_mount or "").strip()
-    database = str(settings.scan_external_import_database or "neo4j").strip() or "neo4j"
+    data_mount_raw = (
+        str(context.base_env.get("CODESCOPE_SCAN_IMPORT_DATA_MOUNT") or "").strip()
+        or str(settings.scan_external_import_data_mount or "").strip()
+    )
+    database = (
+        str(context.base_env.get("CODESCOPE_SCAN_IMPORT_DATABASE") or "").strip()
+        or str(context.base_env.get("CODESCOPE_SCAN_NEO4J_DATABASE") or "").strip()
+        or str(settings.scan_external_import_database or "").strip()
+        or str(settings.scan_external_neo4j_database or "").strip()
+        or "neo4j"
+    )
     if not image:
         raise AppError(
             code="SCAN_EXTERNAL_NOT_CONFIGURED",
@@ -368,33 +381,92 @@ def _run_builtin_neo4j_import(
     restart_mode = (
         str(settings.scan_external_neo4j_runtime_restart_mode or "none").strip().lower()
     )
-    container_name = str(
-        settings.scan_external_neo4j_runtime_container_name or ""
-    ).strip()
+    container_name = (
+        str(
+            context.base_env.get("CODESCOPE_SCAN_NEO4J_RUNTIME_CONTAINER_NAME") or ""
+        ).strip()
+        or str(settings.scan_external_neo4j_runtime_container_name or "").strip()
+    )
+    runtime_network = (
+        str(context.base_env.get("CODESCOPE_SCAN_NEO4J_RUNTIME_NETWORK") or "").strip()
+        or str(
+            getattr(settings, "scan_external_neo4j_runtime_network", "") or ""
+        ).strip()
+    )
+    runtime_network_alias = (
+        str(
+            context.base_env.get("CODESCOPE_SCAN_NEO4J_RUNTIME_NETWORK_ALIAS") or ""
+        ).strip()
+        or str(
+            getattr(settings, "scan_external_neo4j_runtime_network_alias", "") or ""
+        ).strip()
+    )
+    runtime_network_auto_create = bool(
+        getattr(settings, "scan_external_neo4j_runtime_network_auto_create", False)
+    )
     restart_wait_seconds = max(
         0, int(settings.scan_external_neo4j_runtime_restart_wait_seconds or 0)
     )
+    runtime_uri = (
+        str(context.base_env.get("CODESCOPE_SCAN_NEO4J_URI") or "").strip()
+        or str(getattr(settings, "scan_external_neo4j_uri", "") or "").strip()
+    )
+    runtime_user = (
+        str(context.base_env.get("CODESCOPE_SCAN_NEO4J_USER") or "").strip()
+        or str(getattr(settings, "scan_external_neo4j_user", "") or "").strip()
+    )
+    runtime_password = (
+        str(context.base_env.get("CODESCOPE_SCAN_NEO4J_PASSWORD") or "").strip()
+        or str(getattr(settings, "scan_external_neo4j_password", "") or "").strip()
+    )
     manage_runtime = restart_mode == "docker" and bool(container_name)
+    manage_ephemeral_runtime = restart_mode == DOCKER_EPHEMERAL_RUNTIME_MODE and bool(
+        container_name
+    )
+    runtime_container_exists = False
     was_running = False
 
     if manage_runtime:
-        was_running = _is_container_running(
+        runtime_container_exists = _container_exists(
             container_name=container_name, deadline=deadline
         )
-        if was_running:
-            append_log(
-                "ANALYZE", f"[neo4j_import] 停止运行中的 Neo4j 容器: {container_name}"
+        if runtime_container_exists:
+            was_running = _is_container_running(
+                container_name=container_name, deadline=deadline
             )
-            _stop_container(container_name=container_name, deadline=deadline)
+            if was_running:
+                append_log(
+                    "ANALYZE",
+                    f"[neo4j_import] 停止运行中的 Neo4j 容器: {container_name}",
+                )
+                _stop_container(container_name=container_name, deadline=deadline)
+            else:
+                append_log(
+                    "ANALYZE",
+                    f"[neo4j_import] 导入前 Neo4j 容器未运行，导入后将启动: {container_name}",
+                )
         else:
             append_log(
                 "ANALYZE",
-                f"[neo4j_import] 导入前 Neo4j 容器未运行，导入后将启动: {container_name}",
+                f"[neo4j_import] 导入前 Neo4j 容器不存在，导入后将创建并启动: {container_name}",
             )
+    elif manage_ephemeral_runtime and _container_exists(
+        container_name=container_name, deadline=deadline
+    ):
+        append_log(
+            "ANALYZE",
+            f"[neo4j_import] 清理历史任务 Neo4j 容器: {container_name}",
+        )
+        _remove_container(
+            container_name=container_name,
+            deadline=deadline,
+            ignore_missing=True,
+        )
 
     import_error: AppError | None = None
     import_result: subprocess.CompletedProcess[str] | None = None
     restart_error: AppError | None = None
+    ephemeral_runtime_metadata: dict[str, object] = {}
     try:
         major = _detect_neo4j_major(image=image, deadline=deadline)
         admin_parts = _build_admin_parts(
@@ -472,20 +544,145 @@ def _run_builtin_neo4j_import(
     finally:
         if manage_runtime:
             try:
-                action = "重启" if was_running else "启动"
-                append_log("ANALYZE", f"[neo4j_import] {action} Neo4j 容器: {container_name}")
-                _start_container(container_name=container_name, deadline=deadline)
+                should_start_existing = runtime_container_exists and (
+                    was_running or import_error is None
+                )
+                should_create_runtime = (
+                    not runtime_container_exists and import_error is None
+                )
+                if should_start_existing:
+                    action = "重启" if was_running else "启动"
+                    append_log(
+                        "ANALYZE",
+                        f"[neo4j_import] {action} Neo4j 容器: {container_name}",
+                    )
+                    _start_container(container_name=container_name, deadline=deadline)
+                elif should_create_runtime:
+                    append_log(
+                        "ANALYZE",
+                        f"[neo4j_import] 创建并启动 Neo4j 运行时容器: {container_name}",
+                    )
+                    _run_ephemeral_runtime_container(
+                        image=image,
+                        container_name=container_name,
+                        data_mount=data_mount,
+                        uri=runtime_uri,
+                        password=runtime_password,
+                        network=runtime_network,
+                        network_alias=runtime_network_alias,
+                        network_auto_create=runtime_network_auto_create,
+                        deadline=deadline,
+                    )
                 if restart_wait_seconds > 0:
                     sleep_seconds = min(
                         restart_wait_seconds, _remaining_seconds(deadline)
                     )
                     time.sleep(max(0, sleep_seconds))
+                if import_error is None and (
+                    should_start_existing or should_create_runtime
+                ):
+                    _wait_for_ephemeral_runtime_ready(
+                        container_name=container_name,
+                        uri=runtime_uri,
+                        user=runtime_user,
+                        password=runtime_password,
+                        connect_retry=int(
+                            getattr(settings, "scan_external_neo4j_connect_retry", 15)
+                        ),
+                        connect_wait_seconds=int(
+                            getattr(
+                                settings,
+                                "scan_external_neo4j_connect_wait_seconds",
+                                2,
+                            )
+                        ),
+                        deadline=deadline,
+                    )
+                    append_log(
+                        "ANALYZE",
+                        f"[neo4j_import] Neo4j 运行时就绪: {container_name}, uri={runtime_uri}",
+                    )
             except Exception as exc:
                 restart_error = AppError(
                     code="SCAN_EXTERNAL_IMPORT_FAILED",
                     status_code=422,
                     message="Neo4j 运行时重启失败",
                     detail={"container_name": container_name, "error": str(exc)},
+                )
+        elif manage_ephemeral_runtime and import_error is None:
+            try:
+                append_log(
+                    "ANALYZE",
+                    f"[neo4j_import] 创建并启动任务级 Neo4j 容器: {container_name}",
+                )
+                ephemeral_runtime_metadata = _run_ephemeral_runtime_container(
+                    image=image,
+                    container_name=container_name,
+                    data_mount=data_mount,
+                    uri=runtime_uri,
+                    password=runtime_password,
+                    network=runtime_network,
+                    network_alias=runtime_network_alias,
+                    network_auto_create=runtime_network_auto_create,
+                    deadline=deadline,
+                )
+                if restart_wait_seconds > 0:
+                    sleep_seconds = min(
+                        restart_wait_seconds, _remaining_seconds(deadline)
+                    )
+                    time.sleep(max(0, sleep_seconds))
+                _wait_for_ephemeral_runtime_ready(
+                    container_name=container_name,
+                    uri=runtime_uri,
+                    user=runtime_user,
+                    password=runtime_password,
+                    connect_retry=int(
+                        getattr(settings, "scan_external_neo4j_connect_retry", 15)
+                    ),
+                    connect_wait_seconds=int(
+                        getattr(
+                            settings,
+                            "scan_external_neo4j_connect_wait_seconds",
+                            2,
+                        )
+                    ),
+                    deadline=deadline,
+                )
+                if ephemeral_runtime_metadata:
+                    write_runtime_metadata(
+                        reports_dir=context.reports_dir,
+                        payload=ephemeral_runtime_metadata,
+                    )
+                append_log(
+                    "ANALYZE",
+                    f"[neo4j_import] 任务级 Neo4j 容器就绪: {container_name}, uri={runtime_uri}",
+                )
+            except Exception as exc:
+                cleanup_detail: dict[str, object] = {}
+                try:
+                    cleanup_detail = cleanup_ephemeral_runtime_resources(
+                        container_name=container_name,
+                        data_mount=data_mount,
+                        network_name=str(
+                            ephemeral_runtime_metadata.get("network") or ""
+                        )
+                        or None,
+                        cleanup_network=bool(
+                            ephemeral_runtime_metadata.get("network_created_by_job")
+                        ),
+                        deadline=deadline,
+                    )
+                except Exception as cleanup_exc:
+                    cleanup_detail = {"cleanup_error": str(cleanup_exc)}
+                restart_error = AppError(
+                    code="SCAN_EXTERNAL_IMPORT_FAILED",
+                    status_code=422,
+                    message="Neo4j 任务级运行时启动失败",
+                    detail={
+                        "container_name": container_name,
+                        "error": str(exc),
+                        "runtime_cleanup": cleanup_detail,
+                    },
                 )
 
     if import_error is not None:
@@ -526,41 +723,102 @@ def _run_builtin_post_labels(
     context: ExternalScanContext,
     append_log: Callable[[str, str], None],
 ) -> tuple[str, str]:
-    cypher_file = Path(context.base_env.get("CODESCOPE_SCAN_POST_LABELS_CYPHER") or "")
-    if not cypher_file.exists() or not cypher_file.is_file():
-        raise AppError(
-            code="SCAN_EXTERNAL_NOT_CONFIGURED",
-            status_code=501,
-            message="post_labels Cypher 文件不存在",
-            detail={"post_labels_cypher": str(cypher_file)},
+    post_labels_path = Path(
+        context.base_env.get("CODESCOPE_SCAN_POST_LABELS_CYPHER") or ""
+    )
+    cypher_files = _resolve_post_labels_files(post_labels_path)
+
+    script_results: list[dict[str, object]] = []
+    total_statements = 0
+    total_rows = 0
+    total_scripts = len(cypher_files)
+
+    for index, cypher_file in enumerate(cypher_files, start=1):
+        append_log(
+            "QUERY",
+            f"[post_labels] 开始执行脚本 {index}/{total_scripts}: {cypher_file.name}",
+        )
+        started = time.monotonic()
+        try:
+            summary = execute_cypher_file(
+                cypher_file=cypher_file,
+                uri=(
+                    str(context.base_env.get("CODESCOPE_SCAN_NEO4J_URI") or "").strip()
+                    or str(settings.scan_external_neo4j_uri or "").strip()
+                ),
+                user=(
+                    str(context.base_env.get("CODESCOPE_SCAN_NEO4J_USER") or "").strip()
+                    or str(settings.scan_external_neo4j_user or "").strip()
+                ),
+                password=(
+                    str(
+                        context.base_env.get("CODESCOPE_SCAN_NEO4J_PASSWORD") or ""
+                    ).strip()
+                    or str(settings.scan_external_neo4j_password or "").strip()
+                ),
+                database=(
+                    str(
+                        context.base_env.get("CODESCOPE_SCAN_NEO4J_DATABASE") or ""
+                    ).strip()
+                    or str(settings.scan_external_neo4j_database or "").strip()
+                    or "neo4j"
+                ),
+                connect_retry=int(settings.scan_external_neo4j_connect_retry),
+                connect_wait_seconds=int(
+                    settings.scan_external_neo4j_connect_wait_seconds
+                ),
+            )
+        except AppError as exc:
+            if exc.code == "SCAN_EXTERNAL_NOT_CONFIGURED":
+                raise
+            detail = dict(exc.detail) if isinstance(exc.detail, dict) else {}
+            detail.update(
+                {
+                    "script_name": cypher_file.name,
+                    "script_path": str(cypher_file),
+                    "script_index": index,
+                    "script_count": total_scripts,
+                }
+            )
+            raise AppError(
+                code="SCAN_EXTERNAL_POST_LABELS_FAILED",
+                status_code=422,
+                message="post_labels 执行失败",
+                detail=detail,
+            ) from exc
+
+        duration_ms = int((time.monotonic() - started) * 1000)
+        total_statements += summary.statement_count
+        total_rows += summary.total_rows
+        script_results.append(
+            {
+                "script": cypher_file.name,
+                "statement_count": summary.statement_count,
+                "total_rows": summary.total_rows,
+                "duration_ms": duration_ms,
+            }
+        )
+        append_log(
+            "QUERY",
+            (
+                f"[post_labels] 脚本执行完成 {index}/{total_scripts}: {cypher_file.name}, "
+                f"statements={summary.statement_count}, total_rows={summary.total_rows}, "
+                f"duration_ms={duration_ms}"
+            ),
         )
 
-    try:
-        summary = execute_cypher_file(
-            cypher_file=cypher_file,
-            uri=str(settings.scan_external_neo4j_uri or ""),
-            user=str(settings.scan_external_neo4j_user or ""),
-            password=str(settings.scan_external_neo4j_password or ""),
-            database=str(settings.scan_external_neo4j_database or "neo4j"),
-            connect_retry=int(settings.scan_external_neo4j_connect_retry),
-            connect_wait_seconds=int(settings.scan_external_neo4j_connect_wait_seconds),
-        )
-    except AppError as exc:
-        if exc.code == "SCAN_EXTERNAL_NOT_CONFIGURED":
-            raise
-        detail = dict(exc.detail) if isinstance(exc.detail, dict) else {}
-        raise AppError(
-            code="SCAN_EXTERNAL_POST_LABELS_FAILED",
-            status_code=422,
-            message="post_labels 执行失败",
-            detail=detail,
-        ) from exc
+    payload = {
+        "scripts": script_results,
+        "script_count": total_scripts,
+        "statement_count": total_statements,
+        "total_rows": total_rows,
+    }
     message = (
-        f"[post_labels] 执行完成: statements={summary.statement_count}, "
-        f"total_rows={summary.total_rows}"
+        f"[post_labels] 执行完成: scripts={total_scripts}, "
+        f"statements={total_statements}, total_rows={total_rows}"
     )
     append_log("QUERY", message)
-    return message, ""
+    return json.dumps(payload, ensure_ascii=False), ""
 
 
 def _run_builtin_rules(
@@ -624,25 +882,67 @@ def _run_builtin_rules(
     )
     rule_rows: dict[str, int] = {}
     partial_failures: list[dict[str, object]] = []
+    rule_results: list[dict[str, object]] = []
     succeeded_rule_count = 0
-    for rule_file in rule_files:
+    total_rule_count = len(rule_files)
+    for index, rule_file in enumerate(rule_files, start=1):
         rule_key = _rule_key_from_file(rule_file)
+        append_log(
+            "QUERY",
+            f"[rules] 开始执行规则 {index}/{total_rule_count}: {rule_key}",
+        )
+        started = time.monotonic()
         try:
-            _validate_runtime_rule_cypher(rule_file=rule_file, rule_key=rule_key)
             summary = execute_cypher_file(
                 cypher_file=rule_file,
-                uri=str(settings.scan_external_neo4j_uri or ""),
-                user=str(settings.scan_external_neo4j_user or ""),
-                password=str(settings.scan_external_neo4j_password or ""),
-                database=str(settings.scan_external_neo4j_database or "neo4j"),
+                uri=(
+                    str(context.base_env.get("CODESCOPE_SCAN_NEO4J_URI") or "").strip()
+                    or str(settings.scan_external_neo4j_uri or "").strip()
+                ),
+                user=(
+                    str(context.base_env.get("CODESCOPE_SCAN_NEO4J_USER") or "").strip()
+                    or str(settings.scan_external_neo4j_user or "").strip()
+                ),
+                password=(
+                    str(
+                        context.base_env.get("CODESCOPE_SCAN_NEO4J_PASSWORD") or ""
+                    ).strip()
+                    or str(settings.scan_external_neo4j_password or "").strip()
+                ),
+                database=(
+                    str(
+                        context.base_env.get("CODESCOPE_SCAN_NEO4J_DATABASE") or ""
+                    ).strip()
+                    or str(settings.scan_external_neo4j_database or "").strip()
+                    or "neo4j"
+                ),
                 connect_retry=int(settings.scan_external_neo4j_connect_retry),
                 connect_wait_seconds=int(
                     settings.scan_external_neo4j_connect_wait_seconds
                 ),
             )
+            duration_ms = int((time.monotonic() - started) * 1000)
             rule_rows[rule_key] = summary.total_rows
             succeeded_rule_count += 1
+            rule_results.append(
+                {
+                    "rule": rule_key,
+                    "status": "succeeded",
+                    "rows": summary.total_rows,
+                    "duration_ms": duration_ms,
+                    "error_code": None,
+                    "message": None,
+                }
+            )
+            append_log(
+                "QUERY",
+                (
+                    f"[rules] 规则执行完成 {index}/{total_rule_count}: {rule_key}, "
+                    f"rows={summary.total_rows}, duration_ms={duration_ms}"
+                ),
+            )
         except AppError as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
             if exc.code == "SCAN_EXTERNAL_NOT_CONFIGURED":
                 raise
             if failure_mode == "strict":
@@ -655,15 +955,36 @@ def _run_builtin_rules(
                         "failed_rule": rule_key,
                         "error_code": exc.code,
                         "error_message": exc.message,
+                        "partial_failures": [],
+                        "succeeded_rules": succeeded_rule_count,
+                        "failed_rules": 1,
+                        "duration_ms": duration_ms,
                     },
                 ) from exc
             rule_rows[rule_key] = 0
-            partial_failures.append(
+            failure_detail = {
+                "rule": rule_key,
+                "error_code": exc.code,
+                "message": exc.message,
+                "duration_ms": duration_ms,
+            }
+            partial_failures.append(failure_detail)
+            rule_results.append(
                 {
                     "rule": rule_key,
+                    "status": "failed",
+                    "rows": 0,
+                    "duration_ms": duration_ms,
                     "error_code": exc.code,
                     "message": exc.message,
                 }
+            )
+            append_log(
+                "QUERY",
+                (
+                    f"[rules] 规则执行失败 {index}/{total_rule_count}: {rule_key}, "
+                    f"error_code={exc.code}, duration_ms={duration_ms}"
+                ),
             )
 
     if succeeded_rule_count == 0 and partial_failures:
@@ -678,19 +999,29 @@ def _run_builtin_rules(
         )
 
     rule_summary = _summarize_rule_rows(rule_rows)
-    failed_rule_keys = [str(item.get("rule") or "") for item in partial_failures if str(item.get("rule") or "")]
+    failed_rule_keys = [
+        str(item.get("rule") or "")
+        for item in partial_failures
+        if str(item.get("rule") or "")
+    ]
     execution_summary = {
-        "total_rules": len(rule_rows),
+        "total_rules": total_rule_count,
+        "executed_rules": len(rule_rows),
         "succeeded_rules": succeeded_rule_count,
         "failed_rules": len(partial_failures),
         "failed_rule_keys": failed_rule_keys,
         "failure_mode": failure_mode,
+        "has_partial_failures": bool(partial_failures),
+        "partial_failure_effect": (
+            "continued" if failure_mode == "permissive" and partial_failures else "none"
+        ),
     }
     round_report = {
         "round": 1,
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "rule_rows": rule_rows,
         "rule_summary": rule_summary,
+        "rule_results": rule_results,
         "partial_failures": partial_failures,
         "execution_summary": execution_summary,
     }
@@ -720,6 +1051,8 @@ def _run_builtin_rules(
             "failed_rules": execution_summary["failed_rules"],
             "failed_rule_keys": execution_summary["failed_rule_keys"],
             "partial_failures": len(partial_failures),
+            "partial_failure_effect": execution_summary["partial_failure_effect"],
+            "rule_results": rule_results,
         },
         ensure_ascii=False,
     )
@@ -731,6 +1064,7 @@ def _run_command_with_deadline(
     *,
     deadline: float,
     env: dict[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     timeout = _remaining_seconds(deadline)
     prepared = _prepare_command(command)
@@ -745,6 +1079,7 @@ def _run_command_with_deadline(
             check=False,
             timeout=timeout,
             env=env,
+            cwd=str(cwd) if cwd is not None else None,
         )
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError(str(exc)) from exc
@@ -821,10 +1156,40 @@ def _collect_csv_pairs(
 
 def _find_missing_required_csv_files(import_dir: Path) -> list[str]:
     return [
-        name
-        for name in REQUIRED_JOERN_EXPORT_FILES
-        if not (import_dir / name).exists()
+        name for name in REQUIRED_JOERN_EXPORT_FILES if not (import_dir / name).exists()
     ]
+
+
+def _resolve_post_labels_files(post_labels_path: Path) -> list[Path]:
+    if not post_labels_path.exists():
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="post_labels Cypher 文件不存在",
+            detail={"post_labels_cypher": str(post_labels_path)},
+        )
+    if post_labels_path.is_file():
+        return [post_labels_path]
+    if not post_labels_path.is_dir():
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="post_labels 路径不是文件或目录",
+            detail={"post_labels_cypher": str(post_labels_path)},
+        )
+
+    cypher_files = sorted(
+        [item for item in post_labels_path.glob("*.cypher") if item.is_file()],
+        key=lambda item: item.name.lower(),
+    )
+    if not cypher_files:
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="post_labels 目录中不存在可执行脚本",
+            detail={"post_labels_cypher": str(post_labels_path)},
+        )
+    return cypher_files
 
 
 def _resolve_joern_binary(
@@ -849,7 +1214,9 @@ def _normalize_host_path_for_docker(path_text: str) -> str:
 def _resolve_import_host_mount_path(
     *, context: ExternalScanContext, runtime_profile: str
 ) -> str:
-    configured = str(context.base_env.get("CODESCOPE_SCAN_IMPORT_HOST_PATH") or "").strip()
+    configured = str(
+        context.base_env.get("CODESCOPE_SCAN_IMPORT_HOST_PATH") or ""
+    ).strip()
     raw_path = configured or str(context.import_dir.resolve())
     normalized_path = _normalize_host_path_for_docker(raw_path)
     if (
@@ -871,6 +1238,8 @@ def _resolve_import_host_mount_path(
 
 def _resolve_data_mount(raw_value: str) -> str:
     cleaned = raw_value.strip().strip('"')
+    if cleaned.startswith("/"):
+        return _normalize_host_path_for_docker(cleaned)
     if "/" in cleaned or ":\\" in raw_value or ":/" in raw_value:
         return _normalize_host_path_for_docker(
             str(Path(cleaned).expanduser().resolve())
@@ -879,8 +1248,14 @@ def _resolve_data_mount(raw_value: str) -> str:
 
 
 def _resolve_runtime_profile(*, context: ExternalScanContext) -> str:
-    profile = str(context.base_env.get("CODESCOPE_SCAN_RUNTIME_PROFILE") or "").strip().lower()
-    compat_flag = str(context.base_env.get("CODESCOPE_SCAN_CONTAINER_COMPAT_MODE") or "").strip()
+    profile = (
+        str(context.base_env.get("CODESCOPE_SCAN_RUNTIME_PROFILE") or "")
+        .strip()
+        .lower()
+    )
+    compat_flag = str(
+        context.base_env.get("CODESCOPE_SCAN_CONTAINER_COMPAT_MODE") or ""
+    ).strip()
     if profile == CONTAINER_COMPAT_RUNTIME_PROFILE or compat_flag == "1":
         return CONTAINER_COMPAT_RUNTIME_PROFILE
     return WSL_RUNTIME_PROFILE
@@ -993,6 +1368,368 @@ def _start_container(*, container_name: str, deadline: float) -> None:
         )
 
 
+def _container_exists(*, container_name: str, deadline: float) -> bool:
+    cmd = ["docker", "inspect", container_name, "--format", "{{.Id}}"]
+    result = _run_command_with_deadline(cmd, deadline=deadline)
+    return result.returncode == 0 and bool((result.stdout or "").strip())
+
+
+def _remove_container(
+    *, container_name: str, deadline: float, ignore_missing: bool = False
+) -> None:
+    cmd = ["docker", "rm", "-f", container_name]
+    result = _run_command_with_deadline(cmd, deadline=deadline)
+    if result.returncode == 0:
+        return
+    output_text = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+    if ignore_missing and "no such container" in output_text:
+        return
+    raise AppError(
+        code="SCAN_EXTERNAL_IMPORT_FAILED",
+        status_code=422,
+        message="删除 Neo4j 容器失败",
+        detail={
+            "container_name": container_name,
+            "stdout": _tail_text(result.stdout),
+            "stderr": _tail_text(result.stderr),
+        },
+    )
+
+
+def _run_ephemeral_runtime_container(
+    *,
+    image: str,
+    container_name: str,
+    data_mount: str,
+    uri: str,
+    password: str,
+    network: str,
+    network_alias: str,
+    network_auto_create: bool,
+    deadline: float,
+) -> dict[str, object]:
+    docker_network, docker_network_alias = _resolve_ephemeral_runtime_networking(
+        uri=uri,
+        network=network,
+        network_alias=network_alias,
+    )
+    network_created_by_job = False
+    if docker_network:
+        network_created_by_job = _ensure_network_exists(
+            network_name=docker_network,
+            deadline=deadline,
+            auto_create=network_auto_create,
+        )
+    cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        container_name,
+        "-v",
+        f"{data_mount}:/data",
+        "-e",
+        f"NEO4J_AUTH={_build_neo4j_auth_value(password=password)}",
+        "-e",
+        "NEO4J_server_default__listen__address=0.0.0.0",
+    ]
+    if docker_network:
+        cmd.extend(["--network", docker_network])
+    if docker_network_alias:
+        cmd.extend(["--network-alias", docker_network_alias])
+    publish_arg = _build_bolt_publish_arg(uri=uri)
+    if publish_arg:
+        cmd.extend(["-p", publish_arg])
+    cmd.append(image)
+    result = _run_command_with_deadline(cmd, deadline=deadline)
+    if result.returncode != 0:
+        raise AppError(
+            code="SCAN_EXTERNAL_IMPORT_FAILED",
+            status_code=422,
+            message="启动任务级 Neo4j 容器失败",
+            detail={
+                "container_name": container_name,
+                "command": cmd,
+                "stdout": _tail_text(result.stdout),
+                "stderr": _tail_text(result.stderr),
+            },
+        )
+    return {
+        "network": docker_network,
+        "network_alias": docker_network_alias,
+        "network_created_by_job": network_created_by_job,
+    }
+
+
+def _ensure_network_exists(
+    *, network_name: str, deadline: float, auto_create: bool
+) -> bool:
+    cmd = ["docker", "network", "inspect", network_name, "--format", "{{.Id}}"]
+    result = _run_command_with_deadline(cmd, deadline=deadline)
+    if result.returncode == 0 and bool((result.stdout or "").strip()):
+        return False
+    if auto_create:
+        _create_network(network_name=network_name, deadline=deadline)
+        return True
+    raise AppError(
+        code="SCAN_EXTERNAL_NOT_CONFIGURED",
+        status_code=501,
+        message="Neo4j 运行时网络不存在或不可用",
+        detail={
+            "network": network_name,
+            "stdout": _tail_text(result.stdout),
+            "stderr": _tail_text(result.stderr),
+        },
+    )
+
+
+def _create_network(*, network_name: str, deadline: float) -> None:
+    cmd = ["docker", "network", "create", network_name]
+    result = _run_command_with_deadline(cmd, deadline=deadline)
+    if result.returncode == 0:
+        return
+    raise AppError(
+        code="SCAN_EXTERNAL_IMPORT_FAILED",
+        status_code=422,
+        message="创建 Neo4j 运行时网络失败",
+        detail={
+            "network": network_name,
+            "stdout": _tail_text(result.stdout),
+            "stderr": _tail_text(result.stderr),
+        },
+    )
+
+
+def _build_neo4j_auth_value(*, password: str) -> str:
+    secret = password.strip()
+    if not secret:
+        return "none"
+    return f"neo4j/{secret}"
+
+
+def _build_bolt_publish_arg(*, uri: str) -> str | None:
+    parsed = urlparse(uri)
+    if parsed.port is None:
+        return None
+    host = (parsed.hostname or "").strip().lower()
+    if host in {"127.0.0.1", "localhost"}:
+        return f"127.0.0.1:{parsed.port}:7687"
+    if host == "0.0.0.0":
+        return f"0.0.0.0:{parsed.port}:7687"
+    return None
+
+
+def _resolve_ephemeral_runtime_networking(
+    *, uri: str, network: str, network_alias: str
+) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    host = (parsed.hostname or "").strip()
+    normalized_network = network.strip()
+    normalized_alias = network_alias.strip()
+
+    if normalized_alias and not normalized_network:
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="配置 Neo4j 运行时网络别名时必须同时配置网络",
+            detail={"required": "scan_external_neo4j_runtime_network"},
+        )
+
+    if _uri_host_requires_runtime_network(host=host) and not normalized_network:
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="docker_ephemeral 模式下，非本地 Neo4j URI 需要配置运行时网络",
+            detail={
+                "uri": uri,
+                "required": "scan_external_neo4j_runtime_network",
+            },
+        )
+
+    if not normalized_network:
+        return "", ""
+
+    resolved_alias = normalized_alias
+    if not resolved_alias and _uri_host_requires_runtime_network(host=host):
+        resolved_alias = host
+    return normalized_network, resolved_alias
+
+
+def _uri_host_requires_runtime_network(*, host: str) -> bool:
+    normalized = host.strip().lower()
+    if not normalized:
+        return False
+    return normalized not in {"127.0.0.1", "localhost", "0.0.0.0"}
+
+
+def cleanup_ephemeral_runtime_resources(
+    *,
+    container_name: str | None,
+    data_mount: str | None,
+    network_name: str | None = None,
+    cleanup_network: bool = False,
+    deadline: float,
+) -> dict[str, object]:
+    container_cleanup_attempted = False
+    container_cleanup_succeeded = False
+    data_cleanup_attempted = False
+    data_cleanup_succeeded = False
+    network_cleanup_attempted = False
+    network_cleanup_succeeded = False
+
+    normalized_container_name = str(container_name or "").strip()
+    normalized_data_mount = str(data_mount or "").strip()
+    normalized_network_name = str(network_name or "").strip()
+
+    if normalized_container_name:
+        container_cleanup_attempted = True
+        _remove_container(
+            container_name=normalized_container_name,
+            deadline=deadline,
+            ignore_missing=True,
+        )
+        container_cleanup_succeeded = True
+
+    if normalized_data_mount:
+        data_cleanup_attempted = True
+        _remove_data_mount(data_mount=normalized_data_mount, deadline=deadline)
+        data_cleanup_succeeded = True
+
+    if cleanup_network and normalized_network_name:
+        network_cleanup_attempted = True
+        _remove_network(network_name=normalized_network_name, deadline=deadline)
+        network_cleanup_succeeded = True
+
+    return {
+        "container_cleanup_attempted": container_cleanup_attempted,
+        "container_cleanup_succeeded": container_cleanup_succeeded,
+        "data_cleanup_attempted": data_cleanup_attempted,
+        "data_cleanup_succeeded": data_cleanup_succeeded,
+        "network_cleanup_attempted": network_cleanup_attempted,
+        "network_cleanup_succeeded": network_cleanup_succeeded,
+    }
+
+
+def _wait_for_ephemeral_runtime_ready(
+    *,
+    container_name: str,
+    uri: str,
+    user: str,
+    password: str,
+    connect_retry: int,
+    connect_wait_seconds: int,
+    deadline: float,
+) -> None:
+    retry = max(1, int(connect_retry))
+    wait_seconds = max(1, int(connect_wait_seconds))
+    _wait_for_container_running(
+        container_name=container_name,
+        retry=retry,
+        wait_seconds=wait_seconds,
+        deadline=deadline,
+    )
+    try:
+        verify_neo4j_connectivity(
+            uri=uri,
+            user=user,
+            password=password,
+            connect_retry=retry,
+            connect_wait_seconds=wait_seconds,
+        )
+    except AppError as exc:
+        raise AppError(
+            code="SCAN_EXTERNAL_IMPORT_FAILED",
+            status_code=422,
+            message="任务级 Neo4j 运行时未就绪",
+            detail={"container_name": container_name, "uri": uri, "error": str(exc)},
+        ) from exc
+
+
+def _wait_for_container_running(
+    *, container_name: str, retry: int, wait_seconds: int, deadline: float
+) -> None:
+    last_error: Exception | None = None
+    for attempt in range(1, retry + 1):
+        try:
+            if _is_container_running(container_name=container_name, deadline=deadline):
+                return
+            last_error = RuntimeError("container not running yet")
+        except Exception as exc:
+            last_error = exc
+
+        if attempt < retry:
+            sleep_seconds = min(wait_seconds, _remaining_seconds(deadline))
+            time.sleep(max(0, sleep_seconds))
+
+    raise AppError(
+        code="SCAN_EXTERNAL_IMPORT_FAILED",
+        status_code=422,
+        message="任务级 Neo4j 容器未进入运行状态",
+        detail={
+            "container_name": container_name,
+            "error": str(last_error or "unknown"),
+        },
+    )
+
+
+def _remove_data_mount(*, data_mount: str, deadline: float) -> None:
+    if _looks_like_path_mount(data_mount):
+        target = Path(data_mount)
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=False)
+        return
+
+    cmd = ["docker", "volume", "rm", "-f", data_mount]
+    result = _run_command_with_deadline(cmd, deadline=deadline)
+    if result.returncode == 0:
+        return
+    output_text = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+    if "no such volume" in output_text:
+        return
+    raise AppError(
+        code="SCAN_EXTERNAL_IMPORT_FAILED",
+        status_code=422,
+        message="删除 Neo4j 数据挂载失败",
+        detail={
+            "data_mount": data_mount,
+            "stdout": _tail_text(result.stdout),
+            "stderr": _tail_text(result.stderr),
+        },
+    )
+
+
+def _remove_network(*, network_name: str, deadline: float) -> None:
+    cmd = ["docker", "network", "rm", network_name]
+    result = _run_command_with_deadline(cmd, deadline=deadline)
+    if result.returncode == 0:
+        return
+    output_text = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+    if "no such network" in output_text:
+        return
+    raise AppError(
+        code="SCAN_EXTERNAL_IMPORT_FAILED",
+        status_code=422,
+        message="删除 Neo4j 运行时网络失败",
+        detail={
+            "network": network_name,
+            "stdout": _tail_text(result.stdout),
+            "stderr": _tail_text(result.stderr),
+        },
+    )
+
+
+def _looks_like_path_mount(value: str) -> bool:
+    cleaned = value.strip()
+    if not cleaned:
+        return False
+    return (
+        "/" in cleaned
+        or "\\" in cleaned
+        or re.match(r"^[A-Za-z]:", cleaned) is not None
+    )
+
+
 def _neo4j_admin_resolver_shell() -> str:
     return (
         "NEO4J_ADMIN=; "
@@ -1100,50 +1837,6 @@ def _normalize_rules_failure_mode(value: object) -> str:
     if mode == "strict":
         return "strict"
     return "permissive"
-
-
-def _validate_runtime_rule_cypher(*, rule_file: Path, rule_key: str) -> None:
-    text = rule_file.read_text(encoding="utf-8", errors="replace")
-    statements = split_cypher_statements(text)
-    if not statements:
-        raise AppError(
-            code="SCAN_EXTERNAL_RULES_FAILED",
-            status_code=422,
-            message="规则语句运行时校验失败",
-            detail={"rule": rule_key, "reason": "empty_statement"},
-        )
-    for index, statement in enumerate(statements, start=1):
-        prefix = _statement_prefix(statement)
-        if prefix not in RUNTIME_ALLOWED_STATEMENT_PREFIXES:
-            raise AppError(
-                code="SCAN_EXTERNAL_RULES_FAILED",
-                status_code=422,
-                message="规则语句运行时校验失败",
-                detail={
-                    "rule": rule_key,
-                    "reason": "unsupported_prefix",
-                    "statement_index": index,
-                    "prefix": prefix,
-                },
-            )
-        if RUNTIME_FORBIDDEN_WRITE_CLAUSE_RE.search(statement):
-            raise AppError(
-                code="SCAN_EXTERNAL_RULES_FAILED",
-                status_code=422,
-                message="规则语句运行时校验失败",
-                detail={
-                    "rule": rule_key,
-                    "reason": "write_clause_detected",
-                    "statement_index": index,
-                },
-            )
-
-
-def _statement_prefix(statement: str) -> str:
-    token = statement.strip().split(maxsplit=1)
-    if not token:
-        return ""
-    return token[0].upper()
 
 
 def _summarize_rule_rows(rule_rows: dict[str, int]) -> dict[str, int]:

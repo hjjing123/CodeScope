@@ -91,6 +91,92 @@ def execute_cypher_file(
         driver.close()
 
 
+def drop_database_if_exists(
+    *,
+    uri: str,
+    user: str,
+    password: str,
+    database: str,
+    connect_retry: int,
+    connect_wait_seconds: int,
+) -> None:
+    target_database = database.strip()
+    if not target_database:
+        return
+
+    try:
+        from neo4j import GraphDatabase
+        from neo4j.exceptions import DatabaseUnavailable, ServiceUnavailable
+    except Exception as exc:  # pragma: no cover - runtime dependency guard
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="缺少 neo4j Python 驱动，请安装依赖 neo4j",
+        ) from exc
+
+    driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=5)
+    try:
+        _verify_connectivity(
+            driver=driver,
+            retry=max(1, int(connect_retry)),
+            wait_seconds=max(1, int(connect_wait_seconds)),
+            retry_errors=(ServiceUnavailable, DatabaseUnavailable),
+        )
+
+        escaped = target_database.replace("`", "``")
+        statement = f"DROP DATABASE `{escaped}` IF EXISTS"
+        with driver.session(database="system") as session:
+            result = _run_with_retry(
+                session=session,
+                statement=statement,
+                retry=max(1, int(connect_retry)),
+                wait_seconds=max(1, int(connect_wait_seconds)),
+                retry_errors=(ServiceUnavailable, DatabaseUnavailable),
+            )
+            result.consume()
+    except AppError:
+        raise
+    except Exception as exc:
+        raise AppError(
+            code="SCAN_EXTERNAL_IMPORT_FAILED",
+            status_code=422,
+            message="删除 Neo4j 临时数据库失败",
+            detail={"database": target_database, "error": str(exc)},
+        ) from exc
+    finally:
+        driver.close()
+
+
+def verify_neo4j_connectivity(
+    *,
+    uri: str,
+    user: str,
+    password: str,
+    connect_retry: int,
+    connect_wait_seconds: int,
+) -> None:
+    try:
+        from neo4j import GraphDatabase
+        from neo4j.exceptions import DatabaseUnavailable, ServiceUnavailable
+    except Exception as exc:  # pragma: no cover - runtime dependency guard
+        raise AppError(
+            code="SCAN_EXTERNAL_NOT_CONFIGURED",
+            status_code=501,
+            message="缺少 neo4j Python 驱动，请安装依赖 neo4j",
+        ) from exc
+
+    driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=5)
+    try:
+        _verify_connectivity(
+            driver=driver,
+            retry=max(1, int(connect_retry)),
+            wait_seconds=max(1, int(connect_wait_seconds)),
+            retry_errors=(ServiceUnavailable, DatabaseUnavailable),
+        )
+    finally:
+        driver.close()
+
+
 def strip_cypher_comments(text: str) -> str:
     out: list[str] = []
     i = 0
@@ -209,7 +295,9 @@ def split_cypher_statements(text: str) -> list[str]:
     return statements
 
 
-def _verify_connectivity(*, driver, retry: int, wait_seconds: int, retry_errors: tuple[type[Exception], ...]) -> None:
+def _verify_connectivity(
+    *, driver, retry: int, wait_seconds: int, retry_errors: tuple[type[Exception], ...]
+) -> None:
     for attempt in range(1, retry + 1):
         try:
             driver.verify_connectivity()
@@ -225,7 +313,14 @@ def _verify_connectivity(*, driver, retry: int, wait_seconds: int, retry_errors:
             time.sleep(wait_seconds)
 
 
-def _run_with_retry(*, session, statement: str, retry: int, wait_seconds: int, retry_errors: tuple[type[Exception], ...]):
+def _run_with_retry(
+    *,
+    session,
+    statement: str,
+    retry: int,
+    wait_seconds: int,
+    retry_errors: tuple[type[Exception], ...],
+):
     for attempt in range(1, retry + 1):
         try:
             return session.run(statement)

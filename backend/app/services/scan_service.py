@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -20,20 +23,27 @@ from app.models import (
     FindingStatus,
     Job,
     JobFailureCategory,
+    JobStep,
+    JobStepStatus,
     JobStage,
     JobStatus,
     JobType,
     Project,
-    ScanMode,
     TaskLogType,
     Version,
     VersionStatus,
     utc_now,
 )
 from app.services.audit_service import append_audit_log
+from app.services.artifact_service import delete_scan_job_artifacts
 from app.services.rule_file_service import get_rules_by_keys, normalize_rule_selector
 from app.services.scan_external import run_external_scan as run_external_scan_pipeline
-from app.services.task_log_service import append_task_log
+from app.services.scan_external.builtin import cleanup_ephemeral_runtime_resources
+from app.services.scan_external.context import resolve_external_path
+from app.services.scan_external.neo4j_runner import drop_database_if_exists
+from app.services.scan_external.runtime_metadata import load_runtime_metadata
+from app.services.snapshot_storage_service import read_snapshot_file_context
+from app.services.task_log_service import append_task_log, delete_task_logs
 
 
 RETRYABLE_SCAN_STATUSES = {
@@ -47,6 +57,14 @@ TERMINAL_SCAN_STATUSES = {
     JobStatus.FAILED.value,
     JobStatus.CANCELED.value,
     JobStatus.TIMEOUT.value,
+}
+
+SCAN_DELETE_TARGETS = {
+    "logs",
+    "artifacts",
+    "workspace",
+    "findings",
+    "job_record",
 }
 
 SCAN_FAILURE_HINTS: dict[str, str] = {
@@ -77,6 +95,64 @@ STAGE_SEQUENCE = [
     JobStage.AI.value,
     JobStage.CLEANUP.value,
 ]
+
+SCAN_STEP_DEFINITIONS: tuple[tuple[str, str], ...] = (
+    ("prepare", "源码准备"),
+    ("joern", "Joern 解析与导图"),
+    ("neo4j_import", "导入 Neo4j"),
+    ("post_labels", "图增强"),
+    ("rules", "规则扫描"),
+    ("aggregate", "结果聚合与落库"),
+    ("ai", "结果标准化与 AI 摘要"),
+    ("archive", "归档结果"),
+    ("cleanup", "清理资源"),
+)
+
+FINDING_DRAFT_REQUIRED_KEYS: tuple[str, ...] = (
+    "rule_key",
+    "severity",
+    "file_path",
+    "line_start",
+    "line_end",
+    "source",
+    "sink",
+    "evidence",
+    "trace_summary",
+)
+
+LLM_TEXT_MAX_LENGTH = 800
+LLM_EVIDENCE_ITEM_MAX_LENGTH = 200
+LLM_EVIDENCE_ITEMS_MAX_COUNT = 6
+LLM_CODE_SNIPPET_MAX_LENGTH = 400
+
+TERMINAL_STEP_STATUSES = {
+    JobStepStatus.SUCCEEDED.value,
+    JobStepStatus.FAILED.value,
+    JobStepStatus.CANCELED.value,
+}
+
+STAGE_STEP_KEYS: dict[str, tuple[str, ...]] = {
+    JobStage.PREPARE.value: ("prepare",),
+    JobStage.ANALYZE.value: ("joern", "neo4j_import"),
+    JobStage.QUERY.value: ("post_labels", "rules"),
+    JobStage.AGGREGATE.value: ("aggregate",),
+    JobStage.AI.value: ("ai",),
+    JobStage.CLEANUP.value: ("archive", "cleanup"),
+}
+
+FAILURE_STEP_BY_CODE: dict[str, str] = {
+    "VERSION_NOT_READY": "prepare",
+    "SCAN_EXTERNAL_JOERN_FAILED": "joern",
+    "SCAN_EXTERNAL_JOERN_TIMEOUT": "joern",
+    "SCAN_EXTERNAL_IMPORT_FAILED": "neo4j_import",
+    "SCAN_EXTERNAL_IMPORT_TIMEOUT": "neo4j_import",
+    "SCAN_EXTERNAL_POST_LABELS_FAILED": "post_labels",
+    "SCAN_EXTERNAL_POST_LABELS_TIMEOUT": "post_labels",
+    "SCAN_EXTERNAL_RULES_FAILED": "rules",
+    "SCAN_EXTERNAL_RULES_TIMEOUT": "rules",
+    "SCAN_EXTERNAL_RESULT_MISSING": "aggregate",
+    "SCAN_EXTERNAL_RESULT_INVALID": "aggregate",
+}
 
 FAILURE_CATEGORY_BY_CODE: dict[str, str] = {
     "VERSION_NOT_READY": JobFailureCategory.INPUT.value,
@@ -123,19 +199,6 @@ def failure_category_for_code(failure_code: str | None, *, default: str) -> str:
     if not failure_code:
         return default
     return FAILURE_CATEGORY_BY_CODE.get(failure_code, default)
-
-
-def normalize_scan_mode(value: str) -> str:
-    normalized = value.strip().upper()
-    valid = {item.value for item in ScanMode}
-    if normalized not in valid:
-        raise AppError(
-            code="INVALID_ARGUMENT",
-            status_code=422,
-            message="scan_mode 仅支持 FULL/FAST/VERIFY",
-            detail={"allowed_values": sorted(valid)},
-        )
-    return normalized
 
 
 def normalize_rule_keys(values: list[str]) -> list[str]:
@@ -227,6 +290,7 @@ def create_scan_job(
     )
     db.add(job)
     db.flush()
+    initialize_scan_job_steps(db, job_id=job.id)
     return job
 
 
@@ -373,6 +437,41 @@ def _job_log_dir(*, job_id: uuid.UUID) -> Path:
     return path
 
 
+def _scan_result_archive_path(*, job_id: uuid.UUID) -> Path:
+    return _job_log_dir(job_id=job_id) / "scan_result.json"
+
+
+def _build_scan_result_archive_payload(*, job: Job) -> dict[str, object]:
+    return {
+        "job_id": str(job.id),
+        "project_id": str(job.project_id),
+        "version_id": str(job.version_id),
+        "job_type": str(job.job_type),
+        "status": str(job.status),
+        "stage": str(job.stage),
+        "failure_code": job.failure_code,
+        "failure_stage": job.failure_stage,
+        "failure_category": job.failure_category,
+        "failure_hint": job.failure_hint,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "result_summary": dict(job.result_summary or {}),
+    }
+
+
+def _write_scan_result_archive(*, job: Job) -> dict[str, object]:
+    archive_path = _scan_result_archive_path(job_id=job.id)
+    payload = _build_scan_result_archive_payload(job=job)
+    archive_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return {
+        "artifact": "scan_result",
+        "path": str(archive_path),
+        "size_bytes": archive_path.stat().st_size,
+    }
+
+
 def _stage_log_path(*, job_id: uuid.UUID, stage: str) -> Path:
     safe_stage = re.sub(r"[^A-Za-z0-9_-]+", "_", stage).strip("_") or "unknown"
     return _job_log_dir(job_id=job_id) / f"{safe_stage}.log"
@@ -394,6 +493,235 @@ def _append_scan_log(
     )
 
 
+def _scan_external_workspace_dir(*, job: Job) -> Path:
+    return (
+        Path(get_settings().scan_workspace_root)
+        / str(job.project_id)
+        / str(job.id)
+        / "external"
+    )
+
+
+def _release_scan_workspace(*, job: Job) -> dict[str, object]:
+    workspace_dir = _scan_external_workspace_dir(job=job)
+    existed_before = workspace_dir.exists()
+    error: str | None = None
+    if existed_before:
+        try:
+            shutil.rmtree(workspace_dir)
+        except Exception as exc:
+            error = str(exc)
+
+    released = not workspace_dir.exists()
+    workspace_root = Path(get_settings().scan_workspace_root).resolve()
+    cleanup_cursor = workspace_dir.parent
+    while released and cleanup_cursor.exists() and cleanup_cursor != workspace_root:
+        try:
+            cleanup_cursor.rmdir()
+        except OSError:
+            break
+        cleanup_cursor = cleanup_cursor.parent
+
+    return {
+        "workspace_dir": str(workspace_dir),
+        "workspace_existed_before": existed_before,
+        "workspace_exists_after": workspace_dir.exists(),
+        "workspace_released": released,
+        "workspace_cleanup_error": error,
+    }
+
+
+def _load_external_runtime_metadata(*, job: Job) -> dict[str, object]:
+    settings = get_settings()
+    backend_root = Path(__file__).resolve().parents[2]
+    reports_dir = resolve_external_path(
+        raw_value=str(settings.scan_external_reports_dir or ""),
+        job=job,
+        backend_root=backend_root,
+    )
+    if reports_dir is None:
+        return {}
+    return load_runtime_metadata(reports_dir=reports_dir)
+
+
+def _cleanup_external_neo4j_database(
+    *, job: Job, result_summary: dict[str, object] | None
+) -> dict[str, object]:
+    settings = get_settings()
+    database_cleanup_enabled = bool(
+        getattr(settings, "scan_external_neo4j_cleanup_enabled", False)
+    )
+    runtime = (
+        result_summary.get("neo4j_runtime")
+        if isinstance(result_summary, dict)
+        else None
+    )
+    runtime_metadata = _load_external_runtime_metadata(job=job)
+    if isinstance(runtime, dict) and runtime_metadata:
+        runtime = {**runtime, **runtime_metadata}
+    elif runtime is None and runtime_metadata:
+        runtime = runtime_metadata
+    database = ""
+    uri = ""
+    restart_mode = "none"
+    container_name = ""
+    data_mount = ""
+    network_name = ""
+    network_created_by_job = False
+    if isinstance(runtime, dict):
+        uri = str(runtime.get("uri") or "").strip()
+        database = str(
+            runtime.get("database") or runtime.get("import_database") or ""
+        ).strip()
+        restart_mode = str(runtime.get("restart_mode") or "none").strip().lower()
+        container_name = str(runtime.get("container_name") or "").strip()
+        data_mount = str(runtime.get("data_mount") or "").strip()
+        network_name = str(runtime.get("network") or "").strip()
+        network_created_by_job = bool(runtime.get("network_created_by_job"))
+
+    ephemeral_runtime = restart_mode == "docker_ephemeral"
+    cleanup_enabled = database_cleanup_enabled or ephemeral_runtime
+
+    summary = {
+        "enabled": cleanup_enabled,
+        "uri": uri or None,
+        "database": database or None,
+        "restart_mode": restart_mode,
+        "container_name": container_name or None,
+        "data_mount": data_mount or None,
+        "network": network_name or None,
+        "network_created_by_job": network_created_by_job,
+        "cleanup_attempted": False,
+        "cleanup_succeeded": False,
+        "cleanup_skipped_reason": None,
+        "database_cleanup_attempted": False,
+        "database_cleanup_succeeded": False,
+        "container_cleanup_attempted": False,
+        "container_cleanup_succeeded": False,
+        "data_cleanup_attempted": False,
+        "data_cleanup_succeeded": False,
+        "network_cleanup_attempted": False,
+        "network_cleanup_succeeded": False,
+    }
+    if ephemeral_runtime:
+        runtime_cleanup = cleanup_ephemeral_runtime_resources(
+            container_name=container_name or None,
+            data_mount=data_mount or None,
+            network_name=network_name or None,
+            cleanup_network=network_created_by_job,
+            deadline=time.monotonic() + 60,
+        )
+        summary.update(runtime_cleanup)
+
+    if not cleanup_enabled:
+        summary["cleanup_skipped_reason"] = "disabled"
+        return summary
+    if not database_cleanup_enabled:
+        summary["cleanup_attempted"] = bool(
+            summary["container_cleanup_attempted"]
+            or summary["data_cleanup_attempted"]
+            or summary["network_cleanup_attempted"]
+        )
+        summary["cleanup_succeeded"] = (
+            bool(
+                (
+                    not summary["container_cleanup_attempted"]
+                    or summary["container_cleanup_succeeded"]
+                )
+                and (
+                    not summary["data_cleanup_attempted"]
+                    or summary["data_cleanup_succeeded"]
+                )
+                and (
+                    not summary["network_cleanup_attempted"]
+                    or summary["network_cleanup_succeeded"]
+                )
+            )
+            if summary["cleanup_attempted"]
+            else False
+        )
+        if not summary["cleanup_attempted"]:
+            summary["cleanup_skipped_reason"] = "database_cleanup_disabled"
+        return summary
+    if not database:
+        summary["cleanup_skipped_reason"] = "database_missing"
+        summary["cleanup_attempted"] = bool(
+            summary["container_cleanup_attempted"]
+            or summary["data_cleanup_attempted"]
+            or summary["network_cleanup_attempted"]
+        )
+        summary["cleanup_succeeded"] = (
+            bool(
+                (
+                    not summary["container_cleanup_attempted"]
+                    or summary["container_cleanup_succeeded"]
+                )
+                and (
+                    not summary["data_cleanup_attempted"]
+                    or summary["data_cleanup_succeeded"]
+                )
+                and (
+                    not summary["network_cleanup_attempted"]
+                    or summary["network_cleanup_succeeded"]
+                )
+            )
+            if summary["cleanup_attempted"]
+            else False
+        )
+        return summary
+    if database.lower() in {"neo4j", "system"}:
+        summary["cleanup_skipped_reason"] = "protected_database"
+        summary["cleanup_attempted"] = bool(
+            summary["container_cleanup_attempted"]
+            or summary["data_cleanup_attempted"]
+            or summary["network_cleanup_attempted"]
+        )
+        summary["cleanup_succeeded"] = (
+            bool(
+                (
+                    not summary["container_cleanup_attempted"]
+                    or summary["container_cleanup_succeeded"]
+                )
+                and (
+                    not summary["data_cleanup_attempted"]
+                    or summary["data_cleanup_succeeded"]
+                )
+                and (
+                    not summary["network_cleanup_attempted"]
+                    or summary["network_cleanup_succeeded"]
+                )
+            )
+            if summary["cleanup_attempted"]
+            else False
+        )
+        return summary
+
+    drop_database_if_exists(
+        uri=uri or str(settings.scan_external_neo4j_uri or ""),
+        user=str(settings.scan_external_neo4j_user or ""),
+        password=str(settings.scan_external_neo4j_password or ""),
+        database=database,
+        connect_retry=int(settings.scan_external_neo4j_connect_retry),
+        connect_wait_seconds=int(settings.scan_external_neo4j_connect_wait_seconds),
+    )
+    summary["database_cleanup_attempted"] = True
+    summary["database_cleanup_succeeded"] = True
+    summary["cleanup_attempted"] = True
+    summary["cleanup_succeeded"] = bool(
+        (
+            not summary["container_cleanup_attempted"]
+            or summary["container_cleanup_succeeded"]
+        )
+        and (not summary["data_cleanup_attempted"] or summary["data_cleanup_succeeded"])
+        and (
+            not summary["network_cleanup_attempted"]
+            or summary["network_cleanup_succeeded"]
+        )
+        and summary["database_cleanup_succeeded"]
+    )
+    return summary
+
+
 def cancel_scan_job(
     db: Session,
     *,
@@ -411,6 +739,7 @@ def cancel_scan_job(
             code="JOB_NOT_CANCELABLE", status_code=409, message="当前任务状态不允许取消"
         )
 
+    initialize_scan_job_steps(db, job_id=job.id)
     now = utc_now()
     job.status = JobStatus.CANCELED.value
     job.stage = JobStage.CLEANUP.value
@@ -421,11 +750,53 @@ def cancel_scan_job(
     job.finished_at = now
     if job.started_at is None:
         job.started_at = now
-    job.result_summary = {**(job.result_summary or {}), "canceled": True}
+    cleanup_summary = _release_scan_workspace(job=job)
+    job.result_summary = {
+        **(job.result_summary or {}),
+        "canceled": True,
+        "cleanup": cleanup_summary,
+    }
+    try:
+        job.result_summary["neo4j_cleanup"] = _cleanup_external_neo4j_database(
+            job=job, result_summary=job.result_summary
+        )
+    except Exception as exc:
+        job.result_summary["neo4j_cleanup"] = {
+            "enabled": True,
+            "database": None,
+            "cleanup_attempted": True,
+            "cleanup_succeeded": False,
+            "cleanup_skipped_reason": None,
+            "error": str(exc),
+        }
+        _append_scan_log(
+            job_id=job.id,
+            stage=job.stage,
+            message=f"Neo4j 清理失败（不影响取消）: {exc}",
+            project_id=job.project_id,
+        )
+    try:
+        job.result_summary["archive"] = _write_scan_result_archive(job=job)
+    except Exception as exc:
+        _append_scan_log(
+            job_id=job.id,
+            stage=job.stage,
+            message=f"扫描结果归档写入失败（不影响取消）: {exc}",
+            project_id=job.project_id,
+        )
+    _finalize_scan_steps(
+        db,
+        job_id=job.id,
+        final_status=JobStatus.CANCELED.value,
+        failure_code="SCAN_CANCELED",
+        stage=job.stage,
+    )
     _append_scan_log(
         job_id=job.id,
         stage=job.stage,
-        message="任务已取消。",
+        message=(
+            f"任务已取消。 workspace_released={cleanup_summary['workspace_released']}"
+        ),
         project_id=job.project_id,
     )
 
@@ -487,6 +858,8 @@ def clone_scan_job_for_retry(
         "request_id": request_id,
         "retry_of_job_id": str(source_job.id),
     }
+    retry_payload.pop("scan_mode", None)
+    retry_payload.pop("target_rule_id", None)
     retried_job = Job(
         project_id=source_job.project_id,
         version_id=source_job.version_id,
@@ -501,7 +874,449 @@ def clone_scan_job_for_retry(
     )
     db.add(retried_job)
     db.flush()
+    initialize_scan_job_steps(db, job_id=retried_job.id)
     return retried_job
+
+
+def normalize_scan_delete_targets(targets: list[str] | None) -> list[str]:
+    cleaned: list[str] = []
+    for raw_target in targets or []:
+        normalized = str(raw_target or "").strip().lower()
+        if not normalized:
+            continue
+        if normalized not in SCAN_DELETE_TARGETS:
+            raise AppError(
+                code="INVALID_ARGUMENT",
+                status_code=422,
+                message="删除目标不合法",
+                detail={"allowed_targets": sorted(SCAN_DELETE_TARGETS)},
+            )
+        if normalized not in cleaned:
+            cleaned.append(normalized)
+    if not cleaned:
+        raise AppError(
+            code="INVALID_ARGUMENT",
+            status_code=422,
+            message="请至少选择一个删除目标",
+            detail={"allowed_targets": sorted(SCAN_DELETE_TARGETS)},
+        )
+    return cleaned
+
+
+def delete_scan_job(
+    db: Session,
+    *,
+    job: Job,
+    request_id: str,
+    operator_user_id: uuid.UUID,
+    targets: list[str],
+) -> dict[str, object]:
+    if job.job_type != JobType.SCAN.value:
+        raise AppError(
+            code="INVALID_ARGUMENT", status_code=422, message="仅支持删除扫描任务"
+        )
+
+    if job.status not in TERMINAL_SCAN_STATUSES:
+        raise AppError(
+            code="JOB_NOT_DELETABLE",
+            status_code=409,
+            message="仅允许删除已结束的扫描任务",
+        )
+
+    deleted_targets = normalize_scan_delete_targets(targets)
+    effective_targets = list(deleted_targets)
+    forced_targets: list[str] = []
+    warnings: list[str] = []
+    if "job_record" in effective_targets and "findings" not in effective_targets:
+        effective_targets.append("findings")
+        forced_targets.append("findings")
+        warnings.append(
+            "删除任务记录会级联删除本次扫描结果 Findings，已自动纳入删除范围。"
+        )
+
+    summary = {
+        "deleted_targets": effective_targets,
+        "forced_targets": forced_targets,
+        "warnings": warnings,
+        "deleted_findings_count": 0,
+        "deleted_job_steps_count": 0,
+        "deleted_task_log_index_count": 0,
+        "deleted_log_files_count": 0,
+        "deleted_archive_files_count": 0,
+        "deleted_report_files_count": 0,
+        "deleted_workspace_paths_count": 0,
+        "deleted_job_record": False,
+    }
+
+    if "logs" in effective_targets:
+        log_summary = delete_task_logs(
+            task_type=TaskLogType.SCAN.value,
+            task_id=job.id,
+            db=db,
+        )
+        summary["deleted_task_log_index_count"] = int(
+            log_summary.get("deleted_task_log_index_count", 0)
+        )
+        summary["deleted_log_files_count"] = int(
+            log_summary.get("deleted_log_files_count", 0)
+        )
+
+    if "artifacts" in effective_targets:
+        artifact_summary = delete_scan_job_artifacts(job=job)
+        summary["deleted_archive_files_count"] = int(
+            artifact_summary.get("deleted_archive_files_count", 0)
+        )
+        summary["deleted_report_files_count"] = int(
+            artifact_summary.get("deleted_report_files_count", 0)
+        )
+
+    if "workspace" in effective_targets:
+        workspace_summary = _delete_scan_workspace_for_cleanup(job=job)
+        summary["deleted_workspace_paths_count"] = int(
+            workspace_summary.get("deleted_workspace_paths_count", 0)
+        )
+
+    findings_count = 0
+    if "findings" in effective_targets:
+        findings_count = len(
+            db.scalars(select(Finding.id).where(Finding.job_id == job.id)).all()
+        )
+        db.execute(delete(Finding).where(Finding.job_id == job.id))
+        summary["deleted_findings_count"] = findings_count
+
+    if "job_record" in effective_targets:
+        summary["deleted_job_steps_count"] = len(
+            db.scalars(select(JobStep.id).where(JobStep.job_id == job.id)).all()
+        )
+        db.delete(job)
+        summary["deleted_job_record"] = True
+    else:
+        cleanup_detail = {
+            "deleted_targets": effective_targets,
+            "forced_targets": forced_targets,
+            "deleted_at": utc_now().isoformat(),
+        }
+        if findings_count > 0:
+            cleanup_detail["deleted_findings_count"] = findings_count
+        next_summary = dict(job.result_summary or {})
+        next_summary["manual_cleanup"] = cleanup_detail
+        job.result_summary = next_summary
+
+    append_audit_log(
+        db,
+        request_id=request_id,
+        operator_user_id=operator_user_id,
+        action="scan.deleted",
+        resource_type="JOB",
+        resource_id=str(job.id),
+        project_id=job.project_id,
+        detail_json={
+            "targets": effective_targets,
+            "forced_targets": forced_targets,
+            "deleted_findings_count": summary["deleted_findings_count"],
+            "deleted_job_record": summary["deleted_job_record"],
+        },
+    )
+    db.commit()
+    return summary
+
+
+def initialize_scan_job_steps(db: Session, *, job_id: uuid.UUID) -> list[JobStep]:
+    existing = db.scalars(select(JobStep).where(JobStep.job_id == job_id)).all()
+    existing_keys = {item.step_key for item in existing}
+    created: list[JobStep] = []
+    for index, (step_key, display_name) in enumerate(SCAN_STEP_DEFINITIONS, start=1):
+        if step_key in existing_keys:
+            continue
+        item = JobStep(
+            job_id=job_id,
+            step_key=step_key,
+            display_name=display_name,
+            step_order=index,
+            status=JobStepStatus.PENDING.value,
+        )
+        db.add(item)
+        created.append(item)
+    if created:
+        db.flush()
+    return created
+
+
+def _legacy_scan_workspace_dir(*, job: Job) -> Path:
+    return Path(get_settings().scan_workspace_root) / str(job.id)
+
+
+def _delete_scan_workspace_for_cleanup(*, job: Job) -> dict[str, object]:
+    summary = _release_scan_workspace(job=job)
+    deleted_workspace_paths_count = 1 if summary.get("workspace_existed_before") else 0
+
+    legacy_workspace_dir = _legacy_scan_workspace_dir(job=job)
+    external_workspace_dir = _scan_external_workspace_dir(job=job)
+    same_as_external = False
+    try:
+        same_as_external = (
+            legacy_workspace_dir.resolve() == external_workspace_dir.resolve()
+        )
+    except OSError:
+        same_as_external = legacy_workspace_dir == external_workspace_dir
+
+    if not same_as_external and legacy_workspace_dir.exists():
+        try:
+            shutil.rmtree(legacy_workspace_dir)
+            deleted_workspace_paths_count += 1
+        except Exception:
+            pass
+
+    return {
+        **summary,
+        "legacy_workspace_dir": str(legacy_workspace_dir),
+        "deleted_workspace_paths_count": deleted_workspace_paths_count,
+    }
+
+
+def update_scan_job_step_status(
+    db: Session,
+    *,
+    job_id: uuid.UUID,
+    step_key: str,
+    status: str,
+    now: datetime | None = None,
+) -> JobStep:
+    normalized_status = (status or "").strip().lower()
+    valid_statuses = {item.value for item in JobStepStatus}
+    if normalized_status not in valid_statuses:
+        raise AppError(
+            code="INVALID_ARGUMENT",
+            status_code=422,
+            message="步骤状态不合法",
+            detail={"allowed_statuses": sorted(valid_statuses)},
+        )
+
+    step = db.scalar(
+        select(JobStep).where(JobStep.job_id == job_id, JobStep.step_key == step_key)
+    )
+    if step is None:
+        raise AppError(
+            code="NOT_FOUND",
+            status_code=404,
+            message="步骤不存在",
+            detail={"job_id": str(job_id), "step_key": step_key},
+        )
+
+    timestamp = now or utc_now()
+    step.status = normalized_status
+
+    if normalized_status == JobStepStatus.PENDING.value:
+        step.started_at = None
+        step.finished_at = None
+        step.duration_ms = None
+    elif normalized_status == JobStepStatus.RUNNING.value:
+        if step.started_at is None:
+            step.started_at = timestamp
+        step.finished_at = None
+        step.duration_ms = None
+    elif normalized_status in TERMINAL_STEP_STATUSES:
+        if step.started_at is None:
+            step.started_at = timestamp
+        step.finished_at = timestamp
+        step.duration_ms = _duration_ms_between(
+            start=step.started_at,
+            end=step.finished_at,
+        )
+
+    db.flush()
+    return step
+
+
+def _coerce_utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _duration_ms_between(*, start: datetime, end: datetime) -> int:
+    duration = _coerce_utc_datetime(end) - _coerce_utc_datetime(start)
+    return max(0, int(duration.total_seconds() * 1000))
+
+
+def list_scan_job_steps(db: Session, *, job_id: uuid.UUID) -> list[JobStep]:
+    return db.scalars(
+        select(JobStep)
+        .where(JobStep.job_id == job_id)
+        .order_by(JobStep.step_order.asc(), JobStep.created_at.asc())
+    ).all()
+
+
+def build_scan_progress_payload(*, steps: list[JobStep]) -> dict[str, object]:
+    total = len(steps)
+    completed = sum(1 for item in steps if item.status == JobStepStatus.SUCCEEDED.value)
+    running = next(
+        (item for item in steps if item.status == JobStepStatus.RUNNING.value), None
+    )
+    current_step = running.step_key if running is not None else None
+    if current_step is None:
+        latest_terminal = next(
+            (item for item in reversed(steps) if item.status in TERMINAL_STEP_STATUSES),
+            None,
+        )
+        if (
+            latest_terminal is not None
+            and latest_terminal.status != JobStepStatus.SUCCEEDED.value
+        ):
+            current_step = latest_terminal.step_key
+    percent = 100 if total == 0 else int((completed / total) * 100)
+    return {
+        "total_steps": total,
+        "completed_steps": completed,
+        "percent": percent,
+        "current_step": current_step,
+    }
+
+
+def build_scan_steps_payload(*, steps: list[JobStep]) -> list[dict[str, object]]:
+    return [
+        {
+            "step_key": item.step_key,
+            "display_name": item.display_name,
+            "step_order": item.step_order,
+            "status": item.status,
+            "started_at": item.started_at,
+            "finished_at": item.finished_at,
+            "duration_ms": item.duration_ms,
+        }
+        for item in steps
+    ]
+
+
+def _set_scan_step_status(
+    db: Session,
+    *,
+    job_id: uuid.UUID,
+    step_key: str,
+    status: str,
+    commit: bool = False,
+) -> None:
+    update_scan_job_step_status(
+        db,
+        job_id=job_id,
+        step_key=step_key,
+        status=status,
+    )
+    if commit:
+        db.commit()
+
+
+def _mark_scan_stage_started(db: Session, *, job: Job, stage: str) -> None:
+    _set_scan_job_running(db, job=job, stage=stage)
+    stage_steps = STAGE_STEP_KEYS.get(stage, ())
+    for step_key in stage_steps:
+        step = db.scalar(
+            select(JobStep).where(
+                JobStep.job_id == job.id, JobStep.step_key == step_key
+            )
+        )
+        if step is None or step.status in TERMINAL_STEP_STATUSES:
+            continue
+        update_scan_job_step_status(
+            db,
+            job_id=job.id,
+            step_key=step_key,
+            status=JobStepStatus.RUNNING.value,
+        )
+    db.commit()
+
+
+def _running_scan_step_key(db: Session, *, job_id: uuid.UUID) -> str | None:
+    running = db.scalar(
+        select(JobStep)
+        .where(JobStep.job_id == job_id, JobStep.status == JobStepStatus.RUNNING.value)
+        .order_by(JobStep.step_order.desc())
+    )
+    if running is None:
+        return None
+    return running.step_key
+
+
+def _failure_step_key(
+    *, failure_code: str, stage: str, db: Session, job_id: uuid.UUID
+) -> str | None:
+    mapped = FAILURE_STEP_BY_CODE.get(failure_code)
+    if mapped:
+        return mapped
+    running_step = _running_scan_step_key(db, job_id=job_id)
+    if running_step:
+        return running_step
+    stage_steps = STAGE_STEP_KEYS.get(stage, ())
+    if stage_steps:
+        return stage_steps[-1]
+    return None
+
+
+def _finalize_scan_steps(
+    db: Session,
+    *,
+    job_id: uuid.UUID,
+    final_status: str,
+    failure_code: str | None = None,
+    stage: str | None = None,
+) -> None:
+    steps = list_scan_job_steps(db, job_id=job_id)
+    if not steps:
+        return
+
+    if final_status == JobStatus.SUCCEEDED.value:
+        for item in steps:
+            if item.status != JobStepStatus.SUCCEEDED.value:
+                update_scan_job_step_status(
+                    db,
+                    job_id=job_id,
+                    step_key=item.step_key,
+                    status=JobStepStatus.SUCCEEDED.value,
+                )
+        db.flush()
+        return
+
+    if final_status == JobStatus.CANCELED.value:
+        for item in steps:
+            if item.status in {
+                JobStepStatus.PENDING.value,
+                JobStepStatus.RUNNING.value,
+            }:
+                update_scan_job_step_status(
+                    db,
+                    job_id=job_id,
+                    step_key=item.step_key,
+                    status=JobStepStatus.CANCELED.value,
+                )
+        db.flush()
+        return
+
+    failure_step = _failure_step_key(
+        failure_code=failure_code or "",
+        stage=stage or "",
+        db=db,
+        job_id=job_id,
+    )
+    for item in steps:
+        if item.step_key == failure_step:
+            update_scan_job_step_status(
+                db,
+                job_id=job_id,
+                step_key=item.step_key,
+                status=JobStepStatus.FAILED.value,
+            )
+            continue
+        if item.status in {
+            JobStepStatus.PENDING.value,
+            JobStepStatus.RUNNING.value,
+        }:
+            update_scan_job_step_status(
+                db,
+                job_id=job_id,
+                step_key=item.step_key,
+                status=JobStepStatus.CANCELED.value,
+            )
+    db.flush()
 
 
 def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
@@ -551,17 +1366,66 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
             )
             return
 
-        _set_scan_job_running(session, job=job, stage=JobStage.PREPARE.value)
-        _set_scan_job_running(session, job=job, stage=JobStage.ANALYZE.value)
-        _set_scan_job_running(session, job=job, stage=JobStage.QUERY.value)
+        initialize_scan_job_steps(session, job_id=job.id)
+        _mark_scan_stage_started(session, job=job, stage=JobStage.PREPARE.value)
 
         engine_mode = (get_settings().scan_engine_mode or "stub").strip().lower()
         if engine_mode == "external":
-            execution = _run_external_scan(job=job)
+            _set_scan_step_status(
+                session,
+                job_id=job.id,
+                step_key="prepare",
+                status=JobStepStatus.SUCCEEDED.value,
+                commit=True,
+            )
+            _mark_scan_stage_started(session, job=job, stage=JobStage.ANALYZE.value)
+            execution = _run_external_scan(job=job, db=session)
         else:
+            _set_scan_step_status(
+                session,
+                job_id=job.id,
+                step_key="prepare",
+                status=JobStepStatus.SUCCEEDED.value,
+                commit=True,
+            )
+            _mark_scan_stage_started(session, job=job, stage=JobStage.ANALYZE.value)
+            _set_scan_step_status(
+                session,
+                job_id=job.id,
+                step_key="joern",
+                status=JobStepStatus.SUCCEEDED.value,
+            )
+            _set_scan_step_status(
+                session,
+                job_id=job.id,
+                step_key="neo4j_import",
+                status=JobStepStatus.SUCCEEDED.value,
+                commit=True,
+            )
+            _mark_scan_stage_started(session, job=job, stage=JobStage.QUERY.value)
+            _set_scan_step_status(
+                session,
+                job_id=job.id,
+                step_key="post_labels",
+                status=JobStepStatus.SUCCEEDED.value,
+            )
+            _set_scan_step_status(
+                session,
+                job_id=job.id,
+                step_key="rules",
+                status=JobStepStatus.RUNNING.value,
+                commit=True,
+            )
             execution = _run_stub_scan(job=job)
+            _set_scan_step_status(
+                session,
+                job_id=job.id,
+                step_key="rules",
+                status=JobStepStatus.SUCCEEDED.value,
+                commit=True,
+            )
 
-        _set_scan_job_running(session, job=job, stage=JobStage.AGGREGATE.value)
+        _mark_scan_stage_started(session, job=job, stage=JobStage.AGGREGATE.value)
         rule_keys: set[str] = set()
         for item in execution.findings:
             raw_rule_key = str(item.get("rule_key") or "").strip()
@@ -573,56 +1437,144 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
                 rule_keys.add(raw_rule_key)
         rule_meta_by_key = get_rules_by_keys(rule_keys)
 
-        for finding_data in execution.findings:
-            raw_rule_key = str(finding_data.get("rule_key") or "").strip()
-            if not raw_rule_key:
-                continue
-            try:
-                rule_key = normalize_rule_selector(raw_rule_key)
-            except AppError:
-                rule_key = raw_rule_key
-            meta = rule_meta_by_key.get(rule_key)
-            fallback_path = str(finding_data.get("file_path") or "").strip() or None
-            source_file = str(finding_data.get("source_file") or "").strip() or None
-            sink_file = str(finding_data.get("sink_file") or "").strip() or None
-            if fallback_path is None:
-                fallback_path = sink_file or source_file
-
-            evidence_json = _normalize_evidence_payload(
-                finding_data.get("evidence_json") or finding_data.get("evidence")
-            )
+        finding_drafts = _normalize_finding_drafts(
+            findings=execution.findings,
+            rule_meta_by_key=rule_meta_by_key,
+        )
+        finding_drafts = _attach_code_contexts(job=job, finding_drafts=finding_drafts)
+        code_context_ready = sum(
+            1 for item in finding_drafts if isinstance(item.get("code_context"), dict)
+        )
+        for draft in finding_drafts:
+            source = draft["source"] if isinstance(draft["source"], dict) else {}
+            sink = draft["sink"] if isinstance(draft["sink"], dict) else {}
+            evidence_payload = _normalize_evidence_payload(draft.get("evidence"))
+            if draft.get("trace_summary"):
+                evidence_payload.setdefault("trace_summary", draft.get("trace_summary"))
+            if isinstance(draft.get("code_context"), dict):
+                evidence_payload.setdefault("code_context", draft.get("code_context"))
             session.add(
                 Finding(
                     project_id=job.project_id,
                     version_id=job.version_id,
                     job_id=job.id,
-                    rule_key=rule_key,
-                    rule_version=_to_int(
-                        finding_data.get("rule_version"),
-                        default=meta.active_version if meta is not None else None,
-                    ),
-                    vuln_type=(
-                        str(finding_data.get("vuln_type") or "").strip()
-                        or (meta.vuln_type if meta is not None else None)
-                    ),
-                    severity=str(
-                        finding_data.get("severity") or FindingSeverity.MED.value
-                    ),
+                    rule_key=str(draft["rule_key"]),
+                    rule_version=_to_int(draft.get("rule_version")),
+                    vuln_type=str(draft["vuln_type"])
+                    if draft.get("vuln_type")
+                    else None,
+                    severity=str(draft["severity"]),
                     status=FindingStatus.OPEN.value,
-                    file_path=fallback_path,
-                    line_start=_to_int(finding_data.get("line_start")),
-                    line_end=_to_int(finding_data.get("line_end")),
-                    has_path=bool(finding_data.get("has_path", False)),
-                    path_length=_to_int(finding_data.get("path_length")),
-                    source_file=source_file,
-                    source_line=_to_int(finding_data.get("source_line")),
-                    sink_file=sink_file,
-                    sink_line=_to_int(finding_data.get("sink_line")),
-                    evidence_json=evidence_json,
+                    file_path=str(draft["file_path"])
+                    if draft.get("file_path")
+                    else None,
+                    line_start=_to_int(draft.get("line_start")),
+                    line_end=_to_int(draft.get("line_end")),
+                    has_path=bool(draft.get("has_path", False)),
+                    path_length=_to_int(draft.get("path_length")),
+                    source_file=(
+                        str(source["file"])
+                        if isinstance(source.get("file"), str)
+                        else None
+                    ),
+                    source_line=_to_int(source.get("line")),
+                    sink_file=(
+                        str(sink["file"]) if isinstance(sink.get("file"), str) else None
+                    ),
+                    sink_line=_to_int(sink.get("line")),
+                    evidence_json=evidence_payload,
                 )
             )
+        if len(finding_drafts) < len(execution.findings):
+            _append_scan_log(
+                job_id=job.id,
+                stage=JobStage.AGGREGATE.value,
+                message=(
+                    "发现非标准化结果已跳过: "
+                    f"raw={len(execution.findings)}, normalized={len(finding_drafts)}"
+                ),
+            )
 
-        _set_scan_job_running(session, job=job, stage=JobStage.CLEANUP.value)
+        _set_scan_step_status(
+            session,
+            job_id=job.id,
+            step_key="aggregate",
+            status=JobStepStatus.SUCCEEDED.value,
+            commit=True,
+        )
+        _mark_scan_stage_started(session, job=job, stage=JobStage.AI.value)
+        llm_enriched_drafts = _attach_ai_payloads(finding_drafts)
+        execution.result_summary["finding_drafts"] = llm_enriched_drafts
+        execution.result_summary["normalized_finding_count"] = len(finding_drafts)
+        execution.result_summary["ai_summary"] = {
+            "normalized_findings": len(finding_drafts),
+            "code_context_ready": code_context_ready,
+            "prompt_blocks_ready": len(llm_enriched_drafts),
+        }
+        _append_scan_log(
+            job_id=job.id,
+            stage=JobStage.AI.value,
+            message=(
+                "结果标准化与 AI 摘要完成: "
+                f"normalized_findings={len(finding_drafts)}, "
+                f"code_context_ready={code_context_ready}, "
+                f"prompt_blocks_ready={len(llm_enriched_drafts)}"
+            ),
+            project_id=job.project_id,
+        )
+        _set_scan_step_status(
+            session,
+            job_id=job.id,
+            step_key="ai",
+            status=JobStepStatus.SUCCEEDED.value,
+            commit=True,
+        )
+        _mark_scan_stage_started(session, job=job, stage=JobStage.CLEANUP.value)
+        _set_scan_step_status(
+            session,
+            job_id=job.id,
+            step_key="archive",
+            status=JobStepStatus.SUCCEEDED.value,
+        )
+        try:
+            execution.result_summary["neo4j_cleanup"] = (
+                _cleanup_external_neo4j_database(
+                    job=job, result_summary=execution.result_summary
+                )
+            )
+        except Exception as exc:
+            execution.result_summary["neo4j_cleanup"] = {
+                "enabled": True,
+                "database": None,
+                "cleanup_attempted": True,
+                "cleanup_succeeded": False,
+                "cleanup_skipped_reason": None,
+                "error": str(exc),
+            }
+            _append_scan_log(
+                job_id=job.id,
+                stage=JobStage.CLEANUP.value,
+                message=f"Neo4j 清理失败（不影响任务成功）: {exc}",
+                project_id=job.project_id,
+            )
+        cleanup_summary = _release_scan_workspace(job=job)
+        execution.result_summary["cleanup"] = cleanup_summary
+        _append_scan_log(
+            job_id=job.id,
+            stage=JobStage.CLEANUP.value,
+            message=(
+                "扫描工作区清理完成。"
+                f" workspace_released={cleanup_summary['workspace_released']}"
+            ),
+            project_id=job.project_id,
+        )
+        _set_scan_step_status(
+            session,
+            job_id=job.id,
+            step_key="cleanup",
+            status=JobStepStatus.SUCCEEDED.value,
+            commit=True,
+        )
         job.status = JobStatus.SUCCEEDED.value
         job.failure_code = None
         job.failure_stage = None
@@ -630,6 +1582,21 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
         job.failure_hint = None
         job.finished_at = utc_now()
         job.result_summary = execution.result_summary
+        try:
+            job.result_summary["archive"] = _write_scan_result_archive(job=job)
+        except Exception as exc:
+            _append_scan_log(
+                job_id=job.id,
+                stage=JobStage.CLEANUP.value,
+                message=f"扫描结果归档写入失败（不影响任务成功）: {exc}",
+                project_id=job.project_id,
+            )
+        _finalize_scan_steps(
+            session,
+            job_id=job.id,
+            final_status=JobStatus.SUCCEEDED.value,
+            stage=job.stage,
+        )
         _append_scan_log(
             job_id=job.id,
             stage=JobStage.CLEANUP.value,
@@ -747,13 +1714,53 @@ def _fail_scan_job(
     job.failure_category = failure_category
     job.failure_hint = failure_hint_for_code(failure_code)
     job.finished_at = now
+    cleanup_summary = _release_scan_workspace(job=job)
+    job.result_summary = {**(job.result_summary or {}), "cleanup": cleanup_summary}
+    try:
+        job.result_summary["neo4j_cleanup"] = _cleanup_external_neo4j_database(
+            job=job, result_summary=job.result_summary
+        )
+    except Exception as exc:
+        job.result_summary["neo4j_cleanup"] = {
+            "enabled": True,
+            "database": None,
+            "cleanup_attempted": True,
+            "cleanup_succeeded": False,
+            "cleanup_skipped_reason": None,
+            "error": str(exc),
+        }
+        _append_scan_log(
+            job_id=job.id,
+            stage=stage,
+            message=f"Neo4j 清理失败（不影响失败收口）: {exc}",
+            project_id=job.project_id,
+        )
+    try:
+        job.result_summary["archive"] = _write_scan_result_archive(job=job)
+    except Exception as exc:
+        _append_scan_log(
+            job_id=job.id,
+            stage=stage,
+            message=f"扫描结果归档写入失败（不影响失败收口）: {exc}",
+            project_id=job.project_id,
+        )
+    _finalize_scan_steps(
+        db,
+        job_id=job.id,
+        final_status=final_status,
+        failure_code=failure_code,
+        stage=stage,
+    )
     failure_label = (
         "任务超时" if final_status == JobStatus.TIMEOUT.value else "任务失败"
     )
     _append_scan_log(
         job_id=job.id,
         stage=stage,
-        message=f"{failure_label}: code={failure_code}, category={failure_category}",
+        message=(
+            f"{failure_label}: code={failure_code}, category={failure_category}, "
+            f"workspace_released={cleanup_summary['workspace_released']}"
+        ),
         project_id=job.project_id,
     )
 
@@ -773,10 +1780,6 @@ def _fail_scan_job(
 
 
 def _run_stub_scan(*, job: Job) -> ScanExecutionResult:
-    scan_mode = normalize_scan_mode(
-        str(job.payload.get("scan_mode", ScanMode.FULL.value))
-    )
-    target_rule_id = str(job.payload.get("target_rule_id") or "").strip()
     resolved_rule_keys = normalize_rule_keys(
         list(job.payload.get("resolved_rule_keys") or [])
     )
@@ -785,47 +1788,37 @@ def _run_stub_scan(*, job: Job) -> ScanExecutionResult:
     _append_scan_log(
         job_id=job.id,
         stage=JobStage.QUERY.value,
-        message=(
-            f"stub 执行: mode={scan_mode}, rule_count={len(rule_keys)}, "
-            f"target_rule_id={target_rule_id or '-'}"
-        ),
+        message=f"stub 执行: rule_count={len(rule_keys)}",
     )
 
     findings: list[dict[str, str]] = []
-    if scan_mode == ScanMode.VERIFY.value:
-        rule_key = target_rule_id or (
-            rule_keys[0] if rule_keys else "focused.snapshot.check"
-        )
-        findings.append({"rule_key": rule_key, "severity": FindingSeverity.MED.value})
-    elif scan_mode == ScanMode.FAST.value:
-        seeds = rule_keys[:2] if rule_keys else ["fast.input.validation"]
-        for rule_key in seeds:
-            findings.append(
-                {"rule_key": rule_key, "severity": FindingSeverity.LOW.value}
-            )
-    else:
-        seeds = (
-            rule_keys[:3]
-            if rule_keys
-            else [
-                "stub.any_any_xss",
-                "stub.any_any_urlredirect",
-                "stub.asterisk_alloworigin_cors",
-            ]
-        )
-        severities = [
-            FindingSeverity.HIGH.value,
-            FindingSeverity.MED.value,
-            FindingSeverity.LOW.value,
+    stub_location = _build_stub_location(version_id=job.version_id)
+    seeds = (
+        rule_keys[:3]
+        if rule_keys
+        else [
+            "stub.any_any_xss",
+            "stub.any_any_urlredirect",
+            "stub.asterisk_alloworigin_cors",
         ]
-        for idx, rule_key in enumerate(seeds):
-            findings.append(
-                {"rule_key": rule_key, "severity": severities[idx % len(severities)]}
+    )
+    severities = [
+        FindingSeverity.HIGH.value,
+        FindingSeverity.MED.value,
+        FindingSeverity.LOW.value,
+    ]
+    for idx, rule_key in enumerate(seeds):
+        findings.append(
+            _build_stub_finding(
+                rule_key=rule_key,
+                severity=severities[idx % len(severities)],
+                location=stub_location,
+                index=idx,
             )
+        )
 
     result_summary = _build_result_summary(
         findings=findings,
-        scan_mode=scan_mode,
         engine_mode="stub",
         extra={
             "total_rules": len(rule_keys) if rule_keys else len(findings),
@@ -841,12 +1834,28 @@ def _run_stub_scan(*, job: Job) -> ScanExecutionResult:
     return ScanExecutionResult(findings=findings, result_summary=result_summary)
 
 
-def _run_external_scan(*, job: Job) -> ScanExecutionResult:
+def _run_external_scan(*, job: Job, db: Session) -> ScanExecutionResult:
     settings = get_settings()
     backend_root = Path(__file__).resolve().parents[2]
-    scan_mode = normalize_scan_mode(
-        str(job.payload.get("scan_mode", ScanMode.FULL.value))
-    )
+
+    stage_by_step = {
+        "joern": JobStage.ANALYZE.value,
+        "neo4j_import": JobStage.ANALYZE.value,
+        "post_labels": JobStage.QUERY.value,
+        "rules": JobStage.QUERY.value,
+    }
+
+    def _on_external_stage_status(step_key: str, status: str) -> None:
+        stage = stage_by_step.get(step_key)
+        if stage and job.stage != stage and status == JobStepStatus.RUNNING.value:
+            _set_scan_job_running(db, job=job, stage=stage)
+        _set_scan_step_status(
+            db,
+            job_id=job.id,
+            step_key=step_key,
+            status=status,
+            commit=True,
+        )
 
     external_result = run_external_scan_pipeline(
         job=job,
@@ -856,11 +1865,11 @@ def _run_external_scan(*, job: Job) -> ScanExecutionResult:
             job_id=job.id, stage=stage, message=message
         ),
         severity_from_rule_key=_severity_from_rule_key,
+        on_stage_status=_on_external_stage_status,
     )
 
     result_summary = _build_result_summary(
         findings=external_result.findings,
-        scan_mode=scan_mode,
         engine_mode="external",
         extra=external_result.summary_extra,
     )
@@ -880,7 +1889,6 @@ def _run_external_scan(*, job: Job) -> ScanExecutionResult:
 def _build_result_summary(
     *,
     findings: list[dict[str, str]],
-    scan_mode: str,
     engine_mode: str,
     extra: dict[str, object] | None = None,
 ) -> dict[str, object]:
@@ -898,7 +1906,6 @@ def _build_result_summary(
 
     summary: dict[str, object] = {
         "engine_mode": engine_mode,
-        "scan_mode": scan_mode,
         "total_findings": len(findings),
         "severity_counts": severity_counts,
         "hit_rule_count": len(hit_rules),
@@ -930,6 +1937,500 @@ def _normalize_evidence_payload(value: object) -> dict[str, object]:
             ]
         }
     return {}
+
+
+def _normalize_finding_drafts(
+    *,
+    findings: list[dict[str, str]],
+    rule_meta_by_key: dict[str, Any],
+) -> list[dict[str, object]]:
+    drafts: list[dict[str, object]] = []
+    for finding_data in findings:
+        raw_rule_key = str(finding_data.get("rule_key") or "").strip()
+        if not raw_rule_key:
+            continue
+        try:
+            rule_key = normalize_rule_selector(raw_rule_key)
+        except AppError:
+            rule_key = raw_rule_key
+        meta = rule_meta_by_key.get(rule_key)
+        fallback_path = str(finding_data.get("file_path") or "").strip() or None
+        source_file = str(finding_data.get("source_file") or "").strip() or None
+        sink_file = str(finding_data.get("sink_file") or "").strip() or None
+        if fallback_path is None:
+            fallback_path = sink_file or source_file
+
+        source_line = _to_int(finding_data.get("source_line"))
+        sink_line = _to_int(finding_data.get("sink_line"))
+        line_start = _to_int(finding_data.get("line_start"))
+        line_end = _to_int(finding_data.get("line_end"), default=line_start)
+
+        evidence = _normalize_evidence_payload(
+            finding_data.get("evidence_json") or finding_data.get("evidence")
+        )
+        draft: dict[str, object] = {
+            "rule_key": rule_key,
+            "rule_version": _to_int(
+                finding_data.get("rule_version"),
+                default=meta.active_version if meta is not None else None,
+            ),
+            "vuln_type": (
+                str(finding_data.get("vuln_type") or "").strip()
+                or (meta.vuln_type if meta is not None else None)
+            ),
+            "severity": str(finding_data.get("severity") or FindingSeverity.MED.value),
+            "file_path": fallback_path,
+            "line_start": line_start,
+            "line_end": line_end,
+            "source": {"file": source_file, "line": source_line},
+            "sink": {"file": sink_file, "line": sink_line},
+            "evidence": evidence,
+            "trace_summary": _build_trace_summary(
+                rule_key=rule_key,
+                file_path=fallback_path,
+                line_start=line_start,
+                line_end=line_end,
+                source_file=source_file,
+                source_line=source_line,
+                sink_file=sink_file,
+                sink_line=sink_line,
+            ),
+            "has_path": bool(finding_data.get("has_path", False)),
+            "path_length": _to_int(finding_data.get("path_length")),
+        }
+        if _is_valid_finding_draft(draft):
+            drafts.append(draft)
+    return drafts
+
+
+def _attach_code_contexts(
+    *,
+    job: Job,
+    finding_drafts: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    enriched: list[dict[str, object]] = []
+    for draft in finding_drafts:
+        copied = dict(draft)
+        code_context = _build_code_context(version_id=job.version_id, draft=draft)
+        if code_context:
+            copied["code_context"] = code_context
+        enriched.append(copied)
+    return enriched
+
+
+def _is_valid_finding_draft(draft: dict[str, object]) -> bool:
+    for key in FINDING_DRAFT_REQUIRED_KEYS:
+        if key not in draft:
+            return False
+    rule_key = draft.get("rule_key")
+    if not isinstance(rule_key, str) or not rule_key.strip():
+        return False
+    severity = str(draft.get("severity") or "").strip().upper()
+    if severity not in {item.value for item in FindingSeverity}:
+        return False
+    return True
+
+
+def _build_trace_summary(
+    *,
+    rule_key: str,
+    file_path: str | None,
+    line_start: int | None,
+    line_end: int | None,
+    source_file: str | None,
+    source_line: int | None,
+    sink_file: str | None,
+    sink_line: int | None,
+) -> str:
+    location = "-"
+    if file_path:
+        if line_start is not None:
+            if line_end is not None and line_end != line_start:
+                location = f"{file_path}:{line_start}-{line_end}"
+            else:
+                location = f"{file_path}:{line_start}"
+        else:
+            location = file_path
+    source = _format_location(source_file, source_line)
+    sink = _format_location(sink_file, sink_line)
+    return f"rule={rule_key}; location={location}; source={source}; sink={sink}"
+
+
+def _format_location(file_path: str | None, line: int | None) -> str:
+    if not file_path:
+        return "-"
+    if line is None:
+        return file_path
+    return f"{file_path}:{line}"
+
+
+def _build_code_context(
+    *,
+    version_id: uuid.UUID,
+    draft: dict[str, object],
+) -> dict[str, dict[str, object]]:
+    code_context: dict[str, dict[str, object]] = {}
+    focus = _read_snapshot_snippet(
+        version_id=version_id,
+        file_path=str(draft.get("file_path") or "").strip(),
+        line_start=_to_int(draft.get("line_start")),
+        line_end=_to_int(draft.get("line_end")),
+        before=2,
+        after=2,
+    )
+    if focus:
+        code_context["focus"] = focus
+
+    source = draft.get("source") if isinstance(draft.get("source"), dict) else {}
+    source_context = _read_snapshot_snippet(
+        version_id=version_id,
+        file_path=str(source.get("file") or "").strip(),
+        line_start=_to_int(source.get("line")),
+        line_end=_to_int(source.get("line")),
+        before=2,
+        after=2,
+    )
+    if source_context and source_context != focus:
+        code_context["source"] = source_context
+
+    sink = draft.get("sink") if isinstance(draft.get("sink"), dict) else {}
+    sink_context = _read_snapshot_snippet(
+        version_id=version_id,
+        file_path=str(sink.get("file") or "").strip(),
+        line_start=_to_int(sink.get("line")),
+        line_end=_to_int(sink.get("line")),
+        before=2,
+        after=2,
+    )
+    if sink_context and sink_context != focus and sink_context != source_context:
+        code_context["sink"] = sink_context
+    return code_context
+
+
+def _read_snapshot_snippet(
+    *,
+    version_id: uuid.UUID,
+    file_path: str,
+    line_start: int | None,
+    line_end: int | None,
+    before: int,
+    after: int,
+) -> dict[str, object] | None:
+    if not file_path or line_start is None or line_start <= 0:
+        return None
+    resolved_path = _resolve_snapshot_relative_path(
+        version_id=version_id, raw_path=file_path
+    )
+    if not resolved_path:
+        return None
+    extra_after = max(0, min(8, (line_end or line_start) - line_start))
+    try:
+        lines, start_line, end_line = read_snapshot_file_context(
+            version_id=version_id,
+            path=resolved_path,
+            line=line_start,
+            before=before,
+            after=after + extra_after,
+        )
+    except AppError:
+        return None
+    return {
+        "file_path": resolved_path,
+        "start_line": start_line,
+        "end_line": end_line,
+        "snippet": _format_code_snippet(lines, start_line),
+    }
+
+
+def _snapshot_source_root(*, version_id: uuid.UUID) -> Path:
+    return Path(get_settings().snapshot_storage_root) / str(version_id) / "source"
+
+
+def _resolve_snapshot_relative_path(
+    *, version_id: uuid.UUID, raw_path: str
+) -> str | None:
+    normalized = raw_path.replace("\\", "/").strip()
+    if not normalized:
+        return None
+    source_root = _snapshot_source_root(version_id=version_id)
+    if not source_root.exists() or not source_root.is_dir():
+        return None
+
+    candidates = _candidate_snapshot_paths(normalized)
+    source_root_resolved = source_root.resolve()
+    for candidate in candidates:
+        resolved = (source_root / candidate).resolve()
+        if resolved.exists() and resolved.is_file():
+            try:
+                return resolved.relative_to(source_root_resolved).as_posix()
+            except ValueError:
+                continue
+
+    target_name = Path(candidates[0]).name if candidates else Path(normalized).name
+    for entry in source_root.rglob(target_name):
+        if not entry.is_file():
+            continue
+        relative = entry.relative_to(source_root).as_posix()
+        for candidate in candidates:
+            if relative.endswith(candidate) or candidate.endswith(relative):
+                return relative
+    return None
+
+
+def _candidate_snapshot_paths(raw_path: str) -> list[str]:
+    normalized = raw_path.replace("\\", "/").strip()
+    if not normalized:
+        return []
+    if len(normalized) >= 2 and normalized[1] == ":":
+        normalized = normalized[2:]
+    normalized = normalized.lstrip("/")
+    candidates: list[str] = []
+    for candidate in (normalized, _strip_source_prefix(normalized)):
+        cleaned = candidate.strip().lstrip("/")
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+    return candidates
+
+
+def _strip_source_prefix(value: str) -> str:
+    lowered = value.lower()
+    marker = "/source/"
+    index = lowered.rfind(marker)
+    if index >= 0:
+        return value[index + len(marker) :]
+    if lowered.startswith("source/"):
+        return value[len("source/") :]
+    return value
+
+
+def _format_code_snippet(lines: list[str], start_line: int) -> str:
+    return "\n".join(
+        f"{start_line + index}: {line}" for index, line in enumerate(lines)
+    )
+
+
+def _build_stub_location(*, version_id: uuid.UUID) -> dict[str, object] | None:
+    source_root = _snapshot_source_root(version_id=version_id)
+    if not source_root.exists() or not source_root.is_dir():
+        return None
+    for candidate in sorted(
+        source_root.rglob("*"), key=lambda item: item.as_posix().lower()
+    ):
+        if not candidate.is_file():
+            continue
+        try:
+            lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        relative_path = candidate.relative_to(source_root).as_posix()
+        total_lines = max(1, len(lines))
+        source_line = 1 if total_lines >= 1 else None
+        sink_line = min(total_lines, 3)
+        return {
+            "file_path": relative_path,
+            "line_start": source_line,
+            "line_end": min(total_lines, max(1, sink_line)),
+            "source_file": relative_path,
+            "source_line": source_line,
+            "sink_file": relative_path,
+            "sink_line": sink_line,
+        }
+    return None
+
+
+def _build_stub_finding(
+    *,
+    rule_key: str,
+    severity: str,
+    location: dict[str, object] | None,
+    index: int,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "rule_key": rule_key,
+        "severity": severity,
+        "evidence": {"stub": True, "ordinal": index + 1},
+    }
+    if location:
+        payload.update(location)
+        payload["evidence"] = {
+            "stub": True,
+            "ordinal": index + 1,
+            "location": f"{location.get('file_path')}:{location.get('line_start')}",
+        }
+    return payload
+
+
+def _attach_ai_payloads(
+    finding_drafts: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    enriched: list[dict[str, object]] = []
+    for draft in finding_drafts:
+        copied = dict(draft)
+        llm_payload = _build_llm_payload(draft)
+        copied["llm_payload"] = llm_payload
+        copied["llm_prompt_block"] = _build_llm_prompt_block(llm_payload)
+        enriched.append(copied)
+    return enriched
+
+
+def _build_llm_payload(draft: dict[str, object]) -> dict[str, object]:
+    source = draft["source"] if isinstance(draft.get("source"), dict) else {}
+    sink = draft["sink"] if isinstance(draft.get("sink"), dict) else {}
+    evidence = _normalize_evidence_payload(draft.get("evidence"))
+    evidence_preview = _build_evidence_preview(evidence)
+    code_context = _build_llm_code_context(draft.get("code_context"))
+    return {
+        "rule_key": _truncate_text(
+            str(draft.get("rule_key") or ""), LLM_TEXT_MAX_LENGTH
+        ),
+        "severity": _truncate_text(str(draft.get("severity") or ""), 32),
+        "vuln_type": _truncate_text(str(draft.get("vuln_type") or ""), 64),
+        "location": {
+            "file_path": _truncate_text(
+                str(draft.get("file_path") or ""), LLM_TEXT_MAX_LENGTH
+            ),
+            "line_start": _to_int(draft.get("line_start")),
+            "line_end": _to_int(draft.get("line_end")),
+        },
+        "source": {
+            "file": _truncate_text(str(source.get("file") or ""), LLM_TEXT_MAX_LENGTH),
+            "line": _to_int(source.get("line")),
+        },
+        "sink": {
+            "file": _truncate_text(str(sink.get("file") or ""), LLM_TEXT_MAX_LENGTH),
+            "line": _to_int(sink.get("line")),
+        },
+        "trace_summary": _truncate_text(
+            str(draft.get("trace_summary") or ""), LLM_TEXT_MAX_LENGTH
+        ),
+        "why_flagged": _truncate_text(
+            _build_reason_summary(draft),
+            LLM_TEXT_MAX_LENGTH,
+        ),
+        "evidence_preview": evidence_preview,
+        "code_context": code_context,
+    }
+
+
+def _build_evidence_preview(evidence: dict[str, object]) -> list[str]:
+    preview: list[str] = []
+    for key, value in evidence.items():
+        if len(preview) >= LLM_EVIDENCE_ITEMS_MAX_COUNT:
+            break
+        if isinstance(value, list):
+            for item in value:
+                if len(preview) >= LLM_EVIDENCE_ITEMS_MAX_COUNT:
+                    break
+                preview.append(
+                    _truncate_text(f"{key}={item}", LLM_EVIDENCE_ITEM_MAX_LENGTH)
+                )
+            continue
+        preview.append(_truncate_text(f"{key}={value}", LLM_EVIDENCE_ITEM_MAX_LENGTH))
+    return preview
+
+
+def _build_llm_prompt_block(llm_payload: dict[str, object]) -> str:
+    location = llm_payload.get("location")
+    source = llm_payload.get("source")
+    sink = llm_payload.get("sink")
+    evidence_preview = llm_payload.get("evidence_preview")
+    code_context = llm_payload.get("code_context")
+    location_text = "-"
+    if isinstance(location, dict):
+        file_path = str(location.get("file_path") or "").strip()
+        line_start = _to_int(location.get("line_start"))
+        line_end = _to_int(location.get("line_end"))
+        if file_path:
+            if line_start is not None and line_end is not None:
+                location_text = f"{file_path}:{line_start}-{line_end}"
+            elif line_start is not None:
+                location_text = f"{file_path}:{line_start}"
+            else:
+                location_text = file_path
+    source_text = "-"
+    if isinstance(source, dict):
+        source_text = _format_location(
+            str(source.get("file") or "").strip() or None,
+            _to_int(source.get("line")),
+        )
+    sink_text = "-"
+    if isinstance(sink, dict):
+        sink_text = _format_location(
+            str(sink.get("file") or "").strip() or None,
+            _to_int(sink.get("line")),
+        )
+    lines = [
+        f"Rule: {llm_payload.get('rule_key')}",
+        f"Severity: {llm_payload.get('severity')}",
+        f"VulnType: {llm_payload.get('vuln_type') or '-'}",
+        f"Location: {location_text}",
+        f"Reason: {llm_payload.get('why_flagged') or '-'}",
+        f"Source: {source_text}",
+        f"Sink: {sink_text}",
+        f"Trace: {llm_payload.get('trace_summary') or '-'}",
+    ]
+    if isinstance(evidence_preview, list) and evidence_preview:
+        lines.append("Evidence:")
+        lines.extend(f"- {item}" for item in evidence_preview if str(item).strip())
+    if isinstance(code_context, dict):
+        context_lines = _build_llm_context_lines(code_context)
+        if context_lines:
+            lines.append("Code:")
+            lines.extend(context_lines)
+    return _truncate_text("\n".join(lines), LLM_TEXT_MAX_LENGTH * 2)
+
+
+def _build_reason_summary(draft: dict[str, object]) -> str:
+    vuln_type = str(draft.get("vuln_type") or "").strip()
+    source = draft.get("source") if isinstance(draft.get("source"), dict) else {}
+    sink = draft.get("sink") if isinstance(draft.get("sink"), dict) else {}
+    source_text = _format_location(
+        str(source.get("file") or "").strip() or None,
+        _to_int(source.get("line")),
+    )
+    sink_text = _format_location(
+        str(sink.get("file") or "").strip() or None,
+        _to_int(sink.get("line")),
+    )
+    if source_text != "-" and sink_text != "-":
+        return f"{vuln_type or '风险'} 从 {source_text} 传播到 {sink_text}。"
+    location = _format_location(
+        str(draft.get("file_path") or "").strip() or None,
+        _to_int(draft.get("line_start")),
+    )
+    return f"规则 {draft.get('rule_key')} 在 {location} 命中。"
+
+
+def _build_llm_code_context(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    payload: dict[str, str] = {}
+    for key in ("focus", "source", "sink"):
+        entry = value.get(key)
+        if not isinstance(entry, dict):
+            continue
+        snippet = str(entry.get("snippet") or "").strip()
+        if not snippet:
+            continue
+        payload[key] = _truncate_text(snippet, LLM_CODE_SNIPPET_MAX_LENGTH)
+    return payload
+
+
+def _build_llm_context_lines(code_context: dict[str, object]) -> list[str]:
+    lines: list[str] = []
+    for key, label in (("focus", "Focus"), ("source", "Source"), ("sink", "Sink")):
+        snippet = str(code_context.get(key) or "").strip()
+        if not snippet:
+            continue
+        lines.append(f"- {label}:")
+        lines.append(snippet)
+    return lines
+
+
+def _truncate_text(value: str, max_length: int) -> str:
+    if len(value) <= max_length:
+        return value
+    return value[: max(0, max_length - 1)] + "…"
 
 
 def _severity_from_rule_key(rule_key: str) -> str:

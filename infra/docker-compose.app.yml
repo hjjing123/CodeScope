@@ -1,0 +1,110 @@
+name: codescope-app
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - ./docker.env
+    volumes:
+      - codescope_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - codescope_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: infra/docker/frontend.Dockerfile
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:5173/login').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  backend:
+    build:
+      context: ..
+      dockerfile: infra/docker/app.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./docker.env
+    environment:
+      FRONTEND_DEV_HOST: frontend
+      FRONTEND_DEV_PORT: "5173"
+      FRONTEND_DEV_PROXY_TIMEOUT_SECONDS: "45"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - codescope_backend_storage:/app/backend/storage
+    command: ["/app/scripts/start-backend.sh"]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz').status == 200 else 1)\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/docker/app.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./docker.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    volumes:
+      - codescope_backend_storage:/app/backend/storage
+    command:
+      [
+        "codescope-worker",
+        "--queues",
+        "import,scan,patch,env,report,low",
+        "--log-level",
+        "info",
+      ]
+
+volumes:
+  codescope_postgres_data:
+    name: codescope_postgres_data
+  codescope_redis_data:
+    name: codescope_redis_data
+  codescope_backend_storage:
+    name: codescope_backend_storage

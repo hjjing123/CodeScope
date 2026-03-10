@@ -10,6 +10,7 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/.venv/
+**/.venv-wsl/
 **/*.pyc
 
 # Local runtime data and databases
@@ -18,11 +19,17 @@ storage/
 workspace/
 backend/storage/
 backend/workspace/
+.logs/
 
 # Logs
 **/*.log
 
 # User-requested excludes
+.trae/
+.vite/
+backend/live_smoke_result.xml
+frontend/src/temp_front_patch_test.txt
+infra/docker.env
 文档/
 启动脚本/
 start-dev.bat

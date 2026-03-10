@@ -1,0 +1,55 @@
+import request from '../utils/request';
+import type {
+  Finding,
+  FindingListResponse,
+  FindingListParams,
+  ProjectResultOverview,
+  FindingLabelRequest,
+  FindingLabelActionResponse,
+  FindingPathListResponse,
+  FindingPathNodeContext,
+} from '../types/finding';
+
+export class FindingService {
+  static async getProjectResults(
+    projectId: string,
+    versionId?: string,
+    jobId?: string
+  ): Promise<ProjectResultOverview> {
+    const res = await request.get(`/projects/${projectId}/results`, {
+      params: { version_id: versionId, job_id: jobId },
+    });
+    return res.data;
+  }
+
+  static async listFindings(params: FindingListParams): Promise<FindingListResponse> {
+    const res = await request.get('/findings', { params });
+    return res.data;
+  }
+
+  static async getFinding(findingId: string): Promise<Finding> {
+    const res = await request.get(`/findings/${findingId}`);
+    return res.data;
+  }
+
+  static async labelFinding(
+    findingId: string,
+    payload: FindingLabelRequest
+  ): Promise<FindingLabelActionResponse> {
+    const res = await request.post(`/findings/${findingId}/labels`, payload);
+    return res.data;
+  }
+
+  static async getFindingPaths(findingId: string): Promise<FindingPathListResponse> {
+    const res = await request.get(`/findings/${findingId}/paths`);
+    return res.data;
+  }
+
+  static async getPathNodeContext(
+    findingId: string,
+    stepId: number
+  ): Promise<FindingPathNodeContext> {
+    const res = await request.get(`/findings/${findingId}/path-nodes/${stepId}/context`);
+    return res.data;
+  }
+}

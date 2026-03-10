@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+import json
 import mimetypes
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, Header, Query, Request
@@ -15,6 +17,7 @@ from app.db.session import get_db
 from app.dependencies.auth import get_current_principal, require_project_resource_action
 from app.models import (
     Job,
+    JobStep,
     JobStatus,
     JobType,
     Project,
@@ -27,6 +30,8 @@ from app.schemas.job import (
     JobActionPayload,
     JobArtifactListPayload,
     JobArtifactPayload,
+    JobDeletePayload,
+    JobDeleteRequest,
     JobLogEntryPayload,
     JobLogPayload,
     JobListPayload,
@@ -41,23 +46,25 @@ from app.services.artifact_service import (
     resolve_job_artifact,
 )
 from app.services.authorization_service import ensure_project_action
-from app.services.rule_file_service import (
-    validate_runtime_single_rule,
-)
 from app.services.rule_set_file_service import resolve_scan_rule_keys
 from app.services.scan_service import (
+    build_scan_progress_payload,
+    build_scan_steps_payload,
     cancel_scan_job,
     clone_scan_job_for_retry,
     compute_scan_request_fingerprint,
     create_scan_job,
+    delete_scan_job,
     dispatch_scan_job,
     failure_hint_for_code,
     get_existing_idempotent_scan_job,
-    normalize_scan_mode,
+    list_scan_job_steps,
+    normalize_scan_delete_targets,
 )
 from app.services.task_log_service import (
     build_task_logs_zip_bytes,
     build_task_stage_log_bytes,
+    read_task_log_events,
     read_task_logs,
     sync_task_log_index,
 )
@@ -109,7 +116,24 @@ def _validate_job_status(status: str | None) -> str | None:
     return normalized
 
 
-def _job_payload(job: Job) -> JobPayload:
+def _load_steps_by_job_ids(
+    db: Session, *, job_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[JobStep]]:
+    if not job_ids:
+        return {}
+    rows = db.scalars(
+        select(JobStep)
+        .where(JobStep.job_id.in_(job_ids))
+        .order_by(JobStep.step_order.asc(), JobStep.created_at.asc())
+    ).all()
+    by_job_id: dict[uuid.UUID, list[JobStep]] = {job_id: [] for job_id in job_ids}
+    for row in rows:
+        by_job_id.setdefault(row.job_id, []).append(row)
+    return by_job_id
+
+
+def _job_payload(job: Job, *, steps: list[JobStep] | None = None) -> JobPayload:
+    resolved_steps = steps if steps is not None else []
     return JobPayload(
         id=job.id,
         project_id=job.project_id,
@@ -122,6 +146,8 @@ def _job_payload(job: Job) -> JobPayload:
         failure_stage=job.failure_stage,
         failure_category=job.failure_category,
         failure_hint=job.failure_hint or failure_hint_for_code(job.failure_code),
+        progress=build_scan_progress_payload(steps=resolved_steps),
+        steps=build_scan_steps_payload(steps=resolved_steps),
         result_summary=job.result_summary,
         created_by=job.created_by,
         started_at=job.started_at,
@@ -129,6 +155,22 @@ def _job_payload(job: Job) -> JobPayload:
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
+
+
+def _encode_sse_event(
+    *,
+    event: str,
+    data: dict[str, object],
+    event_id: int | None = None,
+) -> str:
+    lines: list[str] = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    for chunk in payload.splitlines() or ["{}"]:
+        lines.append(f"data: {chunk}")
+    return "\n".join(lines) + "\n\n"
 
 
 @router.post("/api/v1/scan-jobs")
@@ -141,7 +183,6 @@ def create_scan_job_endpoint(
 ):
     request_id = get_request_id(request)
     normalized_idempotency_key = _normalize_idempotency_key(idempotency_key)
-    scan_mode = normalize_scan_mode(payload.scan_mode)
     (
         normalized_rule_set_keys,
         normalized_rule_keys,
@@ -150,10 +191,6 @@ def create_scan_job_endpoint(
         rule_set_keys=payload.rule_set_keys,
         rule_keys=payload.rule_keys,
     )
-    target_rule_id = (payload.target_rule_id or "").strip() or None
-
-    if target_rule_id is not None:
-        target_rule_id = validate_runtime_single_rule(rule_name=target_rule_id)
 
     ensure_project_action(
         db=db,
@@ -178,19 +215,19 @@ def create_scan_job_endpoint(
         )
     if version.status != VersionStatus.READY.value:
         raise AppError(
-            code="VERSION_NOT_READY", status_code=409, message="仅 READY 状态的代码快照可发起扫描"
+            code="VERSION_NOT_READY",
+            status_code=409,
+            message="仅 READY 状态的代码快照可发起扫描",
         )
 
     request_fingerprint = compute_scan_request_fingerprint(
         {
             "project_id": str(payload.project_id),
             "version_id": str(payload.version_id),
-            "scan_mode": scan_mode,
             "rule_set_keys": normalized_rule_set_keys,
             "rule_keys": normalized_rule_keys,
             "resolved_rule_keys": resolved_rule_keys,
             "note": payload.note,
-            "target_rule_id": target_rule_id,
         }
     )
     existing_job = get_existing_idempotent_scan_job(
@@ -209,12 +246,10 @@ def create_scan_job_endpoint(
         version_id=payload.version_id,
         payload={
             "request_id": request_id,
-            "scan_mode": scan_mode,
             "rule_set_keys": normalized_rule_set_keys,
             "rule_keys": normalized_rule_keys,
             "resolved_rule_keys": resolved_rule_keys,
             "note": payload.note,
-            "target_rule_id": target_rule_id,
         },
         created_by=principal.user.id,
         idempotency_key=normalized_idempotency_key,
@@ -231,11 +266,9 @@ def create_scan_job_endpoint(
         detail_json={
             "snapshot_id": str(payload.version_id),
             "version_id": str(payload.version_id),
-            "scan_mode": scan_mode,
             "rule_set_count": len(normalized_rule_set_keys),
             "rule_key_count": len(normalized_rule_keys),
             "resolved_rule_count": len(resolved_rule_keys),
-            "target_rule_id": target_rule_id,
         },
     )
     db.commit()
@@ -302,7 +335,13 @@ def list_jobs(
         .limit(page_size)
     ).all()
 
-    data = JobListPayload(items=[_job_payload(item) for item in rows], total=total)
+    steps_by_job_id = _load_steps_by_job_ids(db, job_ids=[item.id for item in rows])
+    data = JobListPayload(
+        items=[
+            _job_payload(item, steps=steps_by_job_id.get(item.id, [])) for item in rows
+        ],
+        total=total,
+    )
     return success_response(request, data=data.model_dump())
 
 
@@ -322,7 +361,8 @@ def get_job(
     job = db.get(Job, job_id)
     if job is None:
         raise AppError(code="NOT_FOUND", status_code=404, message="任务不存在")
-    return success_response(request, data=_job_payload(job).model_dump())
+    steps = list_scan_job_steps(db, job_id=job.id)
+    return success_response(request, data=_job_payload(job, steps=steps).model_dump())
 
 
 @router.get("/api/v1/jobs/{job_id}/logs")
@@ -330,7 +370,7 @@ def get_job_logs(
     request: Request,
     job_id: uuid.UUID,
     stage: str | None = Query(default=None),
-    tail: int = Query(default=200, ge=1, le=5000),
+    tail: int = Query(default=200, ge=0, le=5000),
     db: Session = Depends(get_db),
     _principal: AuthPrincipal = Depends(
         require_project_resource_action(
@@ -360,6 +400,108 @@ def get_job_logs(
         items=[JobLogEntryPayload(**item) for item in items],
     )
     return success_response(request, data=payload.model_dump())
+
+
+@router.get("/api/v1/jobs/{job_id}/logs/stream")
+def stream_job_logs(
+    request: Request,
+    job_id: uuid.UUID,
+    stage: str | None = Query(default=None),
+    seq: int = Query(default=0, ge=0),
+    poll_interval_ms: int = Query(default=500, ge=100, le=5000),
+    max_wait_seconds: int = Query(default=30, ge=1, le=300),
+    db: Session = Depends(get_db),
+    _principal: AuthPrincipal = Depends(
+        require_project_resource_action(
+            "job:read",
+            resource_type="JOB",
+            resource_id_param="job_id",
+        )
+    ),
+):
+    job = db.get(Job, job_id)
+    if job is None:
+        raise AppError(code="NOT_FOUND", status_code=404, message="任务不存在")
+    if job.job_type != JobType.SCAN.value:
+        raise AppError(
+            code="INVALID_ARGUMENT", status_code=422, message="当前仅支持扫描任务日志流"
+        )
+
+    terminal_statuses = {
+        JobStatus.SUCCEEDED.value,
+        JobStatus.FAILED.value,
+        JobStatus.CANCELED.value,
+        JobStatus.TIMEOUT.value,
+    }
+
+    def stream():
+        current_seq = seq
+        started_at = time.monotonic()
+        while True:
+            sync_task_log_index(
+                task_type="SCAN",
+                task_id=job.id,
+                project_id=job.project_id,
+                db=db,
+            )
+            events = read_task_log_events(
+                task_type="SCAN",
+                task_id=job.id,
+                stage=stage,
+                after_seq=current_seq,
+                limit=2000,
+            )
+            for event in events:
+                current_seq = int(event["seq"])
+                yield _encode_sse_event(
+                    event="log",
+                    data=event,
+                    event_id=current_seq,
+                )
+
+            db.expire_all()
+            latest_job = db.get(Job, job.id)
+            if latest_job is None:
+                break
+            if latest_job.status in terminal_statuses:
+                done_payload = {
+                    "seq": current_seq,
+                    "job_id": str(job.id),
+                    "status": latest_job.status,
+                    "stage": latest_job.stage,
+                }
+                yield _encode_sse_event(
+                    event="done",
+                    data=done_payload,
+                    event_id=current_seq,
+                )
+                break
+
+            if time.monotonic() - started_at >= max_wait_seconds:
+                keepalive_payload = {
+                    "seq": current_seq,
+                    "job_id": str(job.id),
+                    "status": latest_job.status,
+                    "stage": latest_job.stage,
+                }
+                yield _encode_sse_event(
+                    event="keepalive",
+                    data=keepalive_payload,
+                    event_id=current_seq,
+                )
+                break
+            time.sleep(poll_interval_ms / 1000.0)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers=headers,
+    )
 
 
 @router.get("/api/v1/jobs/{job_id}/logs/download")
@@ -528,3 +670,32 @@ def retry_job(
     dispatch_scan_job(db, job=retried_job)
     data = JobTriggerPayload(job_id=retried_job.id, idempotent_replay=False)
     return success_response(request, data=data.model_dump(), status_code=202)
+
+
+@router.post("/api/v1/jobs/{job_id}/delete")
+def delete_job(
+    request: Request,
+    job_id: uuid.UUID,
+    payload: JobDeleteRequest,
+    db: Session = Depends(get_db),
+    principal: AuthPrincipal = Depends(
+        require_project_resource_action(
+            "job:delete",
+            resource_type="JOB",
+            resource_id_param="job_id",
+        )
+    ),
+):
+    job = db.get(Job, job_id)
+    if job is None:
+        raise AppError(code="NOT_FOUND", status_code=404, message="任务不存在")
+
+    summary = delete_scan_job(
+        db,
+        job=job,
+        request_id=get_request_id(request),
+        operator_user_id=principal.user.id,
+        targets=normalize_scan_delete_targets(payload.targets),
+    )
+    data = JobDeletePayload(ok=True, job_id=job_id, **summary)
+    return success_response(request, data=data.model_dump())

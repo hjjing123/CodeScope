@@ -10,6 +10,7 @@ from pathlib import Path
 from app.config import get_settings
 from app.core.errors import AppError
 from app.services.rule_file_service import (
+    list_runtime_rule_files,
     normalize_rule_selector,
     validate_runtime_rule_keys,
 )
@@ -201,6 +202,10 @@ def resolve_scan_rule_keys(
 ) -> tuple[list[str], list[str], list[str]]:
     normalized_set_keys = _normalize_rule_set_key_list(rule_set_keys)
     normalized_rule_keys = _normalize_rule_key_list(rule_keys)
+
+    if not normalized_set_keys and not normalized_rule_keys:
+        resolved_keys = [item.stem for item in list_runtime_rule_files()]
+        return normalized_set_keys, normalized_rule_keys, resolved_keys
 
     all_rows = [record for _path, record in _load_all_rule_sets()]
     by_key = {item.key.lower(): item for item in all_rows}

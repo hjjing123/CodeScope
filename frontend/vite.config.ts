@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 const hmrClientPort = Number(process.env.VITE_HMR_CLIENT_PORT || 0)
@@ -12,7 +12,13 @@ export default defineConfig({
     css: true,
   },
   server: {
-    hmr: hmrClientPort > 0 ? { clientPort: hmrClientPort } : undefined,
+    hmr:
+      hmrClientPort > 0
+        ? {
+            port: hmrClientPort,
+            clientPort: hmrClientPort,
+          }
+        : undefined,
     proxy: {
       '/api': {
         target: 'http://localhost:8000',

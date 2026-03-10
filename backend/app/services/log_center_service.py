@@ -26,7 +26,9 @@ _AUDIT_ACTION_META: dict[str, AuditActionMeta] = {
     "project.create": AuditActionMeta("project.create", "创建项目", "project"),
     "project.update": AuditActionMeta("project.update", "更新项目", "project"),
     "project.delete": AuditActionMeta("project.delete", "删除项目", "project"),
-    "project.member.add": AuditActionMeta("project.member.add", "添加项目成员", "project"),
+    "project.member.add": AuditActionMeta(
+        "project.member.add", "添加项目成员", "project"
+    ),
     "project.member.update": AuditActionMeta(
         "project.member.update", "更新项目成员角色", "project"
     ),
@@ -41,19 +43,28 @@ _AUDIT_ACTION_META: dict[str, AuditActionMeta] = {
     "scan.succeeded": AuditActionMeta("scan.succeeded", "扫描成功", "scan"),
     "scan.failed": AuditActionMeta("scan.failed", "扫描失败", "scan"),
     "scan.canceled": AuditActionMeta("scan.canceled", "取消扫描", "scan"),
+    "scan.deleted": AuditActionMeta("scan.deleted", "删除扫描任务内容", "scan"),
     "import.upload.triggered": AuditActionMeta(
         "import.upload.triggered", "触发上传导入", "import"
     ),
     "import.upload.succeeded": AuditActionMeta(
         "import.upload.succeeded", "上传导入成功", "import"
     ),
-    "import.upload.failed": AuditActionMeta("import.upload.failed", "上传导入失败", "import"),
-    "import.git.triggered": AuditActionMeta("import.git.triggered", "触发 Git 导入", "import"),
+    "import.upload.failed": AuditActionMeta(
+        "import.upload.failed", "上传导入失败", "import"
+    ),
+    "import.git.triggered": AuditActionMeta(
+        "import.git.triggered", "触发 Git 导入", "import"
+    ),
     "import.git.sync.triggered": AuditActionMeta(
         "import.git.sync.triggered", "触发 Git 同步导入", "import"
     ),
-    "import.dispatch.failed": AuditActionMeta("import.dispatch.failed", "导入派发失败", "import"),
-    "import.git.succeeded": AuditActionMeta("import.git.succeeded", "Git 导入成功", "import"),
+    "import.dispatch.failed": AuditActionMeta(
+        "import.dispatch.failed", "导入派发失败", "import"
+    ),
+    "import.git.succeeded": AuditActionMeta(
+        "import.git.succeeded", "Git 导入成功", "import"
+    ),
     "import.failed": AuditActionMeta("import.failed", "导入失败", "import"),
     "rule.create": AuditActionMeta("rule.create", "创建规则", "rule"),
     "rule.draft.update": AuditActionMeta("rule.draft.update", "更新规则草稿", "rule"),
@@ -69,13 +80,17 @@ _AUDIT_ACTION_META: dict[str, AuditActionMeta] = {
     "rule.selftest.succeeded": AuditActionMeta(
         "rule.selftest.succeeded", "规则自测成功", "rule"
     ),
-    "rule.selftest.failed": AuditActionMeta("rule.selftest.failed", "规则自测失败", "rule"),
+    "rule.selftest.failed": AuditActionMeta(
+        "rule.selftest.failed", "规则自测失败", "rule"
+    ),
     "rule.selftest.dispatch.failed": AuditActionMeta(
         "rule.selftest.dispatch.failed", "规则自测派发失败", "rule"
     ),
     "rule_set.create": AuditActionMeta("rule_set.create", "创建规则集", "rule_set"),
     "rule_set.update": AuditActionMeta("rule_set.update", "更新规则集", "rule_set"),
-    "rule_set.bind_rules": AuditActionMeta("rule_set.bind_rules", "绑定规则集规则", "rule_set"),
+    "rule_set.bind_rules": AuditActionMeta(
+        "rule_set.bind_rules", "绑定规则集规则", "rule_set"
+    ),
     "finding.label": AuditActionMeta("finding.label", "标记漏洞", "finding"),
     "user.update": AuditActionMeta("user.update", "更新用户信息", "user"),
     "log.delete": AuditActionMeta("log.delete", "删除日志", "log"),
@@ -139,7 +154,9 @@ def normalize_audit_detail(
             or payload.get("resource_id")
             or ""
         )
-        change["before_enabled"] = bool(before_enabled) if before_enabled is not None else None
+        change["before_enabled"] = (
+            bool(before_enabled) if before_enabled is not None else None
+        )
         change["after_enabled"] = bool(after_enabled)
         outcome.setdefault("status", "SUCCEEDED")
 
@@ -272,7 +289,9 @@ def fill_system_log_meta_for_existing_row(row: Any) -> tuple[str, str, str, bool
     return meta.action_zh, meta.action_group, summary_zh, meta.is_high_value
 
 
-def normalize_audit_row_detail(detail_json: dict[str, object] | None, action: str) -> dict[str, object]:
+def normalize_audit_row_detail(
+    detail_json: dict[str, object] | None, action: str
+) -> dict[str, object]:
     return normalize_audit_detail(action=action, detail_json=detail_json)
 
 

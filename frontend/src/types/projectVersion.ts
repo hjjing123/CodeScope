@@ -98,12 +98,11 @@ export interface ImportJobTriggerResponse {
   idempotent_replay: boolean;
 }
 
-export type ScanMode = 'FULL' | 'FAST' | 'VERIFY';
-
 export interface ScanJobCreateRequest {
   project_id: string;
   version_id: string;
-  scan_mode: ScanMode;
+  rule_set_keys?: string[];
+  rule_keys?: string[];
   note?: string;
 }
 

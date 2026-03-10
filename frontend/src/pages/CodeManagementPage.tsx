@@ -6,7 +6,7 @@ import VersionList from '../components/ProjectVersion/VersionList';
 import { getProject } from '../services/projectVersion';
 import type { Project } from '../types/projectVersion';
 
-const ProjectVersionPage: React.FC = () => {
+const CodeManagementPage: React.FC = () => {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(false);
@@ -37,14 +37,16 @@ const ProjectVersionPage: React.FC = () => {
         <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center' }}>
           <Button
             icon={<ArrowLeftOutlined />}
-              onClick={() => setSelectedProjectId(null)}
+            onClick={() => setSelectedProjectId(null)}
             style={{ marginRight: 16 }}
           >
             返回项目列表
           </Button>
           {loading ? <Spin /> : project && <h2 style={{ margin: 0 }}>{project.name} - 代码快照记录</h2>}
         </div>
-        <VersionList projectId={selectedProjectId} />
+        <VersionList
+          projectId={selectedProjectId}
+        />
       </div>
     );
   }
@@ -52,4 +54,4 @@ const ProjectVersionPage: React.FC = () => {
   return <ProjectList onProjectSelect={setSelectedProjectId} />;
 };
 
-export default ProjectVersionPage;
+export default CodeManagementPage;

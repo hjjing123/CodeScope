@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.errors import AppError
-from app.models import Job, JobStage, ScanMode
+from app.models import Job, JobStage
 
 from .contracts import ExternalScanContext, ExternalStageSpec
 
@@ -203,9 +203,7 @@ def _prepare_workspace_paths(
             message="未配置扫描工作目录",
         )
 
-    workspace_dir = (
-        workspace_root / str(job.project_id) / str(job.version_id) / "external"
-    )
+    workspace_dir = workspace_root / str(job.project_id) / str(job.id) / "external"
     import_dir = workspace_dir / "import_csv"
     cpg_file = workspace_dir / "code.bin"
 
@@ -214,7 +212,9 @@ def _prepare_workspace_paths(
 
 
 def _build_stage_specs(*, settings: Any) -> list[ExternalStageSpec]:
-    legacy_command = (getattr(settings, "scan_external_runner_command", "") or "").strip()
+    legacy_command = (
+        getattr(settings, "scan_external_runner_command", "") or ""
+    ).strip()
     if legacy_command:
         return [
             ExternalStageSpec(
@@ -246,7 +246,9 @@ def _build_stage_specs(*, settings: Any) -> list[ExternalStageSpec]:
         ),
         ExternalStageSpec(
             key="neo4j_import",
-            command=(getattr(settings, "scan_external_stage_import_command", "") or "").strip(),
+            command=(
+                getattr(settings, "scan_external_stage_import_command", "") or ""
+            ).strip(),
             log_stage=JobStage.ANALYZE.value,
             timeout_seconds=_safe_timeout_seconds(
                 getattr(settings, "scan_external_stage_import_timeout_seconds", 3600),
@@ -272,7 +274,9 @@ def _build_stage_specs(*, settings: Any) -> list[ExternalStageSpec]:
         ),
         ExternalStageSpec(
             key="rules",
-            command=(getattr(settings, "scan_external_stage_rules_command", "") or "").strip(),
+            command=(
+                getattr(settings, "scan_external_stage_rules_command", "") or ""
+            ).strip(),
             log_stage=JobStage.QUERY.value,
             timeout_seconds=_safe_timeout_seconds(
                 getattr(settings, "scan_external_stage_rules_timeout_seconds", 3600),
@@ -298,11 +302,9 @@ def _build_scan_env(
     resolved_stage_specs = stage_specs or _build_stage_specs(settings=settings)
     runtime_profile = _resolve_runtime_profile(settings=settings)
     env = dict(os.environ)
-    scan_mode = str(job.payload.get("scan_mode", ScanMode.FULL.value))
     env["CODESCOPE_SCAN_JOB_ID"] = str(job.id)
     env["CODESCOPE_SCAN_PROJECT_ID"] = str(job.project_id)
     env["CODESCOPE_SCAN_VERSION_ID"] = str(job.version_id)
-    env["CODESCOPE_SCAN_MODE"] = scan_mode
     env["CODESCOPE_SCAN_REPORTS_DIR"] = str(reports_dir)
     env["CODESCOPE_SCAN_SOURCE_DIR"] = str(source_dir)
     env["CODESCOPE_SCAN_IMPORT_DIR"] = str(import_dir)
@@ -341,7 +343,9 @@ def _build_scan_env(
         configured_joern_bin=configured_joern_bin,
         runtime_profile=runtime_profile,
     )
-    joern_export_script_raw = str(settings.scan_external_joern_export_script or "").strip()
+    joern_export_script_raw = str(
+        settings.scan_external_joern_export_script or ""
+    ).strip()
     if not joern_export_script_raw:
         joern_export_script_raw = "./assets/scan/joern/export_java_min.sc"
     joern_export_script = resolve_external_path(
@@ -370,14 +374,59 @@ def _build_scan_env(
     )
     env["CODESCOPE_SCAN_RULES_DIR"] = str(rules_dir) if rules_dir else ""
 
-    env["CODESCOPE_SCAN_NEO4J_URI"] = str(settings.scan_external_neo4j_uri or "")
+    resolved_neo4j_database = _resolve_database_name(
+        raw_value=str(settings.scan_external_neo4j_database or ""),
+        fallback="neo4j",
+        job=job,
+    )
+    resolved_import_database = _resolve_database_name(
+        raw_value=str(getattr(settings, "scan_external_import_database", "") or ""),
+        fallback=resolved_neo4j_database,
+        job=job,
+    )
+    resolved_neo4j_uri = _resolve_string_value(
+        raw_value=str(settings.scan_external_neo4j_uri or ""),
+        fallback="",
+        job=job,
+    )
+    resolved_import_data_mount = _resolve_string_value(
+        raw_value=str(getattr(settings, "scan_external_import_data_mount", "") or ""),
+        fallback="",
+        job=job,
+    )
+    resolved_runtime_container_name = _resolve_string_value(
+        raw_value=str(
+            getattr(settings, "scan_external_neo4j_runtime_container_name", "") or ""
+        ),
+        fallback="",
+        job=job,
+    )
+    resolved_runtime_network = _resolve_string_value(
+        raw_value=str(
+            getattr(settings, "scan_external_neo4j_runtime_network", "") or ""
+        ),
+        fallback="",
+        job=job,
+    )
+    resolved_runtime_network_alias = _resolve_string_value(
+        raw_value=str(
+            getattr(settings, "scan_external_neo4j_runtime_network_alias", "") or ""
+        ),
+        fallback="",
+        job=job,
+    )
+
+    env["CODESCOPE_SCAN_NEO4J_URI"] = resolved_neo4j_uri
     env["CODESCOPE_SCAN_NEO4J_USER"] = str(settings.scan_external_neo4j_user or "")
     env["CODESCOPE_SCAN_NEO4J_PASSWORD"] = str(
         settings.scan_external_neo4j_password or ""
     )
-    env["CODESCOPE_SCAN_NEO4J_DATABASE"] = str(
-        settings.scan_external_neo4j_database or ""
-    )
+    env["CODESCOPE_SCAN_NEO4J_DATABASE"] = resolved_neo4j_database
+    env["CODESCOPE_SCAN_IMPORT_DATABASE"] = resolved_import_database
+    env["CODESCOPE_SCAN_IMPORT_DATA_MOUNT"] = resolved_import_data_mount
+    env["CODESCOPE_SCAN_NEO4J_RUNTIME_CONTAINER_NAME"] = resolved_runtime_container_name
+    env["CODESCOPE_SCAN_NEO4J_RUNTIME_NETWORK"] = resolved_runtime_network
+    env["CODESCOPE_SCAN_NEO4J_RUNTIME_NETWORK_ALIAS"] = resolved_runtime_network_alias
 
     _validate_builtin_dependencies(
         settings=settings,
@@ -388,6 +437,18 @@ def _build_scan_env(
     )
 
     return env
+
+
+def _resolve_database_name(*, raw_value: str, fallback: str, job: Job) -> str:
+    return _resolve_string_value(raw_value=raw_value, fallback=fallback, job=job)
+
+
+def _resolve_string_value(*, raw_value: str, fallback: str, job: Job) -> str:
+    rendered = render_template(raw_value.strip(), job=job)
+    normalized = rendered.strip()
+    if normalized:
+        return normalized
+    return fallback.strip()
 
 
 def _json_list_string(value: object) -> str:
@@ -487,7 +548,11 @@ def _resolve_joern_bin(
 
 
 def _resolve_runtime_profile(*, settings: Any) -> str:
-    configured = str(getattr(settings, "scan_external_runtime_profile", "") or "").strip().lower()
+    configured = (
+        str(getattr(settings, "scan_external_runtime_profile", "") or "")
+        .strip()
+        .lower()
+    )
     compat_mode = bool(getattr(settings, "scan_external_container_compat_mode", False))
     if configured == CONTAINER_COMPAT_RUNTIME_PROFILE or compat_mode:
         return CONTAINER_COMPAT_RUNTIME_PROFILE
@@ -528,12 +593,18 @@ def _validate_builtin_dependencies(
     ):
         _validate_import_settings(settings=settings)
 
-    if _is_builtin_stage_enabled(
-        stage_specs=stage_specs, stage_key="neo4j_import", builtin_key="neo4j_import"
-    ) or _is_builtin_stage_enabled(
-        stage_specs=stage_specs, stage_key="post_labels", builtin_key="post_labels"
-    ) or _is_builtin_stage_enabled(
-        stage_specs=stage_specs, stage_key="rules", builtin_key="rules"
+    if (
+        _is_builtin_stage_enabled(
+            stage_specs=stage_specs,
+            stage_key="neo4j_import",
+            builtin_key="neo4j_import",
+        )
+        or _is_builtin_stage_enabled(
+            stage_specs=stage_specs, stage_key="post_labels", builtin_key="post_labels"
+        )
+        or _is_builtin_stage_enabled(
+            stage_specs=stage_specs, stage_key="rules", builtin_key="rules"
+        )
     ):
         _validate_neo4j_settings(settings=settings)
 

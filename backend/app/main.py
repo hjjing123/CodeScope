@@ -3,22 +3,26 @@ from __future__ import annotations
 import json
 import os
 import time
-import urllib.error
-import urllib.request
 import uuid
-from types import GeneratorType
+from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Lock
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.config import get_settings
 from app.core.errors import AppError
 from app.core.response import error_response, success_response
-from app.db.session import get_db
 from app.services.log_center_service import should_record_runtime_request
 from app.services.runtime_log_service import (
     append_runtime_log,
@@ -30,7 +34,6 @@ from app.services.runtime_log_service import (
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="CodeScope Backend", version="0.1.0")
     frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
     frontend_assets = frontend_dist / "assets"
     frontend_index = frontend_dist / "index.html"
@@ -38,6 +41,26 @@ def create_app() -> FastAPI:
     frontend_icon = frontend_dist / "vite.svg"
     frontend_dev_url = os.getenv("FRONTEND_DEV_URL", "").rstrip("/")
     frontend_dev_port = os.getenv("FRONTEND_DEV_PORT", "").strip()
+    frontend_dev_proxy_timeout = os.getenv(
+        "FRONTEND_DEV_PROXY_TIMEOUT_SECONDS", "30"
+    ).strip()
+
+    try:
+        frontend_dev_proxy_timeout_seconds = max(1.0, float(frontend_dev_proxy_timeout))
+    except ValueError:
+        frontend_dev_proxy_timeout_seconds = 30.0
+
+    frontend_dev_client_lock = Lock()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.frontend_dev_client = None
+        yield
+        frontend_dev_client = getattr(app.state, "frontend_dev_client", None)
+        if frontend_dev_client is not None:
+            frontend_dev_client.close()
+
+    app = FastAPI(title="CodeScope Backend", version="0.1.0", lifespan=lifespan)
 
     if frontend_assets.exists():
         app.mount(
@@ -62,7 +85,25 @@ def create_app() -> FastAPI:
             return f"{request.url.scheme}://{host}:{frontend_dev_port}"
         return ""
 
-    def proxy_frontend_dev(request: Request, path: str):
+    def get_frontend_dev_client() -> httpx.Client:
+        frontend_dev_client = getattr(app.state, "frontend_dev_client", None)
+        if frontend_dev_client is not None:
+            return frontend_dev_client
+
+        with frontend_dev_client_lock:
+            frontend_dev_client = getattr(app.state, "frontend_dev_client", None)
+            if frontend_dev_client is None:
+                frontend_dev_client = httpx.Client(
+                    follow_redirects=False,
+                    timeout=frontend_dev_proxy_timeout_seconds,
+                    trust_env=False,
+                )
+                app.state.frontend_dev_client = frontend_dev_client
+        return frontend_dev_client
+
+    def proxy_frontend_dev(
+        request: Request, path: str, *, allow_static_fallback: bool = False
+    ):
         frontend_dev_base = resolve_frontend_dev_base(request)
         if not frontend_dev_base:
             return None
@@ -75,29 +116,28 @@ def create_app() -> FastAPI:
         cookie_header = request.headers.get("cookie")
         if cookie_header:
             headers["Cookie"] = cookie_header
-        proxy_request = urllib.request.Request(url=target, headers=headers, method="GET")
         try:
-            with urllib.request.urlopen(proxy_request, timeout=10) as upstream:
-                body = upstream.read()
-                response_headers = {
-                    key: value
-                    for key, value in upstream.headers.items()
-                    if key.lower() not in {"transfer-encoding", "connection"}
-                }
-                return Response(
-                    content=body,
-                    status_code=upstream.getcode(),
-                    headers=response_headers,
-                )
-        except urllib.error.HTTPError as exc:
-            error_body = exc.read()
+            upstream = get_frontend_dev_client().get(target, headers=headers)
             response_headers = {
                 key: value
-                for key, value in exc.headers.items()
+                for key, value in upstream.headers.items()
                 if key.lower() not in {"transfer-encoding", "connection"}
             }
-            return Response(content=error_body, status_code=exc.code, headers=response_headers)
-        except urllib.error.URLError:
+            return Response(
+                content=upstream.content,
+                status_code=upstream.status_code,
+                headers=response_headers,
+            )
+        except httpx.TimeoutException:
+            if allow_static_fallback:
+                return None
+            return PlainTextResponse(
+                "Frontend dev server timed out while rendering. Vite may still be optimizing dependencies; retry in a few seconds or increase FRONTEND_DEV_PROXY_TIMEOUT_SECONDS.",
+                status_code=504,
+            )
+        except httpx.RequestError:
+            if allow_static_fallback:
+                return None
             return PlainTextResponse(
                 "Frontend dev server unavailable. Check `npm run dev` status.",
                 status_code=502,
@@ -105,15 +145,6 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def request_id_middleware(request: Request, call_next):
-        provider = app.dependency_overrides.get(get_db, get_db)
-        session_generator = provider(request)
-        owns_session = isinstance(session_generator, GeneratorType)
-        if owns_session:
-            try:
-                next(session_generator)
-            except StopIteration:
-                owns_session = False
-
         request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
         request.state.request_id = request_id
         start = time.perf_counter()
@@ -136,14 +167,16 @@ def create_app() -> FastAPI:
             raise
         finally:
             duration_ms = int((time.perf_counter() - start) * 1000)
-            should_record, is_high_value, capture_reason = should_record_runtime_request(
-                status_code=status_code,
-                duration_ms=duration_ms,
-                request_id=request_id,
-                path=request.url.path,
-                sample_rate=settings.runtime_http_log_sample_rate,
-                slow_threshold_ms=settings.runtime_http_log_slow_threshold_ms,
-                record_success=settings.runtime_http_log_record_success,
+            should_record, is_high_value, capture_reason = (
+                should_record_runtime_request(
+                    status_code=status_code,
+                    duration_ms=duration_ms,
+                    request_id=request_id,
+                    path=request.url.path,
+                    sample_rate=settings.runtime_http_log_sample_rate,
+                    slow_threshold_ms=settings.runtime_http_log_slow_threshold_ms,
+                    record_success=settings.runtime_http_log_record_success,
+                )
             )
             detail_json = build_request_runtime_detail(
                 method=request.method,
@@ -153,7 +186,8 @@ def create_app() -> FastAPI:
                 user_agent=request.headers.get("User-Agent"),
             )
             detail_json["capture_reason"] = capture_reason
-            if should_record:
+            db_session = getattr(request.state, "db_session", None)
+            if should_record and db_session is not None:
                 append_runtime_log(
                     level=normalize_level_for_status(status_code),
                     service="api",
@@ -167,20 +201,13 @@ def create_app() -> FastAPI:
                     error_code=error_code,
                     high_value=is_high_value,
                     detail_json=detail_json,
-                    db=getattr(request.state, "db_session", None),
+                    db=db_session,
                 )
 
-        try:
-            if response is None:
-                response = PlainTextResponse("Internal Server Error", status_code=500)
-            response.headers["X-Request-Id"] = request_id
-            return response
-        finally:
-            if owns_session:
-                try:
-                    next(session_generator)
-                except StopIteration:
-                    pass
+        if response is None:
+            response = PlainTextResponse("Internal Server Error", status_code=500)
+        response.headers["X-Request-Id"] = request_id
+        return response
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError):
@@ -224,28 +251,30 @@ def create_app() -> FastAPI:
 
     @app.get("/login", include_in_schema=False)
     def login_page(request: Request):
-        dev_proxy = proxy_frontend_dev(request, "/login")
+        dev_proxy = proxy_frontend_dev(request, "/login", allow_static_fallback=True)
         if dev_proxy:
             return dev_proxy
         return serve_frontend_index()
 
     @app.get("/register", include_in_schema=False)
     def register_page(request: Request):
-        dev_proxy = proxy_frontend_dev(request, "/register")
+        dev_proxy = proxy_frontend_dev(request, "/register", allow_static_fallback=True)
         if dev_proxy:
             return dev_proxy
         return serve_frontend_index()
 
     @app.get("/dashboard", include_in_schema=False)
     def dashboard_page(request: Request):
-        dev_proxy = proxy_frontend_dev(request, "/dashboard")
+        dev_proxy = proxy_frontend_dev(
+            request, "/dashboard", allow_static_fallback=True
+        )
         if dev_proxy:
             return dev_proxy
         return serve_frontend_index()
 
     @app.get("/vite.svg", include_in_schema=False)
     def favicon_page(request: Request):
-        dev_proxy = proxy_frontend_dev(request, "/vite.svg")
+        dev_proxy = proxy_frontend_dev(request, "/vite.svg", allow_static_fallback=True)
         if dev_proxy:
             return dev_proxy
         if frontend_icon.exists():
@@ -254,7 +283,9 @@ def create_app() -> FastAPI:
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon_ico_page(request: Request):
-        dev_proxy = proxy_frontend_dev(request, "/favicon.ico")
+        dev_proxy = proxy_frontend_dev(
+            request, "/favicon.ico", allow_static_fallback=True
+        )
         if dev_proxy:
             return dev_proxy
         if frontend_favicon.exists():
@@ -269,7 +300,19 @@ def create_app() -> FastAPI:
         if normalized_path == "api" or normalized_path.startswith("api/"):
             return PlainTextResponse("Not Found", status_code=404)
 
-        dev_proxy = proxy_frontend_dev(request, f"/{normalized_path}")
+        if (
+            normalized_path.startswith("@vite/")
+            or normalized_path.startswith("src/")
+            or normalized_path.startswith("node_modules/")
+        ):
+            dev_proxy = proxy_frontend_dev(request, f"/{normalized_path}")
+            if dev_proxy:
+                return dev_proxy
+            return PlainTextResponse("Not Found", status_code=404)
+
+        dev_proxy = proxy_frontend_dev(
+            request, f"/{normalized_path}", allow_static_fallback=True
+        )
         if dev_proxy:
             return dev_proxy
 

@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import sys
 from types import ModuleType
-from typing import TYPE_CHECKING
 
 import pytest
-
-if TYPE_CHECKING:
-    from starlette.requests import Request
+from starlette.requests import Request
 
 
 def _install_overlapped_stub() -> None:

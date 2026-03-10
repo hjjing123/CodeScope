@@ -1,18 +1,27 @@
+import { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import { useAuthStore } from './store/useAuthStore';
 import { hasAuthToken } from './utils/authToken';
-import { ConfigProvider } from 'antd';
+import { ConfigProvider, Spin } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import 'dayjs/locale/zh-cn';
 import WorkspaceLayout from './layouts/WorkspaceLayout';
 import WorkspaceSectionPage from './pages/WorkspaceSectionPage';
 import LogCenterPage from './pages/LogCenterPage';
-import ProjectVersionPage from './pages/ProjectVersionPage';
 import RuleCenterPage from './pages/RuleCenterPage';
 import RuleDetailPage from './pages/RuleDetailPage';
 import { workspaceSections } from './config/workspaceSections';
+
+const CodeManagementPage = lazy(() => import('./pages/CodeManagementPage'));
+const ScanTasksPage = lazy(() => import('./pages/ScanTasksPage'));
+
+const RouteFallback = () => (
+  <div style={{ display: 'flex', justifyContent: 'center', padding: '48px 0' }}>
+    <Spin size="large" />
+  </div>
+);
 
 // Protected Route Component
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -55,7 +64,22 @@ function App() {
             }
           >
             <Route index element={<Navigate to="dashboard" replace />} />
-            <Route path="code-management" element={<ProjectVersionPage />} />
+            <Route
+              path="code-management"
+              element={
+                <Suspense fallback={<RouteFallback />}>
+                  <CodeManagementPage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="scans"
+              element={
+                <Suspense fallback={<RouteFallback />}>
+                  <ScanTasksPage />
+                </Suspense>
+              }
+            />
             <Route path="projects" element={<Navigate to="/code-management" replace />} />
             <Route path="log-center" element={<LogCenterPage />} />
             <Route path="rules" element={<RuleCenterPage />} />
@@ -64,6 +88,7 @@ function App() {
               .filter(
                 (section) =>
                   section.key !== 'projects' &&
+                  section.key !== 'scans' &&
                   section.key !== 'log-center' &&
                   section.key !== 'rules'
               )
