@@ -28,3 +28,15 @@ def write_runtime_metadata(*, reports_dir: Path, payload: dict[str, object]) -> 
     target.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def merge_runtime_metadata(
+    *, reports_dir: Path, section: str, payload: dict[str, object] | None
+) -> dict[str, object]:
+    current = load_runtime_metadata(reports_dir=reports_dir)
+    if payload is None:
+        current.pop(section, None)
+    else:
+        current[section] = payload
+    write_runtime_metadata(reports_dir=reports_dir, payload=current)
+    return current

@@ -32,6 +32,7 @@ def run_external_scan(
     append_log: Callable[[str, str], None],
     severity_from_rule_key: Callable[[str], str],
     on_stage_status: Callable[[str, str], None] | None = None,
+    on_rule_finding: Callable[[dict[str, object]], None] | None = None,
 ) -> ExternalScanResult:
     context = build_external_scan_context(
         job=job, settings=settings, backend_root=backend_root
@@ -49,6 +50,7 @@ def run_external_scan(
                     spec=spec,
                     context=context,
                     append_log=append_log,
+                    on_rule_finding=on_rule_finding,
                 )
             )
             if on_stage_status is not None:
@@ -232,6 +234,7 @@ def _run_stage_command(
     spec: ExternalStageSpec,
     context: ExternalScanContext,
     append_log: Callable[[str, str], None],
+    on_rule_finding: Callable[[dict[str, object]], None] | None,
 ) -> ExternalStageResult:
     command = render_template(spec.command, job=job).strip()
     if not command:
@@ -261,6 +264,7 @@ def _run_stage_command(
                 context=context,
                 append_log=append_log,
                 timeout_seconds=spec.timeout_seconds,
+                on_rule_finding=on_rule_finding,
             )
             result = subprocess.CompletedProcess(
                 args=command,
@@ -284,6 +288,25 @@ def _run_stage_command(
     except AppError as exc:
         duration_ms = int((time.monotonic() - started_at) * 1000)
         detail = dict(exc.detail) if isinstance(exc.detail, dict) else {}
+        append_log(
+            spec.log_stage,
+            f"[{spec.key}] 执行失败: code={exc.code}, duration_ms={duration_ms}, message={exc.message}",
+        )
+        if detail.get("stdout_tail"):
+            append_log(
+                spec.log_stage, f"[{spec.key}] stdout: {detail.get('stdout_tail')}"
+            )
+        if detail.get("stderr_tail"):
+            append_log(
+                spec.log_stage, f"[{spec.key}] stderr: {detail.get('stderr_tail')}"
+            )
+        if detail.get("error"):
+            append_log(spec.log_stage, f"[{spec.key}] error: {detail.get('error')}")
+        if detail.get("container_logs_tail"):
+            append_log(
+                spec.log_stage,
+                f"[{spec.key}] container_logs_tail: {detail.get('container_logs_tail')}",
+            )
         if "stage_result" not in detail:
             detail["stage_result"] = {
                 "stage": spec.key,
@@ -365,6 +388,10 @@ def _run_stage_command(
         ) from exc
     except Exception as exc:
         duration_ms = int((time.monotonic() - started_at) * 1000)
+        append_log(
+            spec.log_stage,
+            f"[{spec.key}] 执行异常: duration_ms={duration_ms}, error={exc}",
+        )
         raise AppError(
             code=spec.failure_code,
             status_code=422,

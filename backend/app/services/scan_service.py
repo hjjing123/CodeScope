@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,13 +14,15 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
 from app.core.errors import AppError
 from app.db.session import SessionLocal
 from app.models import (
     Finding,
+    FindingPath,
+    FindingPathStep,
     FindingSeverity,
     FindingStatus,
     Job,
@@ -36,7 +40,12 @@ from app.models import (
 )
 from app.services.audit_service import append_audit_log
 from app.services.artifact_service import delete_scan_job_artifacts
+from app.services.job_stream_service import append_job_stream_event
 from app.services.rule_file_service import get_rules_by_keys, normalize_rule_selector
+from app.services.scan_runtime_service import (
+    acquire_scan_runtime_slot,
+    release_scan_runtime_slot,
+)
 from app.services.scan_external import run_external_scan as run_external_scan_pipeline
 from app.services.scan_external.builtin import cleanup_ephemeral_runtime_resources
 from app.services.scan_external.context import resolve_external_path
@@ -472,6 +481,13 @@ def _write_scan_result_archive(*, job: Job) -> dict[str, object]:
     }
 
 
+def _tail_text(value: str | None, max_chars: int = 2000) -> str:
+    normalized = str(value or "")
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[-max_chars:]
+
+
 def _stage_log_path(*, job_id: uuid.UUID, stage: str) -> Path:
     safe_stage = re.sub(r"[^A-Za-z0-9_-]+", "_", stage).strip("_") or "unknown"
     return _job_log_dir(job_id=job_id) / f"{safe_stage}.log"
@@ -493,6 +509,51 @@ def _append_scan_log(
     )
 
 
+def _append_job_stream_event_safe(
+    db: Session,
+    *,
+    job_id: uuid.UUID,
+    project_id: uuid.UUID | None,
+    event_type: str,
+    payload: dict[str, object],
+) -> None:
+    try:
+        append_job_stream_event(
+            db,
+            job_id=job_id,
+            project_id=project_id,
+            event_type=event_type,
+            payload=payload,
+        )
+    except Exception:
+        return
+
+
+def _serialize_finding_record(finding: Finding) -> dict[str, object]:
+    return {
+        "id": str(finding.id),
+        "project_id": str(finding.project_id),
+        "version_id": str(finding.version_id),
+        "job_id": str(finding.job_id),
+        "rule_key": finding.rule_key,
+        "rule_version": finding.rule_version,
+        "vuln_type": finding.vuln_type,
+        "severity": finding.severity,
+        "status": finding.status,
+        "file_path": finding.file_path,
+        "line_start": finding.line_start,
+        "line_end": finding.line_end,
+        "has_path": finding.has_path,
+        "path_length": finding.path_length,
+        "source_file": finding.source_file,
+        "source_line": finding.source_line,
+        "sink_file": finding.sink_file,
+        "sink_line": finding.sink_line,
+        "evidence_json": dict(finding.evidence_json or {}),
+        "created_at": finding.created_at.isoformat() if finding.created_at else None,
+    }
+
+
 def _scan_external_workspace_dir(*, job: Job) -> Path:
     return (
         Path(get_settings().scan_workspace_root)
@@ -502,8 +563,35 @@ def _scan_external_workspace_dir(*, job: Job) -> Path:
     )
 
 
+def _absolute_path_without_resolve(path: Path | str) -> Path:
+    return Path(os.path.abspath(os.path.normpath(str(path))))
+
+
+def _path_is_within_root(*, target: Path, root: Path) -> bool:
+    try:
+        target.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _release_scan_workspace(*, job: Job) -> dict[str, object]:
-    workspace_dir = _scan_external_workspace_dir(job=job)
+    workspace_dir = _absolute_path_without_resolve(
+        _scan_external_workspace_dir(job=job)
+    )
+    workspace_root = _absolute_path_without_resolve(get_settings().scan_workspace_root)
+    if not _path_is_within_root(target=workspace_dir, root=workspace_root):
+        return {
+            "workspace_dir": str(workspace_dir),
+            "workspace_existed_before": workspace_dir.exists(),
+            "workspace_exists_after": workspace_dir.exists(),
+            "workspace_released": False,
+            "workspace_cleanup_error": (
+                "refused to delete workspace outside configured root: "
+                f"workspace_dir={workspace_dir}, workspace_root={workspace_root}"
+            ),
+        }
+
     existed_before = workspace_dir.exists()
     error: str | None = None
     if existed_before:
@@ -513,7 +601,6 @@ def _release_scan_workspace(*, job: Job) -> dict[str, object]:
             error = str(exc)
 
     released = not workspace_dir.exists()
-    workspace_root = Path(get_settings().scan_workspace_root).resolve()
     cleanup_cursor = workspace_dir.parent
     while released and cleanup_cursor.exists() and cleanup_cursor != workspace_root:
         try:
@@ -750,18 +837,34 @@ def cancel_scan_job(
     job.finished_at = now
     if job.started_at is None:
         job.started_at = now
-    cleanup_summary = _release_scan_workspace(job=job)
-    job.result_summary = {
+    result_summary = {
         **(job.result_summary or {}),
         "canceled": True,
-        "cleanup": cleanup_summary,
     }
     try:
-        job.result_summary["neo4j_cleanup"] = _cleanup_external_neo4j_database(
-            job=job, result_summary=job.result_summary
+        job.result_summary = dict(result_summary)
+        job.result_summary["archive"] = _write_scan_result_archive(job=job)
+        result_summary["archive"] = job.result_summary.get("archive")
+        _set_scan_step_status(
+            db,
+            job_id=job.id,
+            step_key="archive",
+            status=JobStepStatus.SUCCEEDED.value,
+            commit=True,
         )
     except Exception as exc:
-        job.result_summary["neo4j_cleanup"] = {
+        _append_scan_log(
+            job_id=job.id,
+            stage=job.stage,
+            message=f"扫描结果归档写入失败（不影响取消）: {exc}",
+            project_id=job.project_id,
+        )
+    try:
+        result_summary["neo4j_cleanup"] = _cleanup_external_neo4j_database(
+            job=job, result_summary=result_summary
+        )
+    except Exception as exc:
+        result_summary["neo4j_cleanup"] = {
             "enabled": True,
             "database": None,
             "cleanup_attempted": True,
@@ -775,15 +878,9 @@ def cancel_scan_job(
             message=f"Neo4j 清理失败（不影响取消）: {exc}",
             project_id=job.project_id,
         )
-    try:
-        job.result_summary["archive"] = _write_scan_result_archive(job=job)
-    except Exception as exc:
-        _append_scan_log(
-            job_id=job.id,
-            stage=job.stage,
-            message=f"扫描结果归档写入失败（不影响取消）: {exc}",
-            project_id=job.project_id,
-        )
+    cleanup_summary = _release_scan_workspace(job=job)
+    result_summary["cleanup"] = cleanup_summary
+    job.result_summary = dict(result_summary)
     _finalize_scan_steps(
         db,
         job_id=job.id,
@@ -798,6 +895,13 @@ def cancel_scan_job(
             f"任务已取消。 workspace_released={cleanup_summary['workspace_released']}"
         ),
         project_id=job.project_id,
+    )
+    _append_job_stream_event_safe(
+        db,
+        job_id=job.id,
+        project_id=job.project_id,
+        event_type="done",
+        payload={"status": JobStatus.CANCELED.value, "stage": job.stage},
     )
 
     dispatch = job.payload.get("dispatch") if isinstance(job.payload, dict) else None
@@ -1147,7 +1251,9 @@ def list_scan_job_steps(db: Session, *, job_id: uuid.UUID) -> list[JobStep]:
     ).all()
 
 
-def build_scan_progress_payload(*, steps: list[JobStep]) -> dict[str, object]:
+def build_scan_progress_payload(
+    *, steps: list[JobStep], job_status: str | None = None
+) -> dict[str, object]:
     total = len(steps)
     completed = sum(1 for item in steps if item.status == JobStepStatus.SUCCEEDED.value)
     running = next(
@@ -1165,6 +1271,10 @@ def build_scan_progress_payload(*, steps: list[JobStep]) -> dict[str, object]:
         ):
             current_step = latest_terminal.step_key
     percent = 100 if total == 0 else int((completed / total) * 100)
+    if total > 0 and completed >= total and job_status not in TERMINAL_SCAN_STATUSES:
+        percent = 99
+        if current_step is None:
+            current_step = steps[-1].step_key
     return {
         "total_steps": total,
         "completed_steps": completed,
@@ -1196,11 +1306,25 @@ def _set_scan_step_status(
     status: str,
     commit: bool = False,
 ) -> None:
-    update_scan_job_step_status(
+    step = update_scan_job_step_status(
         db,
         job_id=job_id,
         step_key=step_key,
         status=status,
+    )
+    job = db.get(Job, job_id)
+    _append_job_stream_event_safe(
+        db,
+        job_id=job_id,
+        project_id=job.project_id if job is not None else None,
+        event_type="step_status",
+        payload={
+            "step_key": step_key,
+            "status": status,
+            "started_at": step.started_at.isoformat() if step.started_at else None,
+            "finished_at": step.finished_at.isoformat() if step.finished_at else None,
+            "duration_ms": step.duration_ms,
+        },
     )
     if commit:
         db.commit()
@@ -1322,6 +1446,7 @@ def _finalize_scan_steps(
 def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
     owns_db = db is None
     session = db or SessionLocal()
+    slot_acquired = False
     try:
         job = session.get(Job, job_id)
         if job is None:
@@ -1366,10 +1491,30 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
             )
             return
 
+        engine_mode = (get_settings().scan_engine_mode or "stub").strip().lower()
+        if engine_mode == "external":
+            acquire_scan_runtime_slot(
+                job_id=job.id,
+                db_bind=session.get_bind(),
+                on_wait=lambda rounds: (
+                    _append_scan_log(
+                        job_id=job.id,
+                        stage=JobStage.PREPARE.value,
+                        message=(
+                            "等待 Neo4j 运行槽位中..."
+                            f" round={rounds}, max_slots={get_settings().scan_external_runtime_max_slots}"
+                        ),
+                        project_id=job.project_id,
+                    )
+                    if rounds == 1 or rounds % 10 == 0
+                    else None
+                ),
+            )
+            slot_acquired = True
+
         initialize_scan_job_steps(session, job_id=job.id)
         _mark_scan_stage_started(session, job=job, stage=JobStage.PREPARE.value)
 
-        engine_mode = (get_settings().scan_engine_mode or "stub").strip().lower()
         if engine_mode == "external":
             _set_scan_step_status(
                 session,
@@ -1445,46 +1590,9 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
         code_context_ready = sum(
             1 for item in finding_drafts if isinstance(item.get("code_context"), dict)
         )
-        for draft in finding_drafts:
-            source = draft["source"] if isinstance(draft["source"], dict) else {}
-            sink = draft["sink"] if isinstance(draft["sink"], dict) else {}
-            evidence_payload = _normalize_evidence_payload(draft.get("evidence"))
-            if draft.get("trace_summary"):
-                evidence_payload.setdefault("trace_summary", draft.get("trace_summary"))
-            if isinstance(draft.get("code_context"), dict):
-                evidence_payload.setdefault("code_context", draft.get("code_context"))
-            session.add(
-                Finding(
-                    project_id=job.project_id,
-                    version_id=job.version_id,
-                    job_id=job.id,
-                    rule_key=str(draft["rule_key"]),
-                    rule_version=_to_int(draft.get("rule_version")),
-                    vuln_type=str(draft["vuln_type"])
-                    if draft.get("vuln_type")
-                    else None,
-                    severity=str(draft["severity"]),
-                    status=FindingStatus.OPEN.value,
-                    file_path=str(draft["file_path"])
-                    if draft.get("file_path")
-                    else None,
-                    line_start=_to_int(draft.get("line_start")),
-                    line_end=_to_int(draft.get("line_end")),
-                    has_path=bool(draft.get("has_path", False)),
-                    path_length=_to_int(draft.get("path_length")),
-                    source_file=(
-                        str(source["file"])
-                        if isinstance(source.get("file"), str)
-                        else None
-                    ),
-                    source_line=_to_int(source.get("line")),
-                    sink_file=(
-                        str(sink["file"]) if isinstance(sink.get("file"), str) else None
-                    ),
-                    sink_line=_to_int(sink.get("line")),
-                    evidence_json=evidence_payload,
-                )
-            )
+        if engine_mode != "external":
+            for draft in finding_drafts:
+                session.add(_create_finding_model_from_draft(job=job, draft=draft))
         if len(finding_drafts) < len(execution.findings):
             _append_scan_log(
                 job_id=job.id,
@@ -1530,20 +1638,30 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
             commit=True,
         )
         _mark_scan_stage_started(session, job=job, stage=JobStage.CLEANUP.value)
-        _set_scan_step_status(
-            session,
-            job_id=job.id,
-            step_key="archive",
-            status=JobStepStatus.SUCCEEDED.value,
-        )
+        job_result_summary = dict(execution.result_summary)
         try:
-            execution.result_summary["neo4j_cleanup"] = (
-                _cleanup_external_neo4j_database(
-                    job=job, result_summary=execution.result_summary
-                )
+            job.result_summary = dict(job_result_summary)
+            job_result_summary["archive"] = _write_scan_result_archive(job=job)
+            _set_scan_step_status(
+                session,
+                job_id=job.id,
+                step_key="archive",
+                status=JobStepStatus.SUCCEEDED.value,
+                commit=True,
             )
         except Exception as exc:
-            execution.result_summary["neo4j_cleanup"] = {
+            _append_scan_log(
+                job_id=job.id,
+                stage=JobStage.CLEANUP.value,
+                message=f"扫描结果归档写入失败（不影响任务成功）: {exc}",
+                project_id=job.project_id,
+            )
+        try:
+            job_result_summary["neo4j_cleanup"] = _cleanup_external_neo4j_database(
+                job=job, result_summary=job_result_summary
+            )
+        except Exception as exc:
+            job_result_summary["neo4j_cleanup"] = {
                 "enabled": True,
                 "database": None,
                 "cleanup_attempted": True,
@@ -1558,7 +1676,8 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
                 project_id=job.project_id,
             )
         cleanup_summary = _release_scan_workspace(job=job)
-        execution.result_summary["cleanup"] = cleanup_summary
+        job_result_summary["cleanup"] = cleanup_summary
+        job.result_summary = dict(job_result_summary)
         _append_scan_log(
             job_id=job.id,
             stage=JobStage.CLEANUP.value,
@@ -1581,16 +1700,29 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
         job.failure_category = None
         job.failure_hint = None
         job.finished_at = utc_now()
-        job.result_summary = execution.result_summary
         try:
-            job.result_summary["archive"] = _write_scan_result_archive(job=job)
+            job.result_summary = dict(job_result_summary)
+            job_result_summary["archive"] = _write_scan_result_archive(job=job)
         except Exception as exc:
             _append_scan_log(
                 job_id=job.id,
                 stage=JobStage.CLEANUP.value,
-                message=f"扫描结果归档写入失败（不影响任务成功）: {exc}",
+                message=f"扫描结果最终归档刷新失败（不影响任务成功）: {exc}",
                 project_id=job.project_id,
             )
+        job.result_summary = dict(job_result_summary)
+        _append_job_stream_event_safe(
+            session,
+            job_id=job.id,
+            project_id=job.project_id,
+            event_type="job_status",
+            payload={
+                "status": job.status,
+                "stage": job.stage,
+                "failure_code": job.failure_code,
+                "failure_stage": job.failure_stage,
+            },
+        )
         _finalize_scan_steps(
             session,
             job_id=job.id,
@@ -1602,6 +1734,17 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
             stage=JobStage.CLEANUP.value,
             message=f"任务成功，发现 {execution.result_summary.get('total_findings', 0)} 条结果",
             project_id=job.project_id,
+        )
+        _append_job_stream_event_safe(
+            session,
+            job_id=job.id,
+            project_id=job.project_id,
+            event_type="done",
+            payload={
+                "status": JobStatus.SUCCEEDED.value,
+                "stage": job.stage,
+                "total_findings": execution.result_summary.get("total_findings", 0),
+            },
         )
 
         append_audit_log(
@@ -1639,11 +1782,26 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
         session.rollback()
         job = session.get(Job, job_id)
         if job is not None:
+            if job.status in TERMINAL_SCAN_STATUSES:
+                return
+            detail_text = _tail_text(
+                json.dumps(exc.detail or {}, ensure_ascii=False), max_chars=3000
+            )
+            _append_scan_log(
+                job_id=job.id,
+                stage=job.stage,
+                message=(
+                    f"任务异常收口: code={exc.code}, stage={job.stage}, detail={detail_text}"
+                ),
+                project_id=job.project_id,
+            )
             is_timeout = exc.code in TIMEOUT_FAILURE_CODES or exc.code.endswith(
                 "_TIMEOUT"
             )
             final_status = (
-                JobStatus.TIMEOUT.value if is_timeout else JobStatus.FAILED.value
+                JobStatus.CANCELED.value
+                if exc.code == "SCAN_CANCELED"
+                else (JobStatus.TIMEOUT.value if is_timeout else JobStatus.FAILED.value)
             )
             _fail_scan_job(
                 session,
@@ -1659,9 +1817,21 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
                 final_status=final_status,
             )
     except Exception:
+        traceback_text = traceback.format_exc()
         session.rollback()
         job = session.get(Job, job_id)
         if job is not None:
+            if job.status in TERMINAL_SCAN_STATUSES:
+                return
+            _append_scan_log(
+                job_id=job.id,
+                stage=job.stage,
+                message=(
+                    "任务异常收口: "
+                    f"stage={job.stage}, traceback={_tail_text(traceback_text, max_chars=3000)}"
+                ),
+                project_id=job.project_id,
+            )
             _fail_scan_job(
                 session,
                 job=job,
@@ -1669,8 +1839,14 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
                 failure_code="SCAN_INTERNAL_ERROR",
                 failure_category=JobFailureCategory.SYSTEM.value,
                 request_id=str(job.payload.get("request_id", "")),
+                detail={
+                    "error": "SCAN_INTERNAL_ERROR",
+                    "traceback_tail": _tail_text(traceback_text, max_chars=4000),
+                },
             )
     finally:
+        if slot_acquired:
+            release_scan_runtime_slot(job_id=job_id, db_bind=session.get_bind())
         if owns_db:
             session.close()
 
@@ -1689,6 +1865,18 @@ def _set_scan_job_running(db: Session, *, job: Job, stage: str) -> None:
         stage=stage,
         message=f"进入阶段 {stage}",
         project_id=job.project_id,
+    )
+    _append_job_stream_event_safe(
+        db,
+        job_id=job.id,
+        project_id=job.project_id,
+        event_type="job_status",
+        payload={
+            "status": job.status,
+            "stage": job.stage,
+            "failure_code": job.failure_code,
+            "failure_stage": job.failure_stage,
+        },
     )
     db.commit()
 
@@ -1714,14 +1902,44 @@ def _fail_scan_job(
     job.failure_category = failure_category
     job.failure_hint = failure_hint_for_code(failure_code)
     job.finished_at = now
-    cleanup_summary = _release_scan_workspace(job=job)
-    job.result_summary = {**(job.result_summary or {}), "cleanup": cleanup_summary}
+    result_summary = {**(job.result_summary or {})}
+    if detail:
+        result_summary["failure_detail"] = detail
+        executed_stages = detail.get("executed_stages")
+        if isinstance(executed_stages, list):
+            result_summary["external_stages"] = executed_stages
+        _append_scan_log(
+            job_id=job.id,
+            stage=stage,
+            message=(
+                f"失败上下文: {_tail_text(json.dumps(detail, ensure_ascii=False), max_chars=3000)}"
+            ),
+            project_id=job.project_id,
+        )
     try:
-        job.result_summary["neo4j_cleanup"] = _cleanup_external_neo4j_database(
-            job=job, result_summary=job.result_summary
+        job.result_summary = dict(result_summary)
+        job.result_summary["archive"] = _write_scan_result_archive(job=job)
+        result_summary["archive"] = job.result_summary.get("archive")
+        _set_scan_step_status(
+            db,
+            job_id=job.id,
+            step_key="archive",
+            status=JobStepStatus.SUCCEEDED.value,
+            commit=True,
         )
     except Exception as exc:
-        job.result_summary["neo4j_cleanup"] = {
+        _append_scan_log(
+            job_id=job.id,
+            stage=stage,
+            message=f"扫描结果归档写入失败（不影响失败收口）: {exc}",
+            project_id=job.project_id,
+        )
+    try:
+        result_summary["neo4j_cleanup"] = _cleanup_external_neo4j_database(
+            job=job, result_summary=result_summary
+        )
+    except Exception as exc:
+        result_summary["neo4j_cleanup"] = {
             "enabled": True,
             "database": None,
             "cleanup_attempted": True,
@@ -1735,15 +1953,9 @@ def _fail_scan_job(
             message=f"Neo4j 清理失败（不影响失败收口）: {exc}",
             project_id=job.project_id,
         )
-    try:
-        job.result_summary["archive"] = _write_scan_result_archive(job=job)
-    except Exception as exc:
-        _append_scan_log(
-            job_id=job.id,
-            stage=stage,
-            message=f"扫描结果归档写入失败（不影响失败收口）: {exc}",
-            project_id=job.project_id,
-        )
+    cleanup_summary = _release_scan_workspace(job=job)
+    result_summary["cleanup"] = cleanup_summary
+    job.result_summary = dict(result_summary)
     _finalize_scan_steps(
         db,
         job_id=job.id,
@@ -1762,6 +1974,17 @@ def _fail_scan_job(
             f"workspace_released={cleanup_summary['workspace_released']}"
         ),
         project_id=job.project_id,
+    )
+    _append_job_stream_event_safe(
+        db,
+        job_id=job.id,
+        project_id=job.project_id,
+        event_type="done",
+        payload={
+            "status": final_status,
+            "stage": stage,
+            "failure_code": failure_code,
+        },
     )
 
     append_audit_log(
@@ -1837,6 +2060,12 @@ def _run_stub_scan(*, job: Job) -> ScanExecutionResult:
 def _run_external_scan(*, job: Job, db: Session) -> ScanExecutionResult:
     settings = get_settings()
     backend_root = Path(__file__).resolve().parents[2]
+    live_findings: list[dict[str, object]] = []
+    live_severity_counts = {
+        FindingSeverity.HIGH.value: 0,
+        FindingSeverity.MED.value: 0,
+        FindingSeverity.LOW.value: 0,
+    }
 
     stage_by_step = {
         "joern": JobStage.ANALYZE.value,
@@ -1844,6 +2073,41 @@ def _run_external_scan(*, job: Job, db: Session) -> ScanExecutionResult:
         "post_labels": JobStage.QUERY.value,
         "rules": JobStage.QUERY.value,
     }
+
+    def _on_live_rule_finding(raw_finding: dict[str, object]) -> None:
+        persisted = _persist_external_finding_live(
+            job=job,
+            db_bind=db.get_bind(),
+            raw_finding=raw_finding,
+        )
+        if persisted is None:
+            return
+        finding_payload = persisted.get("finding")
+        if isinstance(finding_payload, dict):
+            severity = str(finding_payload.get("severity") or "").strip().upper()
+            finding_snapshot = {**dict(raw_finding), **dict(finding_payload)}
+            live_findings.append(finding_snapshot)
+            if severity in live_severity_counts:
+                live_severity_counts[severity] += 1
+            summary_payload = {
+                "total_findings": len(live_findings),
+                "severity_counts": dict(live_severity_counts),
+            }
+            live_session_factory = sessionmaker(
+                bind=db.get_bind(),
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+            )
+            with live_session_factory() as live_db:
+                append_job_stream_event(
+                    live_db,
+                    job_id=job.id,
+                    project_id=job.project_id,
+                    event_type="summary_update",
+                    payload=summary_payload,
+                )
+                live_db.commit()
 
     def _on_external_stage_status(step_key: str, status: str) -> None:
         stage = stage_by_step.get(step_key)
@@ -1866,10 +2130,11 @@ def _run_external_scan(*, job: Job, db: Session) -> ScanExecutionResult:
         ),
         severity_from_rule_key=_severity_from_rule_key,
         on_stage_status=_on_external_stage_status,
+        on_rule_finding=_on_live_rule_finding,
     )
 
     result_summary = _build_result_summary(
-        findings=external_result.findings,
+        findings=live_findings or external_result.findings,
         engine_mode="external",
         extra=external_result.summary_extra,
     )
@@ -1877,18 +2142,19 @@ def _run_external_scan(*, job: Job, db: Session) -> ScanExecutionResult:
         job_id=job.id,
         stage=JobStage.AGGREGATE.value,
         message=(
-            f"external 结果汇总完成: findings={len(external_result.findings)}, "
+            f"external 结果汇总完成: findings={len(live_findings or external_result.findings)}, "
             f"hit_rules={result_summary.get('hit_rules', 0)}"
         ),
     )
     return ScanExecutionResult(
-        findings=external_result.findings, result_summary=result_summary
+        findings=live_findings or external_result.findings,
+        result_summary=result_summary,
     )
 
 
 def _build_result_summary(
     *,
-    findings: list[dict[str, str]],
+    findings: list[dict[str, object]],
     engine_mode: str,
     extra: dict[str, object] | None = None,
 ) -> dict[str, object]:
@@ -1899,10 +2165,12 @@ def _build_result_summary(
     }
     hit_rules: set[str] = set()
     for item in findings:
-        severity = item["severity"]
+        severity = str(item.get("severity") or "")
         if severity in severity_counts:
             severity_counts[severity] += 1
-        hit_rules.add(item["rule_key"])
+        rule_key = str(item.get("rule_key") or "").strip()
+        if rule_key:
+            hit_rules.add(rule_key)
 
     summary: dict[str, object] = {
         "engine_mode": engine_mode,
@@ -1914,6 +2182,141 @@ def _build_result_summary(
     if extra:
         summary.update(extra)
     return summary
+
+
+def _create_finding_model_from_draft(*, job: Job, draft: dict[str, object]) -> Finding:
+    source = draft["source"] if isinstance(draft.get("source"), dict) else {}
+    sink = draft["sink"] if isinstance(draft.get("sink"), dict) else {}
+    evidence_payload = _normalize_evidence_payload(draft.get("evidence"))
+    if draft.get("trace_summary"):
+        evidence_payload.setdefault("trace_summary", draft.get("trace_summary"))
+    if isinstance(draft.get("code_context"), dict):
+        evidence_payload.setdefault("code_context", draft.get("code_context"))
+    return Finding(
+        project_id=job.project_id,
+        version_id=job.version_id,
+        job_id=job.id,
+        rule_key=str(draft["rule_key"]),
+        rule_version=_to_int(draft.get("rule_version")),
+        vuln_type=str(draft["vuln_type"]) if draft.get("vuln_type") else None,
+        severity=str(draft["severity"]),
+        status=FindingStatus.OPEN.value,
+        file_path=str(draft["file_path"]) if draft.get("file_path") else None,
+        line_start=_to_int(draft.get("line_start")),
+        line_end=_to_int(draft.get("line_end")),
+        has_path=bool(draft.get("has_path", False)),
+        path_length=_to_int(draft.get("path_length")),
+        source_file=str(source["file"])
+        if isinstance(source.get("file"), str)
+        else None,
+        source_line=_to_int(source.get("line")),
+        sink_file=str(sink["file"]) if isinstance(sink.get("file"), str) else None,
+        sink_line=_to_int(sink.get("line")),
+        evidence_json=evidence_payload,
+    )
+
+
+def _persist_finding_paths(
+    db: Session,
+    *,
+    finding: Finding,
+    paths: list[dict[str, object]],
+) -> int:
+    saved_count = 0
+    for path_index, path_item in enumerate(paths):
+        if not isinstance(path_item, dict):
+            continue
+        steps = path_item.get("steps")
+        if not isinstance(steps, list) or not steps:
+            continue
+        path_model = FindingPath(
+            finding_id=finding.id,
+            path_order=path_index,
+            path_length=max(
+                0,
+                _to_int(path_item.get("path_length"), default=len(steps) - 1)
+                or len(steps) - 1,
+            ),
+        )
+        db.add(path_model)
+        db.flush()
+        for step_index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            db.add(
+                FindingPathStep(
+                    finding_path_id=path_model.id,
+                    step_order=step_index,
+                    labels_json=[
+                        str(item)
+                        for item in step.get("labels") or []
+                        if isinstance(item, str) and item.strip()
+                    ],
+                    file_path=str(step.get("file") or "").strip() or None,
+                    line_no=_to_int(step.get("line")),
+                    func_name=str(step.get("func_name") or "").strip() or None,
+                    code_snippet=(str(step.get("code_snippet") or "").strip() or None),
+                    node_ref=str(step.get("node_ref") or f"step-{step_index}"),
+                )
+            )
+        saved_count += 1
+    return saved_count
+
+
+def _persist_external_finding_live(
+    *,
+    job: Job,
+    db_bind: Any,
+    raw_finding: dict[str, object],
+) -> dict[str, object] | None:
+    raw_rule_key = str(raw_finding.get("rule_key") or "").strip()
+    if not raw_rule_key:
+        return None
+    try:
+        normalized_rule_key = normalize_rule_selector(raw_rule_key)
+    except AppError:
+        normalized_rule_key = raw_rule_key
+    rule_meta = get_rules_by_keys({normalized_rule_key})
+    drafts = _normalize_finding_drafts(
+        findings=[raw_finding],
+        rule_meta_by_key=rule_meta,
+    )
+    if not drafts:
+        return None
+    draft = _attach_code_contexts(job=job, finding_drafts=[drafts[0]])[0]
+    paths = (
+        raw_finding.get("paths") if isinstance(raw_finding.get("paths"), list) else []
+    )
+
+    live_session_factory = sessionmaker(
+        bind=db_bind,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+    )
+
+    with live_session_factory() as live_db:
+        live_job = live_db.get(Job, job.id)
+        if live_job is None:
+            return None
+        finding = _create_finding_model_from_draft(job=live_job, draft=draft)
+        live_db.add(finding)
+        live_db.flush()
+        saved_paths = _persist_finding_paths(live_db, finding=finding, paths=paths)
+        payload = {
+            "finding": _serialize_finding_record(finding),
+            "paths": paths,
+            "saved_path_count": saved_paths,
+        }
+        append_job_stream_event(
+            live_db,
+            job_id=live_job.id,
+            project_id=live_job.project_id,
+            event_type="finding_upsert",
+            payload=payload,
+        )
+        live_db.commit()
+        return payload
 
 
 def _to_int(value: object, *, default: int | None = None) -> int | None:

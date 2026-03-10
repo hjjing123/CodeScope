@@ -349,6 +349,35 @@ class JobStep(Base):
     )
 
 
+class ScanRuntimeLease(Base):
+    __tablename__ = "scan_runtime_leases"
+
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    slot_index: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
+
+
+class JobStreamEvent(Base):
+    __tablename__ = "job_stream_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, nullable=True, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
+
+
 class Finding(Base):
     __tablename__ = "findings"
 
@@ -383,6 +412,50 @@ class Finding(Base):
     evidence_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class FindingPath(Base):
+    __tablename__ = "finding_paths"
+    __table_args__ = (
+        UniqueConstraint("finding_id", "path_order", name="uq_finding_paths_order"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    finding_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    path_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    path_length: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
+
+
+class FindingPathStep(Base):
+    __tablename__ = "finding_path_steps"
+    __table_args__ = (
+        UniqueConstraint(
+            "finding_path_id", "step_order", name="uq_finding_path_steps_order"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    finding_path_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("finding_paths.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    step_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    labels_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    file_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    line_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    func_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    code_snippet: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    node_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
     )
 
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
+from app.config import get_settings
 from app.core.errors import AppError
 from app.models import Job
 from app.services.rule_file_service import (
@@ -21,6 +22,7 @@ from app.services.rule_file_service import (
 from .contracts import ExternalScanContext
 from .neo4j_runner import (
     execute_cypher_file,
+    execute_cypher_file_stream,
     verify_neo4j_connectivity,
 )
 from .runtime_metadata import write_runtime_metadata
@@ -57,6 +59,7 @@ def run_builtin_stage(
     context: ExternalScanContext,
     append_log: Callable[[str, str], None],
     timeout_seconds: int,
+    on_rule_finding: Callable[[dict[str, object]], None] | None = None,
 ) -> tuple[str, str]:
     deadline = time.monotonic() + max(1, timeout_seconds)
 
@@ -86,6 +89,7 @@ def run_builtin_stage(
             settings=settings,
             context=context,
             append_log=append_log,
+            on_rule_finding=on_rule_finding,
         )
 
     raise AppError(
@@ -381,7 +385,7 @@ def _run_builtin_neo4j_import(
     restart_mode = (
         str(settings.scan_external_neo4j_runtime_restart_mode or "none").strip().lower()
     )
-    container_name = (
+    runtime_container_name = (
         str(
             context.base_env.get("CODESCOPE_SCAN_NEO4J_RUNTIME_CONTAINER_NAME") or ""
         ).strip()
@@ -419,49 +423,62 @@ def _run_builtin_neo4j_import(
         str(context.base_env.get("CODESCOPE_SCAN_NEO4J_PASSWORD") or "").strip()
         or str(getattr(settings, "scan_external_neo4j_password", "") or "").strip()
     )
-    manage_runtime = restart_mode == "docker" and bool(container_name)
+    manage_runtime = restart_mode == "docker" and bool(runtime_container_name)
     manage_ephemeral_runtime = restart_mode == DOCKER_EPHEMERAL_RUNTIME_MODE and bool(
-        container_name
+        runtime_container_name
+    )
+    import_runtime_container_name = _runtime_container_name_for_phase(
+        runtime_container_name, phase="import"
+    )
+    query_runtime_container_name = _runtime_container_name_for_phase(
+        runtime_container_name, phase="query"
     )
     runtime_container_exists = False
     was_running = False
 
     if manage_runtime:
         runtime_container_exists = _container_exists(
-            container_name=container_name, deadline=deadline
+            container_name=runtime_container_name, deadline=deadline
         )
         if runtime_container_exists:
             was_running = _is_container_running(
-                container_name=container_name, deadline=deadline
+                container_name=runtime_container_name, deadline=deadline
             )
             if was_running:
                 append_log(
                     "ANALYZE",
-                    f"[neo4j_import] 停止运行中的 Neo4j 容器: {container_name}",
+                    f"[neo4j_import] 停止运行中的 Neo4j 容器: {runtime_container_name}",
                 )
-                _stop_container(container_name=container_name, deadline=deadline)
+                _stop_container(
+                    container_name=runtime_container_name, deadline=deadline
+                )
             else:
                 append_log(
                     "ANALYZE",
-                    f"[neo4j_import] 导入前 Neo4j 容器未运行，导入后将启动: {container_name}",
+                    f"[neo4j_import] 导入前 Neo4j 容器未运行，导入后将启动: {runtime_container_name}",
                 )
         else:
             append_log(
                 "ANALYZE",
-                f"[neo4j_import] 导入前 Neo4j 容器不存在，导入后将创建并启动: {container_name}",
+                f"[neo4j_import] 导入前 Neo4j 容器不存在，导入后将创建并启动: {runtime_container_name}",
             )
-    elif manage_ephemeral_runtime and _container_exists(
-        container_name=container_name, deadline=deadline
-    ):
-        append_log(
-            "ANALYZE",
-            f"[neo4j_import] 清理历史任务 Neo4j 容器: {container_name}",
-        )
-        _remove_container(
-            container_name=container_name,
-            deadline=deadline,
-            ignore_missing=True,
-        )
+    elif manage_ephemeral_runtime:
+        for stale_container in (
+            import_runtime_container_name,
+            query_runtime_container_name,
+        ):
+            if not stale_container:
+                continue
+            if _container_exists(container_name=stale_container, deadline=deadline):
+                append_log(
+                    "ANALYZE",
+                    f"[neo4j_import] 清理历史任务 Neo4j 容器: {stale_container}",
+                )
+                _remove_container(
+                    container_name=stale_container,
+                    deadline=deadline,
+                    ignore_missing=True,
+                )
 
     import_error: AppError | None = None
     import_result: subprocess.CompletedProcess[str] | None = None
@@ -554,23 +571,26 @@ def _run_builtin_neo4j_import(
                     action = "重启" if was_running else "启动"
                     append_log(
                         "ANALYZE",
-                        f"[neo4j_import] {action} Neo4j 容器: {container_name}",
+                        f"[neo4j_import] {action} Neo4j 容器: {runtime_container_name}",
                     )
-                    _start_container(container_name=container_name, deadline=deadline)
+                    _start_container(
+                        container_name=runtime_container_name, deadline=deadline
+                    )
                 elif should_create_runtime:
                     append_log(
                         "ANALYZE",
-                        f"[neo4j_import] 创建并启动 Neo4j 运行时容器: {container_name}",
+                        f"[neo4j_import] 创建并启动 Neo4j 运行时容器: {runtime_container_name}",
                     )
                     _run_ephemeral_runtime_container(
                         image=image,
-                        container_name=container_name,
+                        container_name=runtime_container_name,
                         data_mount=data_mount,
                         uri=runtime_uri,
                         password=runtime_password,
                         network=runtime_network,
                         network_alias=runtime_network_alias,
                         network_auto_create=runtime_network_auto_create,
+                        runtime_phase="runtime",
                         deadline=deadline,
                     )
                 if restart_wait_seconds > 0:
@@ -582,7 +602,7 @@ def _run_builtin_neo4j_import(
                     should_start_existing or should_create_runtime
                 ):
                     _wait_for_ephemeral_runtime_ready(
-                        container_name=container_name,
+                        container_name=runtime_container_name,
                         uri=runtime_uri,
                         user=runtime_user,
                         password=runtime_password,
@@ -600,30 +620,91 @@ def _run_builtin_neo4j_import(
                     )
                     append_log(
                         "ANALYZE",
-                        f"[neo4j_import] Neo4j 运行时就绪: {container_name}, uri={runtime_uri}",
+                        f"[neo4j_import] Neo4j 运行时就绪: {runtime_container_name}, uri={runtime_uri}",
                     )
             except Exception as exc:
                 restart_error = AppError(
                     code="SCAN_EXTERNAL_IMPORT_FAILED",
                     status_code=422,
                     message="Neo4j 运行时重启失败",
-                    detail={"container_name": container_name, "error": str(exc)},
+                    detail={
+                        "container_name": runtime_container_name,
+                        "error": str(exc),
+                    },
                 )
         elif manage_ephemeral_runtime and import_error is None:
             try:
                 append_log(
                     "ANALYZE",
-                    f"[neo4j_import] 创建并启动任务级 Neo4j 容器: {container_name}",
+                    f"[neo4j_import] 启动导入阶段 Neo4j 容器: {import_runtime_container_name}",
                 )
-                ephemeral_runtime_metadata = _run_ephemeral_runtime_container(
+                import_runtime_metadata = _run_ephemeral_runtime_container(
                     image=image,
-                    container_name=container_name,
+                    container_name=import_runtime_container_name,
                     data_mount=data_mount,
                     uri=runtime_uri,
                     password=runtime_password,
                     network=runtime_network,
                     network_alias=runtime_network_alias,
                     network_auto_create=runtime_network_auto_create,
+                    runtime_phase="import",
+                    deadline=deadline,
+                )
+                ephemeral_runtime_metadata = dict(import_runtime_metadata)
+                if restart_wait_seconds > 0:
+                    sleep_seconds = min(
+                        restart_wait_seconds, _remaining_seconds(deadline)
+                    )
+                    time.sleep(max(0, sleep_seconds))
+                _wait_for_container_running(
+                    container_name=str(
+                        import_runtime_metadata.get("container_name") or ""
+                    ),
+                    retry=int(
+                        getattr(settings, "scan_external_neo4j_connect_retry", 15)
+                    ),
+                    wait_seconds=int(
+                        getattr(settings, "scan_external_neo4j_connect_wait_seconds", 2)
+                    ),
+                    deadline=deadline,
+                )
+                append_log(
+                    "ANALYZE",
+                    (
+                        "[neo4j_import] 导入阶段 Neo4j 容器已运行: "
+                        f"{import_runtime_metadata.get('container_name')}, "
+                        f"uri={import_runtime_metadata.get('uri')}"
+                    ),
+                )
+                cleanup_ephemeral_runtime_resources(
+                    container_name=str(
+                        import_runtime_metadata.get("container_name") or ""
+                    )
+                    or None,
+                    data_mount=None,
+                    network_name=None,
+                    cleanup_network=False,
+                    deadline=deadline,
+                )
+                append_log(
+                    "ANALYZE",
+                    f"[neo4j_import] 导入阶段 Neo4j 容器已销毁: {import_runtime_container_name}",
+                )
+
+                append_log(
+                    "ANALYZE",
+                    f"[neo4j_import] 启动查询阶段 Neo4j 容器: {query_runtime_container_name}",
+                )
+                ephemeral_runtime_metadata = _run_ephemeral_runtime_container(
+                    image=image,
+                    container_name=query_runtime_container_name,
+                    data_mount=data_mount,
+                    uri=runtime_uri,
+                    password=runtime_password,
+                    network=runtime_network,
+                    network_alias=runtime_network_alias,
+                    network_auto_create=runtime_network_auto_create,
+                    runtime_phase="query",
                     deadline=deadline,
                 )
                 if restart_wait_seconds > 0:
@@ -631,9 +712,14 @@ def _run_builtin_neo4j_import(
                         restart_wait_seconds, _remaining_seconds(deadline)
                     )
                     time.sleep(max(0, sleep_seconds))
+                query_runtime_uri = str(
+                    ephemeral_runtime_metadata.get("uri") or runtime_uri
+                )
                 _wait_for_ephemeral_runtime_ready(
-                    container_name=container_name,
-                    uri=runtime_uri,
+                    container_name=str(
+                        ephemeral_runtime_metadata.get("container_name") or ""
+                    ),
+                    uri=query_runtime_uri,
                     user=runtime_user,
                     password=runtime_password,
                     connect_retry=int(
@@ -648,6 +734,11 @@ def _run_builtin_neo4j_import(
                     ),
                     deadline=deadline,
                 )
+                context.base_env["CODESCOPE_SCAN_NEO4J_URI"] = query_runtime_uri
+                context.base_env["CODESCOPE_SCAN_NEO4J_RUNTIME_CONTAINER_NAME"] = str(
+                    ephemeral_runtime_metadata.get("container_name")
+                    or query_runtime_container_name
+                )
                 if ephemeral_runtime_metadata:
                     write_runtime_metadata(
                         reports_dir=context.reports_dir,
@@ -655,13 +746,22 @@ def _run_builtin_neo4j_import(
                     )
                 append_log(
                     "ANALYZE",
-                    f"[neo4j_import] 任务级 Neo4j 容器就绪: {container_name}, uri={runtime_uri}",
+                    (
+                        "[neo4j_import] 查询阶段 Neo4j 容器就绪: "
+                        f"{ephemeral_runtime_metadata.get('container_name')}, "
+                        f"uri={query_runtime_uri}"
+                    ),
                 )
             except Exception as exc:
                 cleanup_detail: dict[str, object] = {}
                 try:
                     cleanup_detail = cleanup_ephemeral_runtime_resources(
-                        container_name=container_name,
+                        container_name=str(
+                            ephemeral_runtime_metadata.get("container_name")
+                            or query_runtime_container_name
+                            or import_runtime_container_name
+                        )
+                        or None,
                         data_mount=data_mount,
                         network_name=str(
                             ephemeral_runtime_metadata.get("network") or ""
@@ -679,7 +779,11 @@ def _run_builtin_neo4j_import(
                     status_code=422,
                     message="Neo4j 任务级运行时启动失败",
                     detail={
-                        "container_name": container_name,
+                        "container_name": str(
+                            ephemeral_runtime_metadata.get("container_name")
+                            or query_runtime_container_name
+                            or import_runtime_container_name
+                        ),
                         "error": str(exc),
                         "runtime_cleanup": cleanup_detail,
                     },
@@ -827,6 +931,7 @@ def _run_builtin_rules(
     settings: Any,
     context: ExternalScanContext,
     append_log: Callable[[str, str], None],
+    on_rule_finding: Callable[[dict[str, object]], None] | None = None,
 ) -> tuple[str, str]:
     rules_dir = Path(context.base_env.get("CODESCOPE_SCAN_RULES_DIR") or "")
     if not rules_dir.exists() or not rules_dir.is_dir():
@@ -885,6 +990,7 @@ def _run_builtin_rules(
     rule_results: list[dict[str, object]] = []
     succeeded_rule_count = 0
     total_rule_count = len(rule_files)
+    emitted_finding_count = 0
     for index, rule_file in enumerate(rule_files, start=1):
         rule_key = _rule_key_from_file(rule_file)
         append_log(
@@ -893,7 +999,20 @@ def _run_builtin_rules(
         )
         started = time.monotonic()
         try:
-            summary = execute_cypher_file(
+
+            def _on_rule_record(record: dict[str, object]) -> None:
+                nonlocal emitted_finding_count
+                finding_hit = _build_finding_from_rule_record(
+                    rule_key=rule_key,
+                    record=record,
+                )
+                if finding_hit is None:
+                    return
+                emitted_finding_count += 1
+                if on_rule_finding is not None:
+                    on_rule_finding(finding_hit)
+
+            summary = execute_cypher_file_stream(
                 cypher_file=rule_file,
                 uri=(
                     str(context.base_env.get("CODESCOPE_SCAN_NEO4J_URI") or "").strip()
@@ -920,6 +1039,7 @@ def _run_builtin_rules(
                 connect_wait_seconds=int(
                     settings.scan_external_neo4j_connect_wait_seconds
                 ),
+                on_record=_on_rule_record,
             )
             duration_ms = int((time.monotonic() - started) * 1000)
             rule_rows[rule_key] = summary.total_rows
@@ -1052,11 +1172,142 @@ def _run_builtin_rules(
             "failed_rule_keys": execution_summary["failed_rule_keys"],
             "partial_failures": len(partial_failures),
             "partial_failure_effect": execution_summary["partial_failure_effect"],
+            "emitted_findings": emitted_finding_count,
             "rule_results": rule_results,
         },
         ensure_ascii=False,
     )
     return stdout, ""
+
+
+def _build_finding_from_rule_record(
+    *, rule_key: str, record: dict[str, object]
+) -> dict[str, object] | None:
+    candidate = _select_rule_record_candidate(record)
+    if not isinstance(candidate, dict):
+        return None
+    kind = str(candidate.get("kind") or "").strip().lower()
+    if kind == "path":
+        return _build_path_finding(rule_key=rule_key, path_payload=candidate)
+    if kind == "node":
+        return _build_node_finding(rule_key=rule_key, node_payload=candidate)
+    return None
+
+
+def _select_rule_record_candidate(
+    record: dict[str, object],
+) -> dict[str, object] | None:
+    preferred = record.get("path")
+    if isinstance(preferred, dict):
+        return preferred
+    for value in record.values():
+        if isinstance(value, dict) and str(value.get("kind") or "") in {"path", "node"}:
+            return value
+    return None
+
+
+def _build_path_finding(
+    *, rule_key: str, path_payload: dict[str, object]
+) -> dict[str, object] | None:
+    nodes = path_payload.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return None
+    steps = [
+        _build_path_step_payload(node_payload=item, index=index)
+        for index, item in enumerate(nodes)
+        if isinstance(item, dict)
+    ]
+    if not steps:
+        return None
+    source = steps[0]
+    sink = steps[-1]
+    sink_file = str(sink.get("file") or "").strip() or None
+    source_file = str(source.get("file") or "").strip() or None
+    sink_line = _safe_int(sink.get("line"))
+    source_line = _safe_int(source.get("line"))
+    location_file = sink_file or source_file
+    location_line = sink_line if sink_line is not None else source_line
+    return {
+        "rule_key": rule_key,
+        "file_path": location_file,
+        "line_start": location_line,
+        "line_end": location_line,
+        "source_file": source_file,
+        "source_line": source_line,
+        "sink_file": sink_file,
+        "sink_line": sink_line,
+        "has_path": True,
+        "path_length": max(0, len(steps) - 1),
+        "evidence": {
+            "match_kind": "path",
+            "path_nodes": len(steps),
+            "labels": list(
+                dict.fromkeys(label for step in steps for label in step["labels"])
+            ),
+        },
+        "paths": [
+            {
+                "path_length": max(0, len(steps) - 1),
+                "steps": steps,
+            }
+        ],
+    }
+
+
+def _build_node_finding(
+    *, rule_key: str, node_payload: dict[str, object]
+) -> dict[str, object]:
+    props = (
+        node_payload.get("props") if isinstance(node_payload.get("props"), dict) else {}
+    )
+    file_path = str(props.get("file") or "").strip() or None
+    line_no = _safe_int(props.get("line"))
+    return {
+        "rule_key": rule_key,
+        "file_path": file_path,
+        "line_start": line_no,
+        "line_end": line_no,
+        "source_file": None,
+        "source_line": None,
+        "sink_file": file_path,
+        "sink_line": line_no,
+        "has_path": False,
+        "path_length": None,
+        "evidence": {
+            "match_kind": "node",
+            "labels": list(node_payload.get("labels") or []),
+            "node_ref": str(node_payload.get("node_ref") or "node"),
+        },
+        "paths": [],
+    }
+
+
+def _build_path_step_payload(
+    *, node_payload: dict[str, object], index: int
+) -> dict[str, object]:
+    props = (
+        node_payload.get("props") if isinstance(node_payload.get("props"), dict) else {}
+    )
+    code_snippet = str(props.get("code") or "").strip() or None
+    if code_snippet and len(code_snippet) > 240:
+        code_snippet = f"{code_snippet[:240]}..."
+    return {
+        "step_id": index,
+        "labels": [str(item) for item in node_payload.get("labels") or [] if str(item)],
+        "file": str(props.get("file") or "").strip() or None,
+        "line": _safe_int(props.get("line")),
+        "func_name": str(props.get("method") or props.get("name") or "").strip()
+        or None,
+        "code_snippet": code_snippet,
+        "node_ref": str(node_payload.get("node_ref") or f"step-{index}"),
+    }
+
+
+def _safe_int(value: object) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _run_command_with_deadline(
@@ -1406,6 +1657,8 @@ def _run_ephemeral_runtime_container(
     network: str,
     network_alias: str,
     network_auto_create: bool,
+    runtime_phase: str = "query",
+    publish_bolt: bool = True,
     deadline: float,
 ) -> dict[str, object]:
     docker_network, docker_network_alias = _resolve_ephemeral_runtime_networking(
@@ -1438,7 +1691,7 @@ def _run_ephemeral_runtime_container(
         cmd.extend(["--network", docker_network])
     if docker_network_alias:
         cmd.extend(["--network-alias", docker_network_alias])
-    publish_arg = _build_bolt_publish_arg(uri=uri)
+    publish_arg = _build_bolt_publish_arg(uri=uri) if publish_bolt else None
     if publish_arg:
         cmd.extend(["-p", publish_arg])
     cmd.append(image)
@@ -1455,7 +1708,23 @@ def _run_ephemeral_runtime_container(
                 "stderr": _tail_text(result.stderr),
             },
         )
+    runtime_uri = uri
+    published_port = None
+    if publish_bolt:
+        runtime_uri, published_port = _resolve_runtime_uri_after_start(
+            container_name=container_name,
+            configured_uri=uri,
+            network_alias=docker_network_alias,
+            deadline=deadline,
+        )
     return {
+        "phase": runtime_phase,
+        "restart_mode": DOCKER_EPHEMERAL_RUNTIME_MODE,
+        "container_name": container_name,
+        "data_mount": data_mount,
+        "uri": runtime_uri,
+        "published_port": published_port,
+        "publish_bolt": publish_bolt,
         "network": docker_network,
         "network_alias": docker_network_alias,
         "network_created_by_job": network_created_by_job,
@@ -1508,16 +1777,79 @@ def _build_neo4j_auth_value(*, password: str) -> str:
     return f"neo4j/{secret}"
 
 
+def _runtime_container_name_for_phase(container_name: str, *, phase: str) -> str:
+    base = container_name.strip()
+    suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", phase).strip("-") or "runtime"
+    if not base:
+        return ""
+    return f"{base}-{suffix}"
+
+
 def _build_bolt_publish_arg(*, uri: str) -> str | None:
     parsed = urlparse(uri)
-    if parsed.port is None:
-        return None
     host = (parsed.hostname or "").strip().lower()
     if host in {"127.0.0.1", "localhost"}:
-        return f"127.0.0.1:{parsed.port}:7687"
+        return "127.0.0.1::7687"
     if host == "0.0.0.0":
-        return f"0.0.0.0:{parsed.port}:7687"
+        return "0.0.0.0::7687"
     return None
+
+
+def _resolve_runtime_uri_after_start(
+    *,
+    container_name: str,
+    configured_uri: str,
+    network_alias: str,
+    deadline: float,
+) -> tuple[str, int | None]:
+    parsed = urlparse(configured_uri)
+    scheme = parsed.scheme or "bolt"
+    host = (parsed.hostname or "").strip()
+    if not _uri_host_requires_runtime_network(host=host):
+        published_port = _inspect_container_host_port(
+            container_name=container_name,
+            deadline=deadline,
+        )
+        return f"{scheme}://127.0.0.1:{published_port}", published_port
+
+    runtime_host = network_alias.strip() or host or "neo4j"
+    runtime_port = parsed.port or 7687
+    return f"{scheme}://{runtime_host}:{runtime_port}", None
+
+
+def _inspect_container_host_port(*, container_name: str, deadline: float) -> int:
+    cmd = ["docker", "port", container_name, "7687/tcp"]
+    port_deadline = min(deadline, time.monotonic() + 30)
+    last_stdout = ""
+    last_stderr = ""
+    last_output = ""
+
+    while True:
+        result = _run_command_with_deadline(cmd, deadline=deadline)
+        last_stdout = result.stdout or ""
+        last_stderr = result.stderr or ""
+        last_output = last_stdout.strip()
+        if result.returncode == 0 and last_output:
+            port_text = last_output.splitlines()[-1].rsplit(":", 1)[-1].strip()
+            try:
+                return int(port_text)
+            except ValueError:
+                pass
+        if time.monotonic() >= port_deadline:
+            break
+        time.sleep(1)
+
+    raise AppError(
+        code="SCAN_EXTERNAL_IMPORT_FAILED",
+        status_code=422,
+        message="无法识别 Neo4j 容器映射端口",
+        detail={
+            "container_name": container_name,
+            "stdout": _tail_text(last_stdout),
+            "stderr": _tail_text(last_stderr),
+            "output": _tail_text(last_output),
+        },
+    )
 
 
 def _resolve_ephemeral_runtime_networking(
@@ -1638,11 +1970,20 @@ def _wait_for_ephemeral_runtime_ready(
             connect_wait_seconds=wait_seconds,
         )
     except AppError as exc:
+        logs_tail = _read_container_logs_tail(
+            container_name=container_name,
+            deadline=deadline,
+        )
         raise AppError(
             code="SCAN_EXTERNAL_IMPORT_FAILED",
             status_code=422,
             message="任务级 Neo4j 运行时未就绪",
-            detail={"container_name": container_name, "uri": uri, "error": str(exc)},
+            detail={
+                "container_name": container_name,
+                "uri": uri,
+                "error": str(exc),
+                "container_logs_tail": logs_tail,
+            },
         ) from exc
 
 
@@ -1673,10 +2014,38 @@ def _wait_for_container_running(
     )
 
 
+def _read_container_logs_tail(*, container_name: str, deadline: float) -> str:
+    try:
+        result = _run_command_with_deadline(
+            ["docker", "logs", "--tail", "120", container_name],
+            deadline=deadline,
+        )
+    except Exception as exc:
+        return f"<unavailable: {exc}>"
+    text = (
+        (result.stdout or "")
+        + ("\n" if result.stdout and result.stderr else "")
+        + (result.stderr or "")
+    )
+    return _tail_text(text, max_chars=4000)
+
+
 def _remove_data_mount(*, data_mount: str, deadline: float) -> None:
     if _looks_like_path_mount(data_mount):
-        target = Path(data_mount)
+        target = _absolute_path_without_resolve(data_mount)
         if target.exists():
+            if not _is_allowed_cleanup_host_path(target=target):
+                raise AppError(
+                    code="SCAN_EXTERNAL_IMPORT_FAILED",
+                    status_code=422,
+                    message="拒绝删除白名单之外的宿主机 Neo4j 数据目录",
+                    detail={
+                        "data_mount": str(target),
+                        "allowed_roots": [
+                            str(item) for item in _cleanup_host_path_allowlist_roots()
+                        ],
+                    },
+                )
             shutil.rmtree(target, ignore_errors=False)
         return
 
@@ -1728,6 +2097,33 @@ def _looks_like_path_mount(value: str) -> bool:
         or "\\" in cleaned
         or re.match(r"^[A-Za-z]:", cleaned) is not None
     )
+
+
+def _absolute_path_without_resolve(path: Path | str) -> Path:
+    return Path(os.path.abspath(os.path.normpath(str(path))))
+
+
+def _cleanup_host_path_allowlist_roots() -> list[Path]:
+    raw_value = str(
+        getattr(get_settings(), "scan_external_cleanup_host_path_allowlist", "") or ""
+    )
+    roots: list[Path] = []
+    for item in re.split(r"[,;\n]", raw_value):
+        cleaned = item.strip()
+        if not cleaned:
+            continue
+        roots.append(_absolute_path_without_resolve(cleaned))
+    return roots
+
+
+def _is_allowed_cleanup_host_path(*, target: Path) -> bool:
+    for root in _cleanup_host_path_allowlist_roots():
+        try:
+            target.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def _neo4j_admin_resolver_shell() -> str:

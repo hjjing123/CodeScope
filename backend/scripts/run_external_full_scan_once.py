@@ -158,7 +158,7 @@ def _configure_settings(*, settings, temp_root: Path) -> None:
         "CODESCOPE_SCAN_EXTERNAL_IMPORT_DOCKER_IMAGE", "neo4j:latest"
     )
     settings.scan_external_import_data_mount = os.getenv(
-        "CODESCOPE_SCAN_EXTERNAL_IMPORT_DATA_MOUNT", "data"
+        "CODESCOPE_SCAN_EXTERNAL_IMPORT_DATA_MOUNT", "codescope_neo4j_data_{job_id}"
     )
     settings.scan_external_import_database = settings.scan_external_neo4j_database
     settings.scan_external_import_clean_db = True
@@ -166,10 +166,10 @@ def _configure_settings(*, settings, temp_root: Path) -> None:
     settings.scan_external_import_multiline_fields = True
     settings.scan_external_import_array_delimiter = "\\001"
 
-    settings.scan_external_neo4j_runtime_restart_mode = "docker"
+    settings.scan_external_neo4j_runtime_restart_mode = "docker_ephemeral"
     settings.scan_external_neo4j_runtime_container_name = os.getenv(
         "CODESCOPE_SCAN_EXTERNAL_NEO4J_CONTAINER_NAME",
-        "CodeScope_neo4j",
+        "codescope_neo4j_{job_id}",
     )
     settings.scan_external_neo4j_runtime_restart_wait_seconds = 8
 

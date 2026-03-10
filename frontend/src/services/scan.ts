@@ -57,4 +57,14 @@ export class ScanService {
     });
     return res.data;
   }
+
+  static buildJobLogsStreamUrl(jobId: string, seq = 0): string {
+    const params = new URLSearchParams({ seq: String(seq) });
+    return `/api/v1/jobs/${jobId}/logs/stream?${params.toString()}`;
+  }
+
+  static buildJobEventsStreamUrl(jobId: string, afterId = 0): string {
+    const params = new URLSearchParams({ after_id: String(afterId) });
+    return `/api/v1/jobs/${jobId}/events/stream?${params.toString()}`;
+  }
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 from app.core.errors import AppError
 
@@ -23,6 +24,29 @@ def execute_cypher_file(
     database: str,
     connect_retry: int,
     connect_wait_seconds: int,
+) -> CypherExecutionSummary:
+    return execute_cypher_file_stream(
+        cypher_file=cypher_file,
+        uri=uri,
+        user=user,
+        password=password,
+        database=database,
+        connect_retry=connect_retry,
+        connect_wait_seconds=connect_wait_seconds,
+        on_record=None,
+    )
+
+
+def execute_cypher_file_stream(
+    *,
+    cypher_file: Path,
+    uri: str,
+    user: str,
+    password: str,
+    database: str,
+    connect_retry: int,
+    connect_wait_seconds: int,
+    on_record: Callable[[dict[str, Any]], None] | None,
 ) -> CypherExecutionSummary:
     if not cypher_file.exists() or not cypher_file.is_file():
         raise AppError(
@@ -47,7 +71,12 @@ def execute_cypher_file(
             message="缺少 neo4j Python 驱动，请安装依赖 neo4j",
         ) from exc
 
-    driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=5)
+    auth = (
+        (user, password)
+        if str(user or "").strip() or str(password or "").strip()
+        else None
+    )
+    driver = GraphDatabase.driver(uri, auth=auth, connection_timeout=5)
     try:
         _verify_connectivity(
             driver=driver,
@@ -71,7 +100,12 @@ def execute_cypher_file(
                     result.consume()
                     row_counts.append(0)
                     continue
-                row_counts.append(len(list(result)))
+                row_count = 0
+                for record in result:
+                    row_count += 1
+                    if on_record is not None:
+                        on_record(_serialize_record(record))
+                row_counts.append(row_count)
 
         return CypherExecutionSummary(
             statement_count=len(statements),
@@ -89,6 +123,90 @@ def execute_cypher_file(
         ) from exc
     finally:
         driver.close()
+
+
+def _serialize_record(record: Any) -> dict[str, Any]:
+    keys = list(record.keys()) if hasattr(record, "keys") else []
+    payload: dict[str, Any] = {}
+    for key in keys:
+        payload[str(key)] = _serialize_graph_value(record.get(key))
+    return payload
+
+
+def _serialize_graph_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_serialize_graph_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_serialize_graph_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _serialize_graph_value(item) for key, item in value.items()}
+    if _looks_like_path(value):
+        nodes = [_serialize_graph_node(node) for node in getattr(value, "nodes", [])]
+        return {
+            "kind": "path",
+            "length": max(0, len(getattr(value, "relationships", []))),
+            "nodes": nodes,
+        }
+    if _looks_like_node(value):
+        return _serialize_graph_node(value)
+    if _looks_like_relationship(value):
+        return {
+            "kind": "relationship",
+            "type": str(getattr(value, "type", "") or ""),
+            "props": _serialize_graph_items(value),
+        }
+    return str(value)
+
+
+def _serialize_graph_node(node: Any) -> dict[str, Any]:
+    props = _serialize_graph_items(node)
+    node_ref = str(
+        props.get("id")
+        or getattr(node, "element_id", "")
+        or props.get("name")
+        or props.get("fullName")
+        or ""
+    )
+    return {
+        "kind": "node",
+        "labels": sorted(
+            str(item) for item in getattr(node, "labels", []) if str(item)
+        ),
+        "node_ref": node_ref or "node",
+        "props": props,
+    }
+
+
+def _serialize_graph_items(value: Any) -> dict[str, Any]:
+    if not hasattr(value, "items"):
+        return {}
+    try:
+        items = value.items()
+    except Exception:
+        return {}
+    return {str(key): _serialize_graph_value(item) for key, item in items}
+
+
+def _looks_like_path(value: Any) -> bool:
+    return hasattr(value, "nodes") and hasattr(value, "relationships")
+
+
+def _looks_like_node(value: Any) -> bool:
+    return (
+        hasattr(value, "labels")
+        and hasattr(value, "items")
+        and not _looks_like_path(value)
+    )
+
+
+def _looks_like_relationship(value: Any) -> bool:
+    return (
+        hasattr(value, "items")
+        and hasattr(value, "type")
+        and not _looks_like_node(value)
+    )
 
 
 def drop_database_if_exists(
@@ -114,7 +232,12 @@ def drop_database_if_exists(
             message="缺少 neo4j Python 驱动，请安装依赖 neo4j",
         ) from exc
 
-    driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=5)
+    auth = (
+        (user, password)
+        if str(user or "").strip() or str(password or "").strip()
+        else None
+    )
+    driver = GraphDatabase.driver(uri, auth=auth, connection_timeout=5)
     try:
         _verify_connectivity(
             driver=driver,
@@ -165,7 +288,12 @@ def verify_neo4j_connectivity(
             message="缺少 neo4j Python 驱动，请安装依赖 neo4j",
         ) from exc
 
-    driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=5)
+    auth = (
+        (user, password)
+        if str(user or "").strip() or str(password or "").strip()
+        else None
+    )
+    driver = GraphDatabase.driver(uri, auth=auth, connection_timeout=5)
     try:
         _verify_connectivity(
             driver=driver,

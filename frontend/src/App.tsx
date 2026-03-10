@@ -16,6 +16,7 @@ import { workspaceSections } from './config/workspaceSections';
 
 const CodeManagementPage = lazy(() => import('./pages/CodeManagementPage'));
 const ScanTasksPage = lazy(() => import('./pages/ScanTasksPage'));
+const FindingsPage = lazy(() => import('./pages/FindingsPage'));
 
 const RouteFallback = () => (
   <div style={{ display: 'flex', justifyContent: 'center', padding: '48px 0' }}>
@@ -84,13 +85,22 @@ function App() {
             <Route path="log-center" element={<LogCenterPage />} />
             <Route path="rules" element={<RuleCenterPage />} />
             <Route path="rules/:ruleKey" element={<RuleDetailPage />} />
+            <Route
+              path="findings"
+              element={
+                <Suspense fallback={<RouteFallback />}>
+                  <FindingsPage />
+                </Suspense>
+              }
+            />
             {workspaceSections
               .filter(
                 (section) =>
                   section.key !== 'projects' &&
                   section.key !== 'scans' &&
                   section.key !== 'log-center' &&
-                  section.key !== 'rules'
+                  section.key !== 'rules' &&
+                  section.key !== 'findings'
               )
               .map((section) => (
                 <Route

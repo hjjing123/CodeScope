@@ -3,11 +3,12 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.core.errors import AppError
-from app.models import Finding, Job
+from app.models import Finding, FindingPath, FindingPathStep, Job
 from app.services.snapshot_storage_service import read_snapshot_file_context
 
 
@@ -39,6 +40,15 @@ def query_finding_paths(
 ) -> list[dict[str, object]]:
     normalized_mode = _normalize_mode(mode)
     safe_limit = min(max(1, int(limit)), 20)
+
+    persisted_paths = _query_persisted_finding_paths(
+        db=db,
+        finding_id=finding.id,
+        mode=normalized_mode,
+        limit=safe_limit,
+    )
+    if persisted_paths:
+        return persisted_paths
 
     if not bool(getattr(finding, "has_path", False)):
         raise AppError(
@@ -142,6 +152,50 @@ def query_finding_paths(
         ) from exc
     finally:
         driver.close()
+
+
+def _query_persisted_finding_paths(
+    *, db: Session, finding_id, mode: str, limit: int
+) -> list[dict[str, object]]:
+    rows = db.scalars(
+        select(FindingPath)
+        .where(FindingPath.finding_id == finding_id)
+        .order_by(FindingPath.path_length.asc(), FindingPath.path_order.asc())
+        .limit(limit if mode == "all" else 1)
+    ).all()
+    if not rows:
+        return []
+
+    results: list[dict[str, object]] = []
+    for path_index, row in enumerate(rows):
+        steps = db.scalars(
+            select(FindingPathStep)
+            .where(FindingPathStep.finding_path_id == row.id)
+            .order_by(FindingPathStep.step_order.asc())
+        ).all()
+        results.append(
+            {
+                "path_id": path_index,
+                "path_length": int(row.path_length or 0),
+                "steps": [
+                    {
+                        "step_id": int(step.step_order),
+                        "labels": [
+                            str(item)
+                            for item in step.labels_json or []
+                            if isinstance(item, str) and item.strip()
+                        ],
+                        "file": step.file_path,
+                        "line": step.line_no,
+                        "func_name": step.func_name,
+                        "code_snippet": step.code_snippet,
+                        "node_ref": step.node_ref,
+                    }
+                    for step in steps
+                ],
+            }
+        )
+    return results
 
 
 def load_finding_path_context(

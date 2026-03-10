@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from app.config import get_settings
 from app.core.errors import AppError
 from app.services.scan_external import builtin as builtin_module
 from app.services.scan_external import context as context_module
@@ -709,6 +711,8 @@ def test_run_builtin_neo4j_import_creates_ephemeral_runtime_container(
         executed.append(list(command))
         if command[:2] == ["docker", "inspect"]:
             return subprocess.CompletedProcess(command, 1, "", "No such container")
+        if command[:2] == ["docker", "port"]:
+            return subprocess.CompletedProcess(command, 0, "127.0.0.1:17687", "")
         if "--version" in command[-1]:
             return subprocess.CompletedProcess(command, 0, "neo4j-admin 5.26.0", "")
         if command[:3] == ["docker", "run", "-d"]:
@@ -717,6 +721,11 @@ def test_run_builtin_neo4j_import_creates_ephemeral_runtime_container(
 
     monkeypatch.setattr(builtin_module.shutil, "which", lambda _: "docker")
     monkeypatch.setattr(builtin_module, "_run_command_with_deadline", _fake_run)
+    monkeypatch.setattr(
+        builtin_module,
+        "_wait_for_container_running",
+        lambda **kwargs: None,
+    )
     monkeypatch.setattr(
         builtin_module,
         "_wait_for_ephemeral_runtime_ready",
@@ -732,17 +741,18 @@ def test_run_builtin_neo4j_import_creates_ephemeral_runtime_container(
 
     assert stderr == ""
     assert stdout == "import-ok"
-    runtime_run_cmd = next(
-        cmd for cmd in executed if cmd[:3] == ["docker", "run", "-d"]
-    )
-    assert "neo4j-job-1" in runtime_run_cmd
-    assert "127.0.0.1:17687:7687" in runtime_run_cmd
-    assert "NEO4J_AUTH=none" in runtime_run_cmd
-    assert "/host/neo4j-job-1:/data" in runtime_run_cmd
-    assert ready_calls and ready_calls[0]["container_name"] == "neo4j-job-1"
+    runtime_run_cmds = [cmd for cmd in executed if cmd[:3] == ["docker", "run", "-d"]]
+    assert len(runtime_run_cmds) == 2
+    assert "neo4j-job-1-import" in runtime_run_cmds[0]
+    assert "neo4j-job-1-query" in runtime_run_cmds[1]
+    assert "127.0.0.1::7687" in runtime_run_cmds[0]
+    assert "127.0.0.1::7687" in runtime_run_cmds[1]
+    assert "NEO4J_AUTH=none" in runtime_run_cmds[0]
+    assert "/host/neo4j-job-1:/data" in runtime_run_cmds[1]
+    assert ready_calls and ready_calls[0]["container_name"] == "neo4j-job-1-query"
     assert ready_calls[0]["uri"] == "bolt://127.0.0.1:17687"
-    assert any("创建并启动任务级 Neo4j 容器" in message for _, message in logs)
-    assert any("任务级 Neo4j 容器就绪" in message for _, message in logs)
+    assert any("启动导入阶段 Neo4j 容器" in message for _, message in logs)
+    assert any("启动查询阶段 Neo4j 容器" in message for _, message in logs)
 
 
 def test_wait_for_ephemeral_runtime_ready_checks_container_and_connectivity(
@@ -823,6 +833,11 @@ def test_run_builtin_neo4j_import_creates_ephemeral_runtime_container_with_netwo
 
     monkeypatch.setattr(builtin_module.shutil, "which", lambda _: "docker")
     monkeypatch.setattr(builtin_module, "_run_command_with_deadline", _fake_run)
+    monkeypatch.setattr(
+        builtin_module,
+        "_wait_for_container_running",
+        lambda **kwargs: None,
+    )
     monkeypatch.setattr(
         builtin_module,
         "_wait_for_ephemeral_runtime_ready",
@@ -1098,3 +1113,47 @@ def test_run_builtin_rules_strict_fails_on_execution_error(
     assert exc.detail["failure_mode"] == "strict"
     assert exc.detail["failed_rule"] == "unsafe_rule"
     assert called["count"] == 1
+
+
+def test_remove_data_mount_refuses_host_path_outside_allowlist(tmp_path: Path) -> None:
+    settings = get_settings()
+    old_allowlist = settings.scan_external_cleanup_host_path_allowlist
+    allowed_root = tmp_path / "allowed"
+    forbidden_root = tmp_path / "forbidden"
+    forbidden_root.mkdir(parents=True, exist_ok=True)
+    target = forbidden_root / "job-data"
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "marker.txt").write_text("x\n", encoding="utf-8")
+
+    settings.scan_external_cleanup_host_path_allowlist = str(allowed_root)
+    try:
+        with pytest.raises(AppError) as exc_info:
+            builtin_module._remove_data_mount(
+                data_mount=str(target),
+                deadline=time.time() + 30,
+            )
+    finally:
+        settings.scan_external_cleanup_host_path_allowlist = old_allowlist
+
+    assert exc_info.value.message == "拒绝删除白名单之外的宿主机 Neo4j 数据目录"
+    assert target.exists()
+
+
+def test_remove_data_mount_allows_host_path_within_allowlist(tmp_path: Path) -> None:
+    settings = get_settings()
+    old_allowlist = settings.scan_external_cleanup_host_path_allowlist
+    allowed_root = tmp_path / "allowed"
+    target = allowed_root / "job-data"
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "marker.txt").write_text("x\n", encoding="utf-8")
+
+    settings.scan_external_cleanup_host_path_allowlist = str(allowed_root)
+    try:
+        builtin_module._remove_data_mount(
+            data_mount=str(target),
+            deadline=time.time() + 30,
+        )
+    finally:
+        settings.scan_external_cleanup_host_path_allowlist = old_allowlist
+
+    assert not target.exists()

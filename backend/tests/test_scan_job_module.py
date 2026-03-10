@@ -30,6 +30,7 @@ from app.models import (
     VersionStatus,
     utc_now,
 )
+from app.services.job_stream_service import append_job_stream_event
 from app.security.password import hash_password
 
 
@@ -358,6 +359,94 @@ def test_scan_job_create_and_get_succeeds(client, db_session):
     assert job_resp.json()["data"]["stage"] == JobStage.CLEANUP.value
     assert job_resp.json()["data"]["result_summary"]["engine_mode"] == "stub"
     assert job_resp.json()["data"]["result_summary"]["total_findings"] >= 1
+
+
+def test_scan_job_cleanup_failure_marks_job_failed_and_logs_reason(
+    client, db_session, monkeypatch: pytest.MonkeyPatch
+):
+    from app.services import scan_service as scan_service_module
+
+    release_calls = {"count": 0}
+
+    def _fake_release_scan_workspace(*, job):
+        release_calls["count"] += 1
+        if release_calls["count"] == 1:
+            raise RuntimeError("cleanup boom")
+        return {
+            "workspace_dir": f"workspace/{job.id}",
+            "workspace_existed_before": True,
+            "workspace_exists_after": False,
+            "workspace_released": True,
+            "workspace_cleanup_error": None,
+        }
+
+    monkeypatch.setattr(
+        scan_service_module,
+        "_release_scan_workspace",
+        _fake_release_scan_workspace,
+    )
+
+    developer = _create_user(
+        db_session,
+        email="scan-cleanup-fail@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "scan-cleanup-fail-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "scan-cleanup-fail-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key(
+                {"README.md": "cleanup\n"}
+            ),
+        },
+    )
+    version_id = version_resp.json()["data"]["id"]
+
+    create_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "project_id": project_id,
+            "version_id": version_id,
+            "rule_keys": ["any_any_xss"],
+        },
+    )
+    assert create_resp.status_code == 202
+    job_id = create_resp.json()["data"]["job_id"]
+
+    job_resp = client.get(
+        f"/api/v1/jobs/{job_id}", headers=_auth_header(tokens["access_token"])
+    )
+    assert job_resp.status_code == 200
+    payload = job_resp.json()["data"]
+    assert payload["status"] == JobStatus.FAILED.value
+    assert payload["failure_stage"] == JobStage.CLEANUP.value
+    assert payload["progress"]["current_step"] == "cleanup"
+    step_by_key = {item["step_key"]: item for item in payload["steps"]}
+    assert step_by_key["archive"]["status"] == JobStepStatus.SUCCEEDED.value
+    assert step_by_key["cleanup"]["status"] == JobStepStatus.FAILED.value
+
+    log_resp = client.get(
+        f"/api/v1/jobs/{job_id}/logs",
+        headers=_auth_header(tokens["access_token"]),
+        params={"stage": JobStage.CLEANUP.value, "tail": 50},
+    )
+    assert log_resp.status_code == 200
+    joined = "\n".join(log_resp.json()["data"]["items"][0]["lines"])
+    assert "cleanup boom" in joined
+    assert "任务失败" in joined or "任务异常收口" in joined
 
 
 def test_scan_job_defaults_to_full_mode_and_all_rules(client, db_session):
@@ -1451,6 +1540,58 @@ def test_scan_job_log_stream_supports_seq_resume_and_stage_filter(client, db_ses
     assert all(item["data"]["stage"] == JobStage.PREPARE.value for item in stage_logs)
 
 
+def test_scan_job_event_stream_returns_persisted_events(client, db_session):
+    developer = _create_user(
+        db_session,
+        email="scan-event-stream@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+    project = _create_project(db_session, name="scan-event-stream-project")
+    _add_member(
+        db_session,
+        user_id=developer.id,
+        project_id=project.id,
+        role=ProjectRole.OWNER.value,
+    )
+    version = _create_version(db_session, project_id=project.id, name="event-stream-v1")
+    job = Job(
+        project_id=project.id,
+        version_id=version.id,
+        job_type=JobType.SCAN.value,
+        status=JobStatus.SUCCEEDED.value,
+        stage=JobStage.CLEANUP.value,
+        payload={},
+        result_summary={},
+        created_by=developer.id,
+        started_at=utc_now(),
+        finished_at=utc_now(),
+    )
+    db_session.add(job)
+    db_session.flush()
+    append_job_stream_event(
+        db_session,
+        job_id=job.id,
+        project_id=project.id,
+        event_type="summary_update",
+        payload={"total_findings": 3, "severity_counts": {"HIGH": 1}},
+    )
+    db_session.commit()
+
+    stream_resp = client.get(
+        f"/api/v1/jobs/{job.id}/events/stream",
+        headers=_auth_header(tokens["access_token"]),
+    )
+
+    assert stream_resp.status_code == 200
+    assert "text/event-stream" in stream_resp.headers.get("content-type", "")
+    events = _parse_sse_events(stream_resp.text)
+    assert events[0]["event"] == "summary_update"
+    assert events[0]["data"]["payload"]["total_findings"] == 3
+    assert events[-1]["event"] == "done"
+
+
 def test_scan_job_external_stage_orchestration_succeeds(
     client,
     db_session,
@@ -1458,10 +1599,12 @@ def test_scan_job_external_stage_orchestration_succeeds(
     external_scan_settings,
 ):
     from app.services.scan_external import orchestrator as orchestrator_module
+    from app.services import scan_service as scan_service_module
 
     reports_dir: Path = external_scan_settings["reports_dir"]
 
     commands: list[str] = []
+    cleanup_statuses: list[str] = []
 
     def _fake_run(command, **kwargs):
         commands.append(command)
@@ -1475,6 +1618,17 @@ def test_scan_job_external_stage_orchestration_succeeds(
         )
 
     monkeypatch.setattr(orchestrator_module.subprocess, "run", _fake_run)
+    original_release_scan_workspace = scan_service_module._release_scan_workspace
+
+    def _capture_release_scan_workspace(*, job):
+        cleanup_statuses.append(job.status)
+        return original_release_scan_workspace(job=job)
+
+    monkeypatch.setattr(
+        scan_service_module,
+        "_release_scan_workspace",
+        _capture_release_scan_workspace,
+    )
 
     developer = _create_user(
         db_session,
@@ -1534,6 +1688,7 @@ def test_scan_job_external_stage_orchestration_succeeds(
         for item in payload["result_summary"]["external_stages"]
     )
     assert len(commands) == 4
+    assert cleanup_statuses == [JobStatus.RUNNING.value]
     workspace_dir = (
         Path(external_scan_settings["settings"].scan_workspace_root)
         / project_id

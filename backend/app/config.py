@@ -104,13 +104,17 @@ class Settings(BaseSettings):
     scan_external_import_multiline_fields_format: str = ""
     scan_external_import_preflight: bool = True
     scan_external_import_preflight_check_docker: bool = True
+    scan_external_cleanup_host_path_allowlist: str = "./storage/workspaces/scans"
 
-    scan_external_neo4j_runtime_restart_mode: str = "none"
-    scan_external_neo4j_runtime_container_name: str = "CodeScope_neo4j"
+    scan_external_neo4j_runtime_restart_mode: str = "docker_ephemeral"
+    scan_external_neo4j_runtime_container_name: str = "codescope_neo4j_{job_id}"
     scan_external_neo4j_runtime_network: str = ""
     scan_external_neo4j_runtime_network_alias: str = ""
     scan_external_neo4j_runtime_network_auto_create: bool = False
     scan_external_neo4j_runtime_restart_wait_seconds: int = 10
+    scan_external_runtime_max_slots: int = 2
+    scan_external_runtime_slot_wait_seconds: int = 1
+    scan_external_runtime_slot_timeout_seconds: int = 3600
 
     celery_broker_url: str = "redis://127.0.0.1:6379/0"
     celery_result_backend: str = "redis://127.0.0.1:6379/1"

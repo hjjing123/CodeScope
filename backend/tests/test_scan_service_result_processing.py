@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.config import get_settings
+from app.models import JobStepStatus
 from app.services import artifact_service as artifact_service_module
 from app.services import scan_service as scan_service_module
 
@@ -124,6 +125,85 @@ def test_write_scan_result_archive_persists_job_summary(tmp_path: Path) -> None:
     assert payload["job_id"] == str(job_id)
     assert payload["status"] == "SUCCEEDED"
     assert payload["result_summary"]["total_findings"] == 2
+
+
+def test_build_scan_progress_payload_caps_at_99_until_job_terminal() -> None:
+    steps = [
+        SimpleNamespace(step_key="prepare", status=JobStepStatus.SUCCEEDED.value),
+        SimpleNamespace(step_key="cleanup", status=JobStepStatus.SUCCEEDED.value),
+    ]
+
+    running_payload = scan_service_module.build_scan_progress_payload(
+        steps=steps,
+        job_status="RUNNING",
+    )
+    succeeded_payload = scan_service_module.build_scan_progress_payload(
+        steps=steps,
+        job_status="SUCCEEDED",
+    )
+
+    assert running_payload["percent"] == 99
+    assert running_payload["current_step"] == "cleanup"
+    assert succeeded_payload["percent"] == 100
+
+
+def test_release_scan_workspace_does_not_depend_on_path_resolve(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = get_settings()
+    old_workspace_root = settings.scan_workspace_root
+    workspace_root = tmp_path / "scan-root"
+    job_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    workspace_dir = workspace_root / str(project_id) / str(job_id) / "external"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "marker.txt").write_text("ok\n", encoding="utf-8")
+
+    original_resolve = Path.resolve
+
+    def _boom_resolve(self, *args, **kwargs):
+        raise FileNotFoundError("resolve boom")
+
+    settings.scan_workspace_root = str(workspace_root)
+    monkeypatch.setattr(Path, "resolve", _boom_resolve)
+    try:
+        summary = scan_service_module._release_scan_workspace(
+            job=SimpleNamespace(project_id=project_id, id=job_id)
+        )
+    finally:
+        monkeypatch.setattr(Path, "resolve", original_resolve)
+        settings.scan_workspace_root = old_workspace_root
+
+    assert summary["workspace_released"] is True
+    assert not workspace_dir.exists()
+
+
+def test_release_scan_workspace_refuses_path_outside_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = get_settings()
+    old_workspace_root = settings.scan_workspace_root
+    workspace_root = tmp_path / "scan-root"
+    outside_dir = tmp_path / "outside" / "external"
+    outside_dir.mkdir(parents=True, exist_ok=True)
+    (outside_dir / "marker.txt").write_text("ok\n", encoding="utf-8")
+
+    settings.scan_workspace_root = str(workspace_root)
+    monkeypatch.setattr(
+        scan_service_module,
+        "_scan_external_workspace_dir",
+        lambda **kwargs: outside_dir,
+    )
+    try:
+        summary = scan_service_module._release_scan_workspace(
+            job=SimpleNamespace(project_id=uuid.uuid4(), id=uuid.uuid4())
+        )
+    finally:
+        settings.scan_workspace_root = old_workspace_root
+
+    assert summary["workspace_released"] is False
+    assert "outside configured root" in str(summary["workspace_cleanup_error"])
+    assert outside_dir.exists()
 
 
 def test_list_job_artifacts_includes_scan_result_archive(tmp_path: Path) -> None:

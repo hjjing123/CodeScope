@@ -46,6 +46,10 @@ from app.services.artifact_service import (
     resolve_job_artifact,
 )
 from app.services.authorization_service import ensure_project_action
+from app.services.job_stream_service import (
+    list_job_stream_events,
+    serialize_job_stream_event,
+)
 from app.services.rule_set_file_service import resolve_scan_rule_keys
 from app.services.scan_service import (
     build_scan_progress_payload,
@@ -146,7 +150,9 @@ def _job_payload(job: Job, *, steps: list[JobStep] | None = None) -> JobPayload:
         failure_stage=job.failure_stage,
         failure_category=job.failure_category,
         failure_hint=job.failure_hint or failure_hint_for_code(job.failure_code),
-        progress=build_scan_progress_payload(steps=resolved_steps),
+        progress=build_scan_progress_payload(
+            steps=resolved_steps, job_status=job.status
+        ),
         steps=build_scan_steps_payload(steps=resolved_steps),
         result_summary=job.result_summary,
         created_by=job.created_by,
@@ -488,6 +494,109 @@ def stream_job_logs(
                     event="keepalive",
                     data=keepalive_payload,
                     event_id=current_seq,
+                )
+                break
+            time.sleep(poll_interval_ms / 1000.0)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers=headers,
+    )
+
+
+@router.get("/api/v1/jobs/{job_id}/events/stream")
+def stream_job_events(
+    request: Request,
+    job_id: uuid.UUID,
+    after_id: int = Query(default=0, ge=0),
+    poll_interval_ms: int = Query(default=500, ge=100, le=5000),
+    max_wait_seconds: int = Query(default=30, ge=1, le=300),
+    db: Session = Depends(get_db),
+    _principal: AuthPrincipal = Depends(
+        require_project_resource_action(
+            "job:read",
+            resource_type="JOB",
+            resource_id_param="job_id",
+        )
+    ),
+):
+    job = db.get(Job, job_id)
+    if job is None:
+        raise AppError(code="NOT_FOUND", status_code=404, message="任务不存在")
+    if job.job_type != JobType.SCAN.value:
+        raise AppError(
+            code="INVALID_ARGUMENT", status_code=422, message="当前仅支持扫描任务事件流"
+        )
+
+    terminal_statuses = {
+        JobStatus.SUCCEEDED.value,
+        JobStatus.FAILED.value,
+        JobStatus.CANCELED.value,
+        JobStatus.TIMEOUT.value,
+    }
+
+    def stream():
+        current_id = after_id
+        started_at = time.monotonic()
+        while True:
+            events = list_job_stream_events(
+                db,
+                job_id=job.id,
+                after_id=current_id,
+                limit=500,
+            )
+            for event in events:
+                current_id = int(event.id)
+                payload = serialize_job_stream_event(event)
+                yield _encode_sse_event(
+                    event=event.event_type,
+                    data=payload,
+                    event_id=current_id,
+                )
+
+            db.expire_all()
+            latest_job = db.get(Job, job.id)
+            if latest_job is None:
+                break
+            if latest_job.status in terminal_statuses:
+                done_payload = {
+                    "id": current_id,
+                    "job_id": str(job.id),
+                    "event_type": "done",
+                    "payload": {
+                        "status": latest_job.status,
+                        "stage": latest_job.stage,
+                    },
+                    "created_at": None,
+                }
+                yield _encode_sse_event(
+                    event="done",
+                    data=done_payload,
+                    event_id=current_id,
+                )
+                break
+
+            if time.monotonic() - started_at >= max_wait_seconds:
+                keepalive_payload = {
+                    "id": current_id,
+                    "job_id": str(job.id),
+                    "event_type": "keepalive",
+                    "payload": {
+                        "status": latest_job.status,
+                        "stage": latest_job.stage,
+                    },
+                    "created_at": None,
+                }
+                yield _encode_sse_event(
+                    event="keepalive",
+                    data=keepalive_payload,
+                    event_id=current_id,
                 )
                 break
             time.sleep(poll_interval_ms / 1000.0)

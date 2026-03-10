@@ -196,16 +196,22 @@ External scan (four-stage orchestration):
   - `CODESCOPE_SCAN_EXTERNAL_IMPORT_MULTILINE_FIELDS_FORMAT`
   - `CODESCOPE_SCAN_EXTERNAL_IMPORT_PREFLIGHT`
   - `CODESCOPE_SCAN_EXTERNAL_IMPORT_PREFLIGHT_CHECK_DOCKER`
-  - `CODESCOPE_SCAN_EXTERNAL_NEO4J_RUNTIME_RESTART_MODE` (`none` or `docker`)
+  - `CODESCOPE_SCAN_EXTERNAL_CLEANUP_HOST_PATH_ALLOWLIST`
+  - `CODESCOPE_SCAN_EXTERNAL_NEO4J_RUNTIME_RESTART_MODE` (`none`, `docker`, or `docker_ephemeral`)
   - `CODESCOPE_SCAN_EXTERNAL_NEO4J_RUNTIME_CONTAINER_NAME`
   - `CODESCOPE_SCAN_EXTERNAL_NEO4J_RUNTIME_RESTART_WAIT_SECONDS`
+  - `CODESCOPE_SCAN_EXTERNAL_RUNTIME_MAX_SLOTS`
+  - `CODESCOPE_SCAN_EXTERNAL_RUNTIME_SLOT_WAIT_SECONDS`
+  - `CODESCOPE_SCAN_EXTERNAL_RUNTIME_SLOT_TIMEOUT_SECONDS`
 - Containerized backend/worker for builtin `neo4j_import`:
   - Mount docker socket: `/var/run/docker.sock:/var/run/docker.sock`
   - Mount repo workspace to keep import host path visible in container and host
-  - Recommended pair:
+  - Recommended task-scoped pair:
     - `CODESCOPE_SCAN_EXTERNAL_IMPORT_CSV_HOST_PATH=/workspace/backend/storage/workspaces/scans`
-    - `CODESCOPE_SCAN_EXTERNAL_IMPORT_DATA_MOUNT=codescope_neo4j_data`
-  - Runtime container name should match compose service: `CODESCOPE_SCAN_EXTERNAL_NEO4J_RUNTIME_CONTAINER_NAME=CodeScope_neo4j`
+    - `CODESCOPE_SCAN_EXTERNAL_IMPORT_DATA_MOUNT=codescope_neo4j_data_{job_id}`
+  - If `CODESCOPE_SCAN_EXTERNAL_IMPORT_DATA_MOUNT` uses a host path instead of a Docker volume name, cleanup only deletes paths under `CODESCOPE_SCAN_EXTERNAL_CLEANUP_HOST_PATH_ALLOWLIST`
+  - Recommended runtime mode: `CODESCOPE_SCAN_EXTERNAL_NEO4J_RUNTIME_RESTART_MODE=docker_ephemeral`
+  - Recommended runtime container template: `CODESCOPE_SCAN_EXTERNAL_NEO4J_RUNTIME_CONTAINER_NAME=codescope_neo4j_{job_id}`
 
 Optional live smoke test (requires reachable Neo4j):
 
@@ -217,5 +223,5 @@ Optional live full smoke (includes builtin Joern + neo4j-admin import):
 
 - `CODESCOPE_RUN_EXTERNAL_FULL_SMOKE=1`
 - `CODESCOPE_SCAN_EXTERNAL_NEO4J_PASSWORD=<password>`
-- Optional: `CODESCOPE_SCAN_EXTERNAL_NEO4J_RUNTIME_CONTAINER_NAME=CodeScope_neo4j`
+- Optional: `CODESCOPE_SCAN_EXTERNAL_NEO4J_RUNTIME_CONTAINER_NAME=codescope_neo4j_{job_id}`
 - Run: `python -m pytest tests/test_scan_job_module.py -q -k full_smoke`

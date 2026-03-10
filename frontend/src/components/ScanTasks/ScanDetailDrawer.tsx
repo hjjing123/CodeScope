@@ -5,11 +5,25 @@ import { LoadingOutlined, ReloadOutlined } from '@ant-design/icons';
 import { ScanService } from '../../services/scan';
 import type { Job, JobLog } from '../../types/scan';
 import dayjs from 'dayjs';
+import { openSseStream } from '../../utils/sse';
 
 const { Text, Title } = Typography;
 type StepStatus = NonNullable<StepsProps['items']>[number]['status'];
 
-const TERMINAL_JOB_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'CANCELED', 'TIMEOUT']);
+interface LiveSummaryState {
+  total_findings: number;
+  severity_counts: Record<string, number>;
+}
+
+interface LiveFindingItem {
+  id: string;
+  rule_key: string;
+  severity: string;
+  file_path?: string | null;
+  line_start?: number | null;
+  path_length?: number | null;
+}
+
 const FULL_LOG_TAIL = 0;
 const DEFAULT_STEPS = [
   { title: '源码准备', key: 'prepare' },
@@ -53,9 +67,14 @@ interface ScanDetailDrawerProps {
 const ScanDetailDrawer: React.FC<ScanDetailDrawerProps> = ({ visible, jobId, onClose }) => {
   const [job, setJob] = useState<Job | null>(null);
   const [logs, setLogs] = useState<JobLog | null>(null);
+  const [liveSummary, setLiveSummary] = useState<LiveSummaryState | null>(null);
+  const [liveFindings, setLiveFindings] = useState<LiveFindingItem[]>([]);
   const [loading, setLoading] = useState(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
-  const pollingRef = useRef<number | null>(null);
+  const logSeqRef = useRef(0);
+  const eventIdRef = useRef(0);
+  const logAbortRef = useRef<AbortController | null>(null);
+  const eventAbortRef = useRef<AbortController | null>(null);
 
   // Fetch job details and logs
   const fetchData = async (isPolling = false) => {
@@ -63,7 +82,7 @@ const ScanDetailDrawer: React.FC<ScanDetailDrawerProps> = ({ visible, jobId, onC
 
     try {
       if (!isPolling) setLoading(true);
-      
+
       const [jobData, logData] = await Promise.all([
         ScanService.getJob(jobId),
         ScanService.getJobLogs(jobId, undefined, FULL_LOG_TAIL)
@@ -71,6 +90,14 @@ const ScanDetailDrawer: React.FC<ScanDetailDrawerProps> = ({ visible, jobId, onC
 
       setJob(jobData);
       setLogs(logData);
+      setLiveSummary({
+        total_findings: Number(jobData.result_summary?.total_findings || 0),
+        severity_counts: (jobData.result_summary?.severity_counts as Record<string, number>) || {},
+      });
+      logSeqRef.current = logData.items.reduce(
+        (total, item) => total + Number(item.line_count || 0),
+        0
+      );
     } catch (error) {
       console.error('Failed to fetch job details:', error);
     } finally {
@@ -78,45 +105,189 @@ const ScanDetailDrawer: React.FC<ScanDetailDrawerProps> = ({ visible, jobId, onC
     }
   };
 
+  const appendLogEvent = (payload: Record<string, unknown>) => {
+    const stage = String(payload.stage || 'UNKNOWN');
+    const line = String(payload.raw_line || payload.line || '');
+    const seq = Number(payload.seq || 0);
+    if (seq > 0) {
+      logSeqRef.current = Math.max(logSeqRef.current, seq);
+    }
+    if (!line) {
+      return;
+    }
+    setLogs((prev) => {
+      const current = prev ?? { job_id: jobId || '', items: [] };
+      const items = [...current.items];
+      const index = items.findIndex((item) => item.stage === stage);
+      if (index >= 0) {
+        const target = items[index];
+        items[index] = {
+          ...target,
+          lines: [...target.lines, line],
+          line_count: Number(target.line_count || 0) + 1,
+          truncated: false,
+        };
+      } else {
+        items.push({ stage, lines: [line], line_count: 1, truncated: false });
+      }
+      return { ...current, items };
+    });
+  };
+
+  const applyJobEvent = (eventName: string, payload: Record<string, unknown>) => {
+    const eventId = Number(payload.id || 0);
+    if (eventId > 0) {
+      eventIdRef.current = Math.max(eventIdRef.current, eventId);
+    }
+    const innerPayload =
+      payload.payload && typeof payload.payload === 'object'
+        ? (payload.payload as Record<string, unknown>)
+        : payload;
+
+    if (eventName === 'job_status') {
+      const nextStatus = String(innerPayload.status || '');
+      setJob((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: nextStatus || prev.status,
+              stage: String(innerPayload.stage || prev.stage),
+              failure_code: (innerPayload.failure_code as string | null) ?? prev.failure_code,
+              failure_stage: (innerPayload.failure_stage as string | null) ?? prev.failure_stage,
+            }
+          : prev
+      );
+      return;
+    }
+
+    if (eventName === 'step_status') {
+      setJob((prev) => {
+        if (!prev) return prev;
+        const nextSteps = prev.steps.map((step) =>
+          step.step_key === String(innerPayload.step_key || '')
+            ? {
+                ...step,
+                status: String(innerPayload.status || step.status),
+                started_at: (innerPayload.started_at as string | null) ?? step.started_at,
+                finished_at: (innerPayload.finished_at as string | null) ?? step.finished_at,
+                duration_ms: (innerPayload.duration_ms as number | null) ?? step.duration_ms,
+              }
+            : step
+        );
+        return { ...prev, steps: nextSteps };
+      });
+      return;
+    }
+
+    if (eventName === 'summary_update') {
+      setLiveSummary({
+        total_findings: Number(innerPayload.total_findings || 0),
+        severity_counts: (innerPayload.severity_counts as Record<string, number>) || {},
+      });
+      return;
+    }
+
+    if (eventName === 'finding_upsert') {
+      const finding = innerPayload.finding as Record<string, unknown> | undefined;
+      if (!finding) return;
+      setLiveFindings((prev) => {
+        const next: LiveFindingItem = {
+          id: String(finding.id || ''),
+          rule_key: String(finding.rule_key || ''),
+          severity: String(finding.severity || ''),
+          file_path: (finding.file_path as string | null) ?? null,
+          line_start: (finding.line_start as number | null) ?? null,
+          path_length: (finding.path_length as number | null) ?? null,
+        };
+        return [next, ...prev.filter((item) => item.id !== next.id)].slice(0, 10);
+      });
+      return;
+    }
+
+    if (eventName === 'done') {
+      logAbortRef.current?.abort();
+      eventAbortRef.current?.abort();
+      fetchData(true);
+    }
+  };
+
+  useEffect(() => {
+    if (!visible || !jobId) {
+      return;
+    }
+
+    const logAbort = new AbortController();
+    const eventAbort = new AbortController();
+    logAbortRef.current = logAbort;
+    eventAbortRef.current = eventAbort;
+
+    const pumpLogs = async () => {
+      while (!logAbort.signal.aborted) {
+        try {
+          await openSseStream({
+            url: ScanService.buildJobLogsStreamUrl(jobId, logSeqRef.current),
+            signal: logAbort.signal,
+            onEvent: ({ event, data }) => {
+              if (event !== 'log' || typeof data !== 'object' || data === null) {
+                return;
+              }
+              appendLogEvent(data as Record<string, unknown>);
+            },
+          });
+        } catch (error) {
+          if (!logAbort.signal.aborted) {
+            console.error('Log SSE disconnected:', error);
+          }
+        }
+      }
+    };
+
+    const pumpEvents = async () => {
+      while (!eventAbort.signal.aborted) {
+        try {
+          await openSseStream({
+            url: ScanService.buildJobEventsStreamUrl(jobId, eventIdRef.current),
+            signal: eventAbort.signal,
+            onEvent: ({ event, data }) => {
+              if (typeof data !== 'object' || data === null) {
+                return;
+              }
+              applyJobEvent(event, data as Record<string, unknown>);
+            },
+          });
+        } catch (error) {
+          if (!eventAbort.signal.aborted) {
+            console.error('Event SSE disconnected:', error);
+          }
+        }
+      }
+    };
+
+    void pumpLogs();
+    void pumpEvents();
+
+    return () => {
+      logAbort.abort();
+      eventAbort.abort();
+    };
+  }, [visible, jobId]);
+
   useEffect(() => {
     if (visible && jobId) {
       fetchData();
     } else {
       setJob(null);
       setLogs(null);
-      if (pollingRef.current) {
-        window.clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
+      setLiveSummary(null);
+      setLiveFindings([]);
+      logSeqRef.current = 0;
+      eventIdRef.current = 0;
+      logAbortRef.current?.abort();
+      eventAbortRef.current?.abort();
+      logAbortRef.current = null;
+      eventAbortRef.current = null;
     }
   }, [visible, jobId]);
-
-  // Polling logic
-  useEffect(() => {
-    if (!visible || !job) return;
-
-    const isTerminal = TERMINAL_JOB_STATUSES.has(job.status);
-
-    if (!isTerminal) {
-      if (!pollingRef.current) {
-        pollingRef.current = window.setInterval(() => {
-          fetchData(true);
-        }, 3000);
-      }
-    } else {
-      if (pollingRef.current) {
-        window.clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-    }
-
-    return () => {
-      if (pollingRef.current) {
-        window.clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-    };
-  }, [visible, job?.status]);
 
   // Auto-scroll logs
   useEffect(() => {
@@ -236,6 +407,52 @@ const ScanDetailDrawer: React.FC<ScanDetailDrawerProps> = ({ visible, jobId, onC
     );
   };
 
+  const renderLiveFindings = () => {
+    if (!liveSummary && liveFindings.length === 0) {
+      return <Empty description="暂无实时发现" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
+    }
+
+    return (
+      <div style={{ border: '1px solid #E5E7EB', borderRadius: 8, padding: 16 }}>
+        <div style={{ display: 'flex', gap: 16, marginBottom: 12, flexWrap: 'wrap' }}>
+          <Text>发现数: {liveSummary?.total_findings ?? liveFindings.length}</Text>
+          <Text>HIGH: {liveSummary?.severity_counts?.HIGH ?? 0}</Text>
+          <Text>MED: {liveSummary?.severity_counts?.MED ?? 0}</Text>
+          <Text>LOW: {liveSummary?.severity_counts?.LOW ?? 0}</Text>
+        </div>
+        <div style={{ display: 'grid', gap: 8 }}>
+          {liveFindings.map((item) => (
+            <div
+              key={item.id}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: 12,
+                padding: '10px 12px',
+                background: '#F8FAFC',
+                borderRadius: 6,
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600 }}>{item.rule_key || '-'}</div>
+                <div style={{ color: '#64748B' }}>
+                  {item.file_path || '-'}
+                  {item.line_start ? `:${item.line_start}` : ''}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+                <Tag color={item.severity === 'HIGH' ? 'red' : item.severity === 'MED' ? 'orange' : 'blue'}>
+                  {item.severity || 'UNKNOWN'}
+                </Tag>
+                <Text type="secondary">path={item.path_length ?? '-'}</Text>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <Drawer
       title={
@@ -297,6 +514,9 @@ const ScanDetailDrawer: React.FC<ScanDetailDrawerProps> = ({ visible, jobId, onC
 
           <Title level={5}>Pipeline Progress</Title>
           {renderSteps()}
+
+          <Title level={5} style={{ marginTop: 24 }}>Live Findings</Title>
+          {renderLiveFindings()}
 
           <Title level={5} style={{ marginTop: 24 }}>Execution Logs</Title>
           {renderLogs()}
