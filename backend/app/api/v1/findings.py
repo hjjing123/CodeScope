@@ -46,6 +46,7 @@ from app.services.finding_path_service import (
     load_finding_path_context,
     query_finding_paths,
 )
+from app.services.source_location_service import normalize_graph_location
 
 
 router = APIRouter(tags=["findings"])
@@ -128,6 +129,24 @@ def _normalize_text(value: str | None) -> str | None:
 
 
 def _finding_payload(item: Finding) -> FindingPayload:
+    file_path, line_start = normalize_graph_location(
+        version_id=item.version_id,
+        file_path=item.file_path,
+        line=item.line_start,
+        infer_line=False,
+    )
+    source_file, source_line = normalize_graph_location(
+        version_id=item.version_id,
+        file_path=item.source_file,
+        line=item.source_line,
+        infer_line=False,
+    )
+    sink_file, sink_line = normalize_graph_location(
+        version_id=item.version_id,
+        file_path=item.sink_file,
+        line=item.sink_line,
+        infer_line=False,
+    )
     return FindingPayload(
         id=item.id,
         project_id=item.project_id,
@@ -138,15 +157,15 @@ def _finding_payload(item: Finding) -> FindingPayload:
         vuln_type=item.vuln_type,
         severity=item.severity,
         status=item.status,
-        file_path=item.file_path,
-        line_start=item.line_start,
-        line_end=item.line_end,
+        file_path=file_path,
+        line_start=line_start,
+        line_end=line_start,
         has_path=item.has_path,
         path_length=item.path_length,
-        source_file=item.source_file,
-        source_line=item.source_line,
-        sink_file=item.sink_file,
-        sink_line=item.sink_line,
+        source_file=source_file,
+        source_line=source_line,
+        sink_file=sink_file,
+        sink_line=sink_line,
         evidence_json=item.evidence_json,
         created_at=item.created_at,
     )

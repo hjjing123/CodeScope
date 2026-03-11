@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, message } from 'antd';
+import { Layout } from 'antd';
 import FindingFilterBar from '../components/Findings/FindingFilterBar';
 import FindingListTable from '../components/Findings/FindingListTable';
 import FindingDetailPanel from '../components/Findings/FindingDetailPanel';
@@ -29,7 +29,6 @@ const FindingsPage: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to fetch findings:', error);
-      message.error('Failed to fetch findings');
     } finally {
       setLoading(false);
     }
@@ -43,7 +42,7 @@ const FindingsPage: React.FC = () => {
     setFilters((prev) => ({ ...prev, ...newFilters, page: 1 }));
   };
 
-  const handleTableChange = (pagination: any, filters: any, sorter: any) => {
+  const handleTableChange = (pagination: any, _filters: any, sorter: any) => {
     setFilters((prev) => ({
       ...prev,
       page: pagination.current,

@@ -46,6 +46,7 @@ from app.services.scan_runtime_service import (
     acquire_scan_runtime_slot,
     release_scan_runtime_slot,
 )
+from app.services.source_location_service import normalize_graph_location
 from app.services.scan_external import run_external_scan as run_external_scan_pipeline
 from app.services.scan_external.builtin import cleanup_ephemeral_runtime_resources
 from app.services.scan_external.context import resolve_external_path
@@ -2216,9 +2217,123 @@ def _create_finding_model_from_draft(*, job: Job, draft: dict[str, object]) -> F
     )
 
 
+def _normalize_finding_path_steps(
+    *, version_id: uuid.UUID, steps: object
+) -> list[dict[str, object]]:
+    if not isinstance(steps, list):
+        return []
+    normalized_steps: list[dict[str, object]] = []
+    for index, item in enumerate(steps):
+        if not isinstance(item, dict):
+            continue
+        normalized_file, normalized_line = normalize_graph_location(
+            version_id=version_id,
+            file_path=str(item.get("file") or "").strip() or None,
+            line=item.get("line"),
+            func_name=str(item.get("func_name") or "").strip() or None,
+            code_snippet=str(item.get("code_snippet") or "").strip() or None,
+            node_ref=str(item.get("node_ref") or "").strip() or None,
+            labels=[
+                str(label)
+                for label in item.get("labels") or []
+                if isinstance(label, str) and label.strip()
+            ],
+        )
+        normalized_steps.append(
+            {
+                **item,
+                "step_id": _to_int(item.get("step_id"), default=index) or index,
+                "file": normalized_file,
+                "line": normalized_line,
+            }
+        )
+    return normalized_steps
+
+
+def _normalize_external_finding_payload(
+    *, version_id: uuid.UUID, raw_finding: dict[str, object]
+) -> dict[str, object]:
+    normalized = dict(raw_finding)
+    normalized_paths: list[dict[str, object]] = []
+    raw_paths = (
+        raw_finding.get("paths") if isinstance(raw_finding.get("paths"), list) else []
+    )
+    for path_index, path_item in enumerate(raw_paths):
+        if not isinstance(path_item, dict):
+            continue
+        steps = _normalize_finding_path_steps(
+            version_id=version_id,
+            steps=path_item.get("steps"),
+        )
+        if not steps:
+            continue
+        normalized_paths.append(
+            {
+                **path_item,
+                "path_length": max(0, len(steps) - 1),
+                "path_id": _to_int(path_item.get("path_id"), default=path_index)
+                or path_index,
+                "steps": steps,
+            }
+        )
+
+    normalized_source_file, normalized_source_line = normalize_graph_location(
+        version_id=version_id,
+        file_path=str(raw_finding.get("source_file") or "").strip() or None,
+        line=raw_finding.get("source_line"),
+    )
+    normalized_sink_file, normalized_sink_line = normalize_graph_location(
+        version_id=version_id,
+        file_path=str(raw_finding.get("sink_file") or "").strip() or None,
+        line=raw_finding.get("sink_line"),
+    )
+    normalized_file_path, normalized_line_start = normalize_graph_location(
+        version_id=version_id,
+        file_path=str(raw_finding.get("file_path") or "").strip() or None,
+        line=raw_finding.get("line_start"),
+    )
+
+    if normalized_paths:
+        first_step = normalized_paths[0]["steps"][0]
+        last_step = normalized_paths[0]["steps"][-1]
+        normalized_source_file = (
+            normalized_source_file or str(first_step.get("file") or "").strip() or None
+        )
+        normalized_source_line = normalized_source_line or _to_int(
+            first_step.get("line")
+        )
+        normalized_sink_file = (
+            normalized_sink_file or str(last_step.get("file") or "").strip() or None
+        )
+        normalized_sink_line = normalized_sink_line or _to_int(last_step.get("line"))
+
+    normalized_file_path = (
+        normalized_file_path or normalized_sink_file or normalized_source_file
+    )
+    normalized_line_start = (
+        normalized_line_start or normalized_sink_line or normalized_source_line
+    )
+    normalized_line_end = normalized_line_start
+
+    normalized.update(
+        {
+            "file_path": normalized_file_path,
+            "line_start": normalized_line_start,
+            "line_end": normalized_line_end,
+            "source_file": normalized_source_file,
+            "source_line": normalized_source_line,
+            "sink_file": normalized_sink_file,
+            "sink_line": normalized_sink_line,
+            "paths": normalized_paths,
+        }
+    )
+    return normalized
+
+
 def _persist_finding_paths(
     db: Session,
     *,
+    version_id: uuid.UUID,
     finding: Finding,
     paths: list[dict[str, object]],
 ) -> int:
@@ -2226,7 +2341,10 @@ def _persist_finding_paths(
     for path_index, path_item in enumerate(paths):
         if not isinstance(path_item, dict):
             continue
-        steps = path_item.get("steps")
+        steps = _normalize_finding_path_steps(
+            version_id=version_id,
+            steps=path_item.get("steps"),
+        )
         if not isinstance(steps, list) or not steps:
             continue
         path_model = FindingPath(
@@ -2272,20 +2390,26 @@ def _persist_external_finding_live(
     raw_rule_key = str(raw_finding.get("rule_key") or "").strip()
     if not raw_rule_key:
         return None
+    normalized_finding = _normalize_external_finding_payload(
+        version_id=job.version_id,
+        raw_finding=raw_finding,
+    )
     try:
         normalized_rule_key = normalize_rule_selector(raw_rule_key)
     except AppError:
         normalized_rule_key = raw_rule_key
     rule_meta = get_rules_by_keys({normalized_rule_key})
     drafts = _normalize_finding_drafts(
-        findings=[raw_finding],
+        findings=[normalized_finding],
         rule_meta_by_key=rule_meta,
     )
     if not drafts:
         return None
     draft = _attach_code_contexts(job=job, finding_drafts=[drafts[0]])[0]
     paths = (
-        raw_finding.get("paths") if isinstance(raw_finding.get("paths"), list) else []
+        normalized_finding.get("paths")
+        if isinstance(normalized_finding.get("paths"), list)
+        else []
     )
 
     live_session_factory = sessionmaker(
@@ -2302,7 +2426,12 @@ def _persist_external_finding_live(
         finding = _create_finding_model_from_draft(job=live_job, draft=draft)
         live_db.add(finding)
         live_db.flush()
-        saved_paths = _persist_finding_paths(live_db, finding=finding, paths=paths)
+        saved_paths = _persist_finding_paths(
+            live_db,
+            version_id=live_job.version_id,
+            finding=finding,
+            paths=paths,
+        )
         payload = {
             "finding": _serialize_finding_record(finding),
             "paths": paths,

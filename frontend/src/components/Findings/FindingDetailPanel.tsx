@@ -2,13 +2,22 @@ import React, { useEffect, useState } from 'react';
 import { Drawer, Typography, Tag, Button, Space, message, Spin, Empty, Tabs } from 'antd';
 import { BugOutlined, CheckCircleOutlined, CloseCircleOutlined, WarningOutlined, CodeOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { FindingService } from '../../services/findings';
+import { getVersionFile } from '../../services/projectVersion';
 import FindingPathViewer from './FindingPathViewer';
 import CodeViewer from './CodeViewer';
 import type { Finding, FindingPath, FindingPathStep, FindingLabelRequest } from '../../types/finding';
 import '../ProjectVersion/CodeBrowser.css';
 
 const { Text } = Typography;
-const { TabPane } = Tabs;
+
+const hasValidLine = (value?: number | null) => typeof value === 'number' && value > 0;
+
+const formatLocation = (filePath?: string | null, line?: number | null) => {
+  if (!filePath) {
+    return '-';
+  }
+  return hasValidLine(line) ? `${filePath}:${line}` : filePath;
+};
 
 interface FindingDetailPanelProps {
   visible: boolean;
@@ -27,8 +36,9 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
   const [paths, setPaths] = useState<FindingPath[]>([]);
   const [selectedPath, setSelectedPath] = useState<FindingPath | null>(null);
   const [selectedStep, setSelectedStep] = useState<FindingPathStep | null>(null);
-  const [codeContext, setCodeContext] = useState<string>('');
-  const [loadingContext, setLoadingContext] = useState(false);
+  const [sourceFileContent, setSourceFileContent] = useState<string>('');
+  const [sourceFileSummary, setSourceFileSummary] = useState<string>('');
+  const [loadingSourceFile, setLoadingSourceFile] = useState(false);
 
   useEffect(() => {
     if (visible && finding) {
@@ -37,7 +47,8 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
       setPaths([]);
       setSelectedPath(null);
       setSelectedStep(null);
-      setCodeContext('');
+      setSourceFileContent('');
+      setSourceFileSummary('');
     }
   }, [visible, finding]);
 
@@ -45,14 +56,19 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
     if (!finding) return;
     setLoading(true);
     try {
-      const res = await FindingService.getFindingPaths(finding.id);
+      const res = await FindingService.getFindingPaths(finding.id, { mode: 'all', limit: 10 });
       if (res && res.items && res.items.length > 0) {
         setPaths(res.items);
         setSelectedPath(res.items[0]);
-        // Select first step of first path by default if available
         if (res.items[0].steps && res.items[0].steps.length > 0) {
-          handleStepClick(res.items[0].steps[0], finding.id);
+          void handleStepClick(res.items[0].steps[0], res.items[0], finding.id, finding.version_id);
         }
+      } else {
+        setPaths([]);
+        setSelectedPath(null);
+        setSelectedStep(null);
+        setSourceFileContent('');
+        setSourceFileSummary('');
       }
     } catch (error) {
       console.error('Failed to fetch finding paths:', error);
@@ -62,23 +78,55 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
     }
   };
 
-  const handleStepClick = async (step: FindingPathStep, findingId: string) => {
-    setSelectedStep(step);
-    setLoadingContext(true);
-    try {
-      const context = await FindingService.getPathNodeContext(findingId, step.step_id);
-      if (context && context.lines) {
-        setCodeContext(context.lines.join('\n'));
-      } else {
-        setCodeContext('// No code context available');
-      }
-    } catch (error) {
-      console.error('Failed to fetch code context:', error);
-      setCodeContext('// Failed to load code context');
-    } finally {
-      setLoadingContext(false);
+  const handlePathSelect = (path: FindingPath) => {
+    setSelectedPath(path);
+    if (path.steps.length > 0 && finding) {
+      void handleStepClick(path.steps[0], path, finding.id, finding.version_id);
     }
   };
+
+  const handleStepClick = async (
+    step: FindingPathStep,
+    path: FindingPath,
+    _findingId: string,
+    versionId: string
+  ) => {
+    setSelectedPath(path);
+    setSelectedStep(step);
+    if (!step.file) {
+      setSourceFileContent('// No source file available for this propagation step');
+      setSourceFileSummary('No source file available');
+      setLoadingSourceFile(false);
+      return;
+    }
+    setLoadingSourceFile(true);
+    try {
+      const response = await getVersionFile(versionId, step.file);
+      const fileData = response.data;
+      setSourceFileContent(fileData.content || '// No source available');
+      setSourceFileSummary(
+        fileData.truncated
+          ? `Showing ${fileData.content.split('\n').length}/${fileData.total_lines} lines`
+          : `${fileData.total_lines} lines`
+      );
+    } catch (error) {
+      console.error('Failed to fetch source file:', error);
+      setSourceFileContent('// Failed to load full source file');
+      setSourceFileSummary('Source preview unavailable');
+    } finally {
+      setLoadingSourceFile(false);
+    }
+  };
+
+  const highlightedLines = selectedPath && selectedStep?.file
+    ? Array.from(
+        new Set(
+          selectedPath.steps
+            .filter((step) => step.file === selectedStep.file && hasValidLine(step.line))
+            .map((step) => step.line as number)
+        )
+      ).sort((left, right) => left - right)
+    : [];
 
   const handleStatusUpdate = async (status: string, fp_reason?: string) => {
     if (!finding) return;
@@ -141,7 +189,9 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
               {finding?.severity}
             </Tag>
             <span>{finding?.rule_key}</span>
-            <Text type="secondary" style={{ fontSize: 13, fontWeight: 'normal' }}>{finding?.file_path}:{finding?.line_start}</Text>
+            <Text type="secondary" style={{ fontSize: 13, fontWeight: 'normal' }}>
+              {formatLocation(finding?.file_path, finding?.line_start)}
+            </Text>
           </div>
           <div style={{ marginRight: 32 }}>
             {renderTriageActions()}
@@ -172,18 +222,20 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
                   label: (<span><CodeOutlined /> Source Code</span>),
                   children: (
                     <div style={{ height: 'calc(100vh - 110px)', background: '#f8fafc', padding: 12 }}>
-                      {loadingContext ? (
+                      {loadingSourceFile ? (
                         <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
                           <Spin />
                         </div>
                       ) : (
                         <div style={{ height: '100%', borderRadius: 8, border: '1px solid #d1d5db', overflow: 'hidden' }}>
-                          <CodeViewer
-                            code={codeContext || '// Select a path step to view code context'}
+                         <CodeViewer
+                            code={sourceFileContent || '// Select a propagation step to load the full source file'}
                             language="java"
-                            fileName={selectedStep ? `${selectedStep.file}:${selectedStep.line}` : undefined}
-                            highlightLines={selectedStep ? [selectedStep.line || 0] : []}
-                            startLine={selectedStep ? Math.max(1, (selectedStep.line || 1) - 5) : 1}
+                            fileName={selectedStep ? formatLocation(selectedStep.file, selectedStep.line) : undefined}
+                            highlightLines={highlightedLines}
+                            focusLine={selectedStep?.line ?? null}
+                            startLine={1}
+                            summary={sourceFileSummary}
                           />
                         </div>
                       )}
@@ -214,9 +266,11 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
             <div style={{ flex: 1, overflow: 'hidden' }}>
               {paths.length > 0 && selectedPath ? (
                 <FindingPathViewer
-                  path={selectedPath}
+                  paths={paths}
+                  selectedPathId={selectedPath.path_id}
                   selectedStepId={selectedStep?.step_id}
-                  onStepClick={(step) => handleStepClick(step, finding.id)}
+                  onPathSelect={handlePathSelect}
+                  onStepClick={(step) => handleStepClick(step, selectedPath, finding.id, finding.version_id)}
                 />
               ) : (
                 <Empty 

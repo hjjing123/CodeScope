@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.core.errors import AppError
 from app.models import Finding, FindingPath, FindingPathStep, Job
+from app.services.source_location_service import normalize_graph_location
 from app.services.snapshot_storage_service import read_snapshot_file_context
 
 
@@ -43,6 +44,7 @@ def query_finding_paths(
 
     persisted_paths = _query_persisted_finding_paths(
         db=db,
+        version_id=finding.version_id,
         finding_id=finding.id,
         mode=normalized_mode,
         limit=safe_limit,
@@ -119,7 +121,10 @@ def query_finding_paths(
             path = row.get("p")
             if path is None:
                 continue
-            steps = _path_steps(path)
+            steps = [
+                _normalize_runtime_path_step(version_id=finding.version_id, step=step)
+                for step in _path_steps(path)
+            ]
             results.append(
                 {
                     "path_id": path_id,
@@ -155,7 +160,7 @@ def query_finding_paths(
 
 
 def _query_persisted_finding_paths(
-    *, db: Session, finding_id, mode: str, limit: int
+    *, db: Session, version_id, finding_id, mode: str, limit: int
 ) -> list[dict[str, object]]:
     rows = db.scalars(
         select(FindingPath)
@@ -178,24 +183,39 @@ def _query_persisted_finding_paths(
                 "path_id": path_index,
                 "path_length": int(row.path_length or 0),
                 "steps": [
-                    {
-                        "step_id": int(step.step_order),
-                        "labels": [
-                            str(item)
-                            for item in step.labels_json or []
-                            if isinstance(item, str) and item.strip()
-                        ],
-                        "file": step.file_path,
-                        "line": step.line_no,
-                        "func_name": step.func_name,
-                        "code_snippet": step.code_snippet,
-                        "node_ref": step.node_ref,
-                    }
+                    _serialize_persisted_path_step(version_id=version_id, step=step)
                     for step in steps
                 ],
             }
         )
     return results
+
+
+def _serialize_persisted_path_step(
+    *, version_id, step: FindingPathStep
+) -> dict[str, object]:
+    normalized_file, normalized_line = normalize_graph_location(
+        version_id=version_id,
+        file_path=step.file_path,
+        line=step.line_no,
+        func_name=step.func_name,
+        code_snippet=step.code_snippet,
+        node_ref=step.node_ref,
+        labels=[str(item) for item in step.labels_json or [] if isinstance(item, str)],
+    )
+    return {
+        "step_id": int(step.step_order),
+        "labels": [
+            str(item)
+            for item in step.labels_json or []
+            if isinstance(item, str) and item.strip()
+        ],
+        "file": normalized_file,
+        "line": normalized_line,
+        "func_name": step.func_name,
+        "code_snippet": step.code_snippet,
+        "node_ref": step.node_ref,
+    }
 
 
 def load_finding_path_context(
@@ -324,6 +344,29 @@ def _path_steps(path: Any) -> list[dict[str, object]]:
             }
         )
     return out
+
+
+def _normalize_runtime_path_step(
+    *, version_id, step: dict[str, object]
+) -> dict[str, object]:
+    normalized_file, normalized_line = normalize_graph_location(
+        version_id=version_id,
+        file_path=str(step.get("file") or "").strip() or None,
+        line=step.get("line"),
+        func_name=str(step.get("func_name") or "").strip() or None,
+        code_snippet=str(step.get("code_snippet") or "").strip() or None,
+        node_ref=str(step.get("node_ref") or "").strip() or None,
+        labels=[
+            str(item)
+            for item in step.get("labels") or []
+            if isinstance(item, str) and item.strip()
+        ],
+    )
+    return {
+        **step,
+        "file": normalized_file,
+        "line": normalized_line,
+    }
 
 
 def _to_int(value: object) -> int | None:

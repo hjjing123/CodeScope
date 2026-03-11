@@ -40,8 +40,11 @@ export class FindingService {
     return res.data;
   }
 
-  static async getFindingPaths(findingId: string): Promise<FindingPathListResponse> {
-    const res = await request.get(`/findings/${findingId}/paths`);
+  static async getFindingPaths(
+    findingId: string,
+    params?: { mode?: 'shortest' | 'all'; limit?: number }
+  ): Promise<FindingPathListResponse> {
+    const res = await request.get(`/findings/${findingId}/paths`, { params });
     return res.data;
   }
 

@@ -36,6 +36,13 @@ const statusStatusMap: Record<string, "success" | "processing" | "error" | "defa
   fixed: 'success',
 };
 
+const formatLocation = (filePath?: string | null, line?: number | null) => {
+  if (!filePath) {
+    return '-';
+  }
+  return typeof line === 'number' && line > 0 ? `${filePath}:${line}` : filePath;
+};
+
 const FindingListTable: React.FC<FindingListTableProps> = ({
   loading,
   data,
@@ -66,9 +73,9 @@ const FindingListTable: React.FC<FindingListTableProps> = ({
       dataIndex: 'file_path',
       key: 'file_path',
       render: (text: string, record: Finding) => (
-        <Tooltip title={text}>
+        <Tooltip title={formatLocation(text, record.line_start)}>
           <Text style={{ maxWidth: 300 }} ellipsis>
-            {text}:{record.line_start}
+            {formatLocation(text, record.line_start)}
           </Text>
         </Tooltip>
       ),
