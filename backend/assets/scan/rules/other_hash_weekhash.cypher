@@ -9,7 +9,7 @@ MATCH
   WHERE
   (md.type = 'MessageDigest')
 MATCH
-  p = shortestPath((md5Node)-[:ARG|REF|CALLS|HAS_CALL*..12]->(md))
+  p = (md5Node)-[*..30]->(md)
 WITH collect(md) AS mds
 
 // 请求数据 流向 md5 的 md， 所以sink点是 md, 并且在 mds里
@@ -37,7 +37,7 @@ MATCH
   (sinkNode IN mds)
   )
 MATCH
-  p = shortestPath((sourceNode)-[:ARG|REF|CALLS|HAS_CALL*..12]->(sinkNode))
+  p = shortestPath((sourceNode)-[*..30]->(sinkNode))
     WHERE NONE(n IN nodes(p) WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer'] )
 
 RETURN

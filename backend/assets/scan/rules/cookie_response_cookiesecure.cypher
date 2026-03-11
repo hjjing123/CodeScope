@@ -14,14 +14,14 @@ MATCH
   (sourceNode:StringLiteral)
   WHERE
   (
-  (sourceNode.nameLower ENDS WITH '"ticket"') OR
-  (sourceNode.nameLower  ENDS WITH  'token') OR
-  (sourceNode.nameLower  ENDS WITH  'jwt') OR
-  (sourceNode.nameLower  ENDS WITH  'session') OR
-  (sourceNode.nameLower  ENDS WITH  'sessionid') OR
-  (sourceNode.nameLower  ENDS WITH  'password') OR
-  (sourceNode.nameLower  ENDS WITH  'passwd') OR
-  (sourceNode.nameLower  ENDS WITH  'pass')
+  (lower(sourceNode.name) ENDS WITH '"ticket"') OR
+  (lower(sourceNode.name)  ENDS WITH  'token') OR
+  (lower(sourceNode.name)  ENDS WITH  'jwt') OR
+  (lower(sourceNode.name)  ENDS WITH  'session') OR
+  (lower(sourceNode.name)  ENDS WITH  'sessionid') OR
+  (lower(sourceNode.name)  ENDS WITH  'password') OR
+  (lower(sourceNode.name)  ENDS WITH  'passwd') OR
+  (lower(sourceNode.name)  ENDS WITH  'pass')
   ) AND
   sourceNode.AllocationClassName = 'Cookie' AND (NOT sourceNode IN filterNodes)
 MATCH

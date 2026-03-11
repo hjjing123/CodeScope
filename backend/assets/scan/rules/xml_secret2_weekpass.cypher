@@ -2,23 +2,23 @@ MATCH
   (sinkNode:XmlElement)
   WHERE
   (
-
-  sinkNode.qNameLower ENDS WITH 'password'  OR
-  sinkNode.qNameLower ENDS WITH 'pass'  OR
-  sinkNode.qNameLower ENDS WITH 'passwd'  OR
-  sinkNode.qNameLower ENDS WITH 'secretkey'  OR
-  sinkNode.qNameLower ENDS WITH 'apikey'  OR
-  sinkNode.qNameLower ENDS WITH 'apitoken'  OR
-  sinkNode.qNameLower ENDS WITH 'accesstoken'  OR
-  sinkNode.qNameLower ENDS WITH 'sessionKey'  OR
-  sinkNode.qNameLower ENDS WITH 'encryptionkey'  OR
-  sinkNode.qNameLower ENDS WITH 'decryptionkey'  OR
-  sinkNode.qNameLower ENDS WITH 'bearertoken'  OR
-  sinkNode.qNameLower ENDS WITH 'sshkey'  OR
-  sinkNode.qNameLower ENDS WITH 'jwtsecret'  OR
-  sinkNode.qNameLower ENDS WITH 'presharedkey'  OR
-  sinkNode.qNameLower ENDS WITH 'privatekey'  OR
-  sinkNode.qNameLower ENDS WITH 'secret'
+  // 保留原始标签名检测逻辑，覆盖所有敏感关键词
+  lower(sinkNode.qName) ENDS WITH 'password'  OR
+  lower(sinkNode.qName) ENDS WITH 'pass'  OR
+  lower(sinkNode.qName) ENDS WITH 'passwd'  OR
+  lower(sinkNode.qName) ENDS WITH 'secretkey'  OR
+  lower(sinkNode.qName) ENDS WITH 'apikey'  OR
+  lower(sinkNode.qName) ENDS WITH 'apitoken'  OR
+  lower(sinkNode.qName) ENDS WITH 'accesstoken'  OR
+  lower(sinkNode.qName) ENDS WITH 'sessionKey'  OR
+  lower(sinkNode.qName) ENDS WITH 'encryptionkey'  OR
+  lower(sinkNode.qName) ENDS WITH 'decryptionkey'  OR
+  lower(sinkNode.qName) ENDS WITH 'bearertoken'  OR
+  lower(sinkNode.qName) ENDS WITH 'sshkey'  OR
+  lower(sinkNode.qName) ENDS WITH 'jwtsecret'  OR
+  lower(sinkNode.qName) ENDS WITH 'presharedkey'  OR
+  lower(sinkNode.qName) ENDS WITH 'privatekey'  OR
+  lower(sinkNode.qName) ENDS WITH 'secret'
   )
   AND
   (

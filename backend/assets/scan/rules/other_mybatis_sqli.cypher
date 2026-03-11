@@ -1,106 +1,74 @@
 MATCH
   (sourceNode)
-WHERE
+  WHERE
   (
-    // jfinal: String keyword = this.getPara("keyword");
-    (sourceNode:CallArg AND 'getPara' IN sourceNode.selectors) OR
+
+  // jfinal : String keyword=this.getPara("keyword");
+    (sourceNode:CallArg AND 'getPara' IN  sourceNode.selectors) OR
     sourceNode.assignRight STARTS WITH 'getParamsMap' OR
     sourceNode.assignRight STARTS WITH 'getParaMap' OR
-    // framework custom parameter annotation
+    // 一些框架自定义注解， 请求入参使用 @HttpParam
     (sourceNode:MethodBinding AND 'HttpParam' IN sourceNode.paramAnnotations)
   ) AND
-  coalesce(sourceNode.name, '') <> 'this' AND
-  NOT sourceNode.type IN ['Long', 'Integer', 'HttpServletResponse']
+  NOT sourceNode.type  IN ['Long', 'Integer', 'HttpServletResponse']
 
 MATCH
-  (sinkNode:Call:MybatisMethodArg)
-WHERE
-  coalesce(sinkNode.selector, '') <> '' AND
-  (
-    toLower(coalesce(sinkNode.methodFullName, '')) CONTAINS '.mapper.' OR
-    any(rt IN coalesce(sinkNode.receiverTypes, []) WHERE toLower(rt) CONTAINS 'mapper') OR
-    any(rc IN coalesce(sinkNode.receivers, []) WHERE toLower(rc) CONTAINS 'mapper')
-  ) AND
-  (
-    any(lb IN labels(sinkNode) WHERE lb IN ['MybatisAnnotationUnsafeArg', 'MybatisXmlUnsafeArg']) OR
-    exists {
-      MATCH (xml:XmlElement)
-      WHERE
-        toLower(coalesce(xml.name, '')) IN ['select', 'insert', 'update', 'delete'] AND
-        coalesce(xml.code, '') CONTAINS '${' AND
-        toLower(coalesce(xml.code, '')) CONTAINS ('id="' + toLower(coalesce(sinkNode.selector, '')) + '"')
-    } OR
-    toLower(coalesce(sinkNode.selector, '')) =~ '.*(order|sort|column|field|table|sql|expr|where|clause|raw|query|search).*'
-  )
-
+  (sinkNode)
+  WHERE sinkNode:MybatisXmlUnsafeArg OR sinkNode:MybatisAnnotationUnsafeArg
 MATCH
-  p = shortestPath((sourceNode)-[:ARG|REF|CALLS|HAS_CALL*1..12]->(sinkNode))
-WHERE
-  NONE(n IN nodes(p) WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer', 'int', 'long']) AND
-  EXISTS {
-    MATCH (argNode)-[argRel:ARG]->(sinkNode)
-    WHERE
-      coalesce(argRel.argIndex, -1) > 0 AND
-      NOT 'Lit' IN labels(argNode) AND
-      (sourceNode)-[:ARG|REF|CALLS|HAS_CALL*1..6]->(argNode)
-  }
-WITH sourceNode, sinkNode, p
-ORDER BY length(p) ASC
-WITH
-  coalesce(sourceNode.id, toString(id(sourceNode))) AS sId,
-  coalesce(sinkNode.id, toString(id(sinkNode))) AS tId,
-  collect(p)[0] AS path
+  p = shortestPath((sourceNode)-[*..30]->(sinkNode))
+    WHERE NONE(n IN nodes(p) WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer'] )
+
 RETURN
-  path AS path
+  p AS path
 
 /*
 Chanzi-Separator
 
-mybatis sql娉ㄥ叆
+mybatis sql注入
 
-鍦ㄤ娇鐢∕yBatis鏃讹紝SQL娉ㄥ叆婕忔礊鐨勪骇鐢熷師鐞嗕笌鐩存帴浣跨敤JDBC鎴朖PA鏃剁被浼硷紝涓昏鏄洜涓哄簲鐢ㄧ▼搴忔湭鑳芥纭鐞嗙敤鎴疯緭鍏ワ紝瀵艰嚧鏀诲嚮鑰呰兘澶熷湪SQL璇彞涓敞鍏ユ伓鎰忎唬鐮併€備互涓嬫槸MyBatis涓骇鐢烻QL娉ㄥ叆婕忔礊鐨勫師鐞嗭細
+在使用MyBatis时，SQL注入漏洞的产生原理与直接使用JDBC或JPA时类似，主要是因为应用程序未能正确处理用户输入，导致攻击者能够在SQL语句中注入恶意代码。以下是MyBatis中产生SQL注入漏洞的原理：
 
-    鍔ㄦ€丼QL锛歁yBatis鏀寔鍔ㄦ€丼QL锛屽厑璁告牴鎹潯浠跺姩鎬佸湴鎷兼帴SQL璇彞銆傚鏋滆繖浜涙潯浠朵腑鍖呭惈浜嗘湭缁忚繃婊ゆ垨鏈粡楠岃瘉鐨勭敤鎴疯緭鍏ワ紝灏卞彲鑳借鏀诲嚮鑰呭埄鐢ㄣ€?
+    动态SQL：MyBatis支持动态SQL，允许根据条件动态地拼接SQL语句。如果这些条件中包含了未经过滤或未经验证的用户输入，就可能被攻击者利用。
 
-    鐢ㄦ埛杈撳叆鎷兼帴锛氬鏋滅敤鎴疯緭鍏ヨ鐩存帴鎷兼帴鍒癝QL璇彞涓紝鑰屼笉鏄綔涓哄弬鏁颁紶閫掞紝鏀诲嚮鑰呭彲浠ラ€氳繃鏋勯€犵壒娈婅緭鍏ユ潵娉ㄥ叆鎭舵剰SQL浠ｇ爜銆?
+    用户输入拼接：如果用户输入被直接拼接到SQL语句中，而不是作为参数传递，攻击者可以通过构造特殊输入来注入恶意SQL代码。
 
-    MyBatis鐨勮剼鏈姛鑳斤細MyBatis鍏佽鍦╔ML鏄犲皠鏂囦欢鎴栨敞瑙ｄ腑浣跨敤鑴氭湰璇█锛堝JavaScript锛夛紝濡傛灉鐢ㄦ埛鑳藉鎺у埗鑴氭湰涓殑杈撳叆锛屽氨鍙兘浜х敓娉ㄥ叆椋庨櫓銆?
+    MyBatis的脚本功能：MyBatis允许在XML映射文件或注解中使用脚本语言（如JavaScript），如果用户能够控制脚本中的输入，就可能产生注入风险。
 
-    XML鏄犲皠鏂囦欢鐨勯厤缃細濡傛灉MyBatis鐨刋ML鏄犲皠鏂囦欢鎴栨敞瑙ｈ閰嶇疆涓虹洿鎺ュ寘鍚敤鎴疯緭鍏ワ紝鑰屼笉鏄娇鐢ㄩ缂栬瘧鐨凷QL璇彞鎴栧弬鏁板寲鏌ヨ锛屽氨鍙兘浜х敓SQL娉ㄥ叆婕忔礊銆?
+    XML映射文件的配置：如果MyBatis的XML映射文件或注解被配置为直接包含用户输入，而不是使用预编译的SQL语句或参数化查询，就可能产生SQL注入漏洞。
 
-    缂轰箯杈撳叆楠岃瘉锛氬簲鐢ㄧ▼搴忔湭鑳藉鐢ㄦ埛杈撳叆杩涜閫傚綋鐨勯獙璇佸拰杩囨护锛屽厑璁告敾鍑昏€呮彁浜ょ壒娈婃瀯閫犵殑杈撳叆銆?
+    缺乏输入验证：应用程序未能对用户输入进行适当的验证和过滤，允许攻击者提交特殊构造的输入。
 
-    MyBatis鐨勫姩鎬佽瑷€鏀寔锛歁yBatis鐨勫姩鎬丼QL鍔熻兘锛屽 script 鏍囩锛屽厑璁告墽琛屽鏉傜殑鍔ㄦ€丼QL璇彞銆傚鏋滆繖浜涜鍙ヤ腑鍖呭惈浜嗙敤鎴疯緭鍏ワ紝灏卞彲鑳借鍒╃敤鏉ユ墽琛孲QL娉ㄥ叆銆?
+    MyBatis的动态语言支持：MyBatis的动态SQL功能，如 script 标签，允许执行复杂的动态SQL语句。如果这些语句中包含了用户输入，就可能被利用来执行SQL注入。
 
-    鏁版嵁搴撴潈闄愶細濡傛灉搴旂敤绋嬪簭浣跨敤鐨勬暟鎹簱璐︽埛鍏锋湁杈冮珮鐨勬潈闄愶紝SQL娉ㄥ叆婕忔礊鐨勫奖鍝嶅彲鑳戒細鏇村姞涓ラ噸銆?
+    数据库权限：如果应用程序使用的数据库账户具有较高的权限，SQL注入漏洞的影响可能会更加严重。
 
-    MyBatis閰嶇疆涓嶅綋锛歁yBatis閰嶇疆涓嶅綋锛屽鍏佽鍔ㄦ€佺敓鎴怱QL璇彞鑰屾病鏈夐€傚綋鐨勫畨鍏ㄦ帾鏂斤紝涔熷彲鑳藉鍔燬QL娉ㄥ叆鐨勯闄┿€?
+    MyBatis配置不当：MyBatis配置不当，如允许动态生成SQL语句而没有适当的安全措施，也可能增加SQL注入的风险。
 
 
 Chanzi-Separator
 
-鍦ㄤ娇鐢∕yBatis鏃讹紝涓轰簡闃叉SQL娉ㄥ叆婕忔礊锛屽彲浠ラ噰鍙栦互涓嬩慨澶嶅缓璁細
+在使用MyBatis时，为了防止SQL注入漏洞，可以采取以下修复建议：
 
-    浣跨敤棰勭紪璇戣鍙ワ細MyBatis鏀寔棰勭紪璇戣鍙ワ紝纭繚浣跨敤鍙傛暟鍖栨煡璇㈣€屼笉鏄瓧绗︿覆鎷兼帴鏉ユ瀯寤篠QL璇彞銆?
+    使用预编译语句：MyBatis支持预编译语句，确保使用参数化查询而不是字符串拼接来构建SQL语句。
 
-    閬垮厤鍔ㄦ€丼QL鎷兼帴锛氫笉瑕佸湪MyBatis鐨刋ML鏄犲皠鏂囦欢鎴栨敞瑙ｄ腑鐩存帴浣跨敤鐢ㄦ埛杈撳叆鎷兼帴SQL璇彞銆?
+    避免动态SQL拼接：不要在MyBatis的XML映射文件或注解中直接使用用户输入拼接SQL语句。
 
-    杈撳叆楠岃瘉锛氬鎵€鏈夌敤鎴疯緭鍏ヨ繘琛屼弗鏍肩殑楠岃瘉锛岀‘淇濆畠浠鍚堥鏈熸牸寮忥紝閬垮厤鎭舵剰杈撳叆銆?
+    输入验证：对所有用户输入进行严格的验证，确保它们符合预期格式，避免恶意输入。
 
-    浣跨敤MyBatis鐨勫姩鎬丼QL鐗规€э細MyBatis鎻愪緵浜?{}鍜?{}浣滀负鍙傛暟鍗犱綅绗︺€傚缁堜娇鐢?{}鏉ラ槻姝QL娉ㄥ叆锛屽洜涓哄畠浼氬皢杈撳叆杞箟锛涜€?{}鍒欓渶瑕佽皑鎱庝娇鐢紝鍥犱负瀹冧細鐩存帴灏嗗唴瀹规彃鍏QL璇彞銆?
+    使用MyBatis的动态SQL特性：MyBatis提供了#{}和${}作为参数占位符。始终使用#{}来防止SQL注入，因为它会将输入转义；而${}则需要谨慎使用，因为它会直接将内容插入SQL语句。
 
-    鏈€灏忓寲鏉冮檺锛氱‘淇濆簲鐢ㄧ▼搴忎娇鐢ㄧ殑鏁版嵁搴撹处鎴峰叿鏈夋墽琛屽繀瑕佹搷浣滅殑鏈€灏忔潈闄愩€?
+    最小化权限：确保应用程序使用的数据库账户具有执行必要操作的最小权限。
 
-    浣跨敤Type Handlers锛歁yBatis鍏佽鑷畾涔塗ype Handlers鏉ュ鐞嗚緭鍏ュ拰杈撳嚭鐨勮浆鎹紝纭繚杩欎簺澶勭悊鍣ㄦ槸瀹夊叏鐨勩€?
+    使用Type Handlers：MyBatis允许自定义Type Handlers来处理输入和输出的转换，确保这些处理器是安全的。
 
-    閿欒澶勭悊锛氱‘淇濋敊璇鐞嗕笉浼氬悜鐢ㄦ埛灞曠ず鏁忔劅鐨凷QL閿欒淇℃伅銆?
+    错误处理：确保错误处理不会向用户展示敏感的SQL错误信息。
 
-    鏇存柊鍜岃ˉ涓侊細淇濇寔MyBatis鍜屾暟鎹簱椹卞姩绋嬪簭鐨勬洿鏂帮紝搴旂敤瀹夊叏琛ヤ竵鏉ヤ慨澶嶅凡鐭ョ殑瀹夊叏婕忔礊銆?
+    更新和补丁：保持MyBatis和数据库驱动程序的更新，应用安全补丁来修复已知的安全漏洞。
 
-    浣跨敤MyBatis鐨勬彃浠舵満鍒讹細MyBatis鍏佽浣跨敤鎻掍欢鏉ユ嫤鎴拰澶勭悊SQL璇彞锛屽彲浠ュ紑鍙戣嚜瀹氫箟鎻掍欢鏉ユ娴嬪拰闃叉SQL娉ㄥ叆銆?
+    使用MyBatis的插件机制：MyBatis允许使用插件来拦截和处理SQL语句，可以开发自定义插件来检测和防止SQL注入。
 
-    浣跨敤鐧藉悕鍗曪細瀵逛簬杈撳叆搴旈檺鍒朵负棰勫畾涔夌殑閫夐」鎴栧€硷紝浣跨敤鐧藉悕鍗曢獙璇佹柟娉曟潵闄愬埗鐢ㄦ埛杈撳叆銆?
+    使用白名单：对于输入应限制为预定义的选项或值，使用白名单验证方法来限制用户输入。
 
 Chanzi-Separator
 */
-

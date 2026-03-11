@@ -1,63 +1,48 @@
 MATCH
   (sourceNode)
-WHERE
+  WHERE
   (
-    sourceNode:DubboServiceArg OR
-    sourceNode:JsfXhtmlArg OR
-    sourceNode:JaxwsArg OR
-    sourceNode:StrutsActionArg OR
-    sourceNode:ThriftHandlerArg OR
-    sourceNode:NettyHandlerArg OR
+  sourceNode:DubboServiceArg OR
+  sourceNode:JsfXhtmlArg OR
+  sourceNode:JaxwsArg OR
+  sourceNode:StrutsActionArg OR
+  sourceNode:ThriftHandlerArg OR
+  sourceNode:NettyHandlerArg OR
     sourceNode:JfinalControllerArg OR
-    sourceNode:JbootControllerArg OR
-    sourceNode:SpringControllerArg OR
-    sourceNode:SolonControllerArg OR
-    sourceNode:SpringInterceptorArg OR
-    sourceNode:JspServiceArg OR
-    sourceNode:WebServletArg OR
-    sourceNode:WebXmlServletArg OR
-    sourceNode:WebXmlFilterArg OR
-    sourceNode:JaxrsArg OR
-    sourceNode:HttpHandlerArg
+  sourceNode:JbootControllerArg OR
+  sourceNode:SpringControllerArg OR
+sourceNode:SolonControllerArg OR
+  sourceNode:SpringInterceptorArg OR
+  sourceNode:JspServiceArg OR
+  sourceNode:WebServletArg OR
+  sourceNode:WebXmlServletArg OR
+  sourceNode:WebXmlFilterArg OR
+  sourceNode:JaxrsArg OR
+  sourceNode:HttpHandlerArg
   ) AND
-  coalesce(sourceNode.name, '') <> 'this' AND
-  NOT sourceNode.type IN ['Long', 'Integer', 'HttpServletResponse']
+  NOT sourceNode.type  IN ['Long', 'Integer', 'HttpServletResponse']
 
 MATCH
-  (sinkNode:Call)
-WHERE
+  (sinkNode)
+  WHERE
   ('forName' IN sinkNode.selectors AND 'Class' IN sinkNode.receiverTypes) OR
   ('invoke' IN sinkNode.selectors AND 'Method' IN sinkNode.receiverTypes)
-
 MATCH
-  p = shortestPath((sourceNode)-[:ARG|REF|CALLS|HAS_CALL*1..16]->(sinkNode))
-WHERE
-  NONE(n IN nodes(p) WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer', 'int', 'long']) AND
-  EXISTS {
-    MATCH (argNode)-[argRel:ARG]->(sinkNode)
-    WHERE
-      coalesce(argRel.argIndex, -1) >= 0 AND
-      NOT 'Lit' IN labels(argNode) AND
-      (sourceNode)-[:ARG|REF|CALLS|HAS_CALL*1..8]->(argNode)
-  }
-WITH sourceNode, sinkNode, p
-ORDER BY length(p) ASC
-WITH
-  coalesce(sourceNode.id, toString(id(sourceNode))) AS sId,
-  coalesce(sinkNode.id, toString(id(sinkNode))) AS tId,
-  collect(p)[0] AS path
+  p = shortestPath((sourceNode)-[*..30]->(sinkNode))
+    WHERE NONE(n IN nodes(p) WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer','int','long'] )
+
 RETURN
-  path AS path
+  p AS path
 
 /*
 Chanzi-Separator
 
-涓嶅畨鍏ㄧ殑鍙嶅皠璋冪敤
+不安全的反射调用
 
-鍦↗ava涓紝涓嶅畨鍏ㄧ殑鍙嶅皠婕忔礊閫氬父鎸囩殑鏄▼搴忎娇鐢ㄤ笉鍙椾俊浠荤殑杈撳叆鏉ュ姩鎬佸湴鏋勯€犲拰鎵ц浠ｇ爜锛岃繖鍙兘瀵艰嚧鏈巿鏉冪殑浠ｇ爜鎵ц銆佺粫杩囧畨鍏ㄦ帶鍒躲€佹暟鎹硠闇叉垨鍏朵粬瀹夊叏闂銆傝繖绉嶆紡娲炲彂鐢熷湪搴旂敤绋嬪簭浣跨敤鍙嶅皠鏉ュ垱寤哄璞°€佽皟鐢ㄦ柟娉曟垨璁块棶瀛楁鏃讹紝鑰屼笉鍙椾俊浠荤殑鐢ㄦ埛杈撳叆琚敤浜庤繖浜涙搷浣溿€?
+在Java中，不安全的反射漏洞通常指的是程序使用不受信任的输入来动态地构造和执行代码，这可能导致未授权的代码执行、绕过安全控制、数据泄露或其他安全问题。这种漏洞发生在应用程序使用反射来创建对象、调用方法或访问字段时，而不受信任的用户输入被用于这些操作。
 
-涓句緥璇存槑锛?
-鍋囪鏈変竴涓狫ava搴旂敤绋嬪簭锛屽畠浣跨敤鍙嶅皠鏉ュ姩鎬佹墽琛岀敤鎴锋寚瀹氱殑鍛戒护銆傚鏋滅敤鎴疯緭鍏ユ病鏈夊緱鍒伴€傚綋鐨勯獙璇佹垨娓呯悊锛屾敾鍑昏€呭彲浠ュ埄鐢ㄨ繖涓€鐐规潵鎵ц鎭舵剰浠ｇ爜銆備緥濡傦細
+举例说明：
+假设有一个Java应用程序，它使用反射来动态执行用户指定的命令。如果用户输入没有得到适当的验证或清理，攻击者可以利用这一点来执行恶意代码。例如：
 
 java
 import java.lang.reflect.Method;
@@ -68,33 +53,32 @@ public class UnsafeReflection {
             Class<?> clazz = Class.forName("java.lang.Runtime");
             Method method = clazz.getMethod("exec", String.class);
             Object runtime = clazz.getDeclaredConstructor().newInstance();
-            method.invoke(runtime, "calc.exe"); // 鎵ц璁＄畻鍣ㄧ▼搴?
+            method.invoke(runtime, "calc.exe"); // 执行计算器程序
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 }
-鍦ㄨ繖涓緥瀛愪腑锛屽鏋?java.lang.Runtime"鍜?exec"鏄€氳繃鐢ㄦ埛杈撳叆鑾峰緱鐨勶紝閭ｄ箞鏀诲嚮鑰呭彲浠ユ浛鎹㈣繖浜涘€兼潵鎵ц浠绘剰绯荤粺鍛戒护銆?
+在这个例子中，如果"java.lang.Runtime"和"exec"是通过用户输入获得的，那么攻击者可以替换这些值来执行任意系统命令。
 
 
 Chanzi-Separator
 
-淇鏂规鍖呮嫭锛?
+修复方案包括：
 
-闄愬埗鍙嶅皠鐨勪娇鐢細浠呭湪纭疄闇€瑕佹椂浣跨敤鍙嶅皠锛屽苟涓斿彧鍦ㄥ彈淇′换鐨勪笂涓嬫枃涓娇鐢ㄣ€?
+限制反射的使用：仅在确实需要时使用反射，并且只在受信任的上下文中使用。
 
-杈撳叆楠岃瘉锛氬鎵€鏈夌敤鎴疯緭鍏ヨ繘琛屼弗鏍肩殑楠岃瘉锛岀‘淇濆畠浠笉鍖呭惈浠讳綍鍙兘瀵艰嚧浠ｇ爜鎵ц鐨勫懡浠ゆ垨琛ㄨ揪寮忋€?
+输入验证：对所有用户输入进行严格的验证，确保它们不包含任何可能导致代码执行的命令或表达式。
 
-浣跨敤鐧藉悕鍗曪細瀹氫箟涓€涓彈淇′换鐨勭被銆佹柟娉曞拰瀛楁鐨勭櫧鍚嶅崟锛屽苟浠呭厑璁歌繖浜涘畨鍏ㄧ殑鍏冪礌閫氳繃鍙嶅皠琚闂€?
+使用白名单：定义一个受信任的类、方法和字段的白名单，并仅允许这些安全的元素通过反射被访问。
 
-鏈€灏忔潈闄愬師鍒欙細纭繚鎵ц鍙嶅皠鎿嶄綔鐨勪唬鐮佽繍琛屽湪鏈€灏忓繀瑕佹潈闄愪笅锛屼互鍑忓皯娼滃湪鐨勬崯瀹炽€?
+最小权限原则：确保执行反射操作的代码运行在最小必要权限下，以减少潜在的损害。
 
-寮傚父澶勭悊锛氱‘淇濆弽灏勬搷浣滀腑鐨勫紓甯歌閫傚綋澶勭悊锛屼笉娉勯湶鏁忔劅淇℃伅銆?
+异常处理：确保反射操作中的异常被适当处理，不泄露敏感信息。
 
-瀹夊叏缂栫爜瀹炶返锛氶伒寰畨鍏ㄧ紪鐮佺殑鏈€浣冲疄璺碉紝閬垮厤鍦ㄥ弽灏勪腑浣跨敤澶嶆潅鐨勮〃杈惧紡鎴栦笉鍙椾俊浠荤殑杈撳叆銆?
+安全编码实践：遵循安全编码的最佳实践，避免在反射中使用复杂的表达式或不受信任的输入。
 
-閫氳繃瀹炴柦杩欎簺鎺柦锛屽彲浠ュ噺灏戝洜涓嶅畨鍏ㄥ弽灏勫鑷寸殑瀹夊叏椋庨櫓銆傚湪瀹為檯寮€鍙戜腑锛屽簲褰撳敖閲忛伩鍏嶄娇鐢ㄤ笉鍙椾俊浠荤殑杈撳叆杩涜鍙嶅皠鎿嶄綔锛屼互闃叉娼滃湪鐨勫畨鍏ㄦ紡娲炪€?
+通过实施这些措施，可以减少因不安全反射导致的安全风险。在实际开发中，应当尽量避免使用不受信任的输入进行反射操作，以防止潜在的安全漏洞。
 
 Chanzi-Separator
 */
-

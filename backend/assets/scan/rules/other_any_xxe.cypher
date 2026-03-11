@@ -41,21 +41,11 @@ MATCH
   ( 'parseXml' IN sinkNode.selectors AND  'XmlUtil' IN sinkNode.receiverTypes) OR
   ( 'unmarshal' IN sinkNode.selectors AND  'Unmarshaller' IN sinkNode.receiverTypes)
 MATCH
-  p = shortestPath((sourceNode)-[:ARG|REF|CALLS|HAS_CALL*1..30]->(sinkNode))
-WHERE
-  NONE(n IN nodes(p) WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer','int','long'] )
-WITH sourceNode, sinkNode, p
-ORDER BY length(p) ASC
-WITH
-  coalesce(sourceNode.name, '') AS sName,
-  coalesce(sourceNode.method, '') AS sMethod,
-  coalesce(sourceNode.type, '') AS sType,
-  coalesce(sinkNode.selector, '') AS sinkSelector,
-  coalesce(sinkNode.methodFullName, '') AS sinkMfn,
-  coalesce(sinkNode.AllocationClassName, '') AS sinkAlloc,
-  collect(p)[0] AS path
+  p = shortestPath((sourceNode)-[*..30]->(sinkNode))
+    WHERE NONE(n IN nodes(p) WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer','int','long'] )
+
 RETURN
-  path AS path
+  p AS path
 
 /*
 Chanzi-Separator

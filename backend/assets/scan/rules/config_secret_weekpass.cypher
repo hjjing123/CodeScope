@@ -2,24 +2,24 @@ MATCH
   (sinkNode:YmlKeyValue|PropertiesKeyValue)
 WHERE
 (
-sinkNode.nameLower ENDS WITH 'password' OR
-sinkNode.nameLower ENDS WITH 'pass' OR
-sinkNode.nameLower ENDS WITH 'passwd'  OR
-sinkNode.nameLower ENDS WITH 'secretkey' OR
-sinkNode.nameLower ENDS WITH 'apikey'  OR
-sinkNode.nameLower ENDS WITH 'apitoken'  OR
-sinkNode.nameLower ENDS WITH 'accesstoken'  OR
-sinkNode.nameLower ENDS WITH 'sessionKey'  OR
-sinkNode.nameLower ENDS WITH 'encryptionkey'  OR
-sinkNode.nameLower ENDS WITH 'decryptionkey'  OR
-sinkNode.nameLower ENDS WITH 'bearertoken'  OR
-sinkNode.nameLower ENDS WITH 'sshkey'  OR
-sinkNode.nameLower ENDS WITH 'jwtsecret'  OR
-sinkNode.nameLower ENDS WITH 'presharedkey'  OR
-sinkNode.nameLower ENDS WITH 'privatekey'  OR
-sinkNode.nameLower ENDS WITH 'admin.key'  OR
-sinkNode.nameLower ENDS WITH 'secret.key'  OR
-sinkNode.nameLower ENDS WITH 'secret'
+LOWER(sinkNode.name) ENDS WITH 'password' OR
+LOWER(sinkNode.name) ENDS WITH 'pass' OR
+LOWER(sinkNode.name) ENDS WITH 'passwd'  OR
+LOWER(sinkNode.name) ENDS WITH 'secretkey' OR
+LOWER(sinkNode.name) ENDS WITH 'apikey'  OR
+LOWER(sinkNode.name) ENDS WITH 'apitoken'  OR
+LOWER(sinkNode.name) ENDS WITH 'accesstoken'  OR
+LOWER(sinkNode.name) ENDS WITH 'sessionKey'  OR
+LOWER(sinkNode.name) ENDS WITH 'encryptionkey'  OR
+LOWER(sinkNode.name) ENDS WITH 'decryptionkey'  OR
+LOWER(sinkNode.name) ENDS WITH 'bearertoken'  OR
+LOWER(sinkNode.name) ENDS WITH 'sshkey'  OR
+LOWER(sinkNode.name) ENDS WITH 'jwtsecret'  OR
+LOWER(sinkNode.name) ENDS WITH 'presharedkey'  OR
+LOWER(sinkNode.name) ENDS WITH 'privatekey'  OR
+LOWER(sinkNode.name) ENDS WITH 'admin.key'  OR
+LOWER(sinkNode.name) ENDS WITH 'secret.key'  OR
+LOWER(sinkNode.name) ENDS WITH 'secret'
 ) AND  sinkNode.value IN
 // 高频弱口令
 ['123456','1234', 'root', 'admin', '12345678', 'password', "passwd", "1234abcd", "test", "1111", "root123", "root1234", "admin123", "1qaz2wsx", "1qaz!QAZ", "asdf", "nacos",

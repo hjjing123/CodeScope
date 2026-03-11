@@ -3,22 +3,22 @@ MATCH
   (sinkNode:XmlElement)
 WHERE
 (
-(sinkNode.qNameLower ENDS WITH 'password' AND NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'pass' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'passwd' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'secretkey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'apikey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'apitoken' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'accesstoken' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'sessionKey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'encryptionkey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'decryptionkey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'bearertoken' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'sshkey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'jwtsecret' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'presharedkey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'privatekey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
-(sinkNode.qNameLower ENDS WITH 'secret' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${')
+(LOWER(sinkNode.qName) ENDS WITH 'password' AND NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'pass' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'passwd' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'secretkey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'apikey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'apitoken' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'accesstoken' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'sessionKey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'encryptionkey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'decryptionkey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'bearertoken' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'sshkey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'jwtsecret' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'presharedkey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'privatekey' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${') OR
+(LOWER(sinkNode.qName) ENDS WITH 'secret' AND  NOT LOWER(sinkNode.innerText) STARTS WITH '${')
 ) AND NOT sinkNode.qName CONTAINS ' '
 RETURN
   sinkNode AS path

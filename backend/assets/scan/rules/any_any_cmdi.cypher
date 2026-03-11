@@ -11,7 +11,7 @@ MATCH
   sourceNode:JfinalControllerArg OR
   sourceNode:JbootControllerArg OR
   sourceNode:SpringControllerArg OR
-  sourceNode:SolonControllerArg OR
+sourceNode:SolonControllerArg OR
   sourceNode:SpringInterceptorArg OR
   sourceNode:JspServiceArg OR
   sourceNode:WebServletArg OR
@@ -40,7 +40,7 @@ MATCH
   sinkNode.name  IN ['command', 'cmd'])
 
 MATCH
-  p = shortestPath((sourceNode)-[:ARG|REF|CALLS|HAS_CALL*..12]->(sinkNode))
+  p = shortestPath((sourceNode)-[*..30]->(sinkNode))
   WHERE none(n IN nodes(p)
     WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer', 'int', 'long'])
 RETURN

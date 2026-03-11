@@ -1,101 +1,116 @@
-// jfinal Controller 瀛愮被鑾峰彇request鐨勬柟寮? 锛?HttpServletRequest request = this.getRequest();
+// jfinal Controller 子类获取request的方式  ： HttpServletRequest request = this.getRequest();
 MATCH
   (sourceNode:ThisReference)
-WHERE
-  sourceNode.selector = 'getRequest' AND sourceNode:Receiver
+  WHERE sourceNode.selector = 'getRequest' AND sourceNode:Receiver
 
 MATCH
-  (sinkNode:Call)
-WHERE
-  sinkNode.AllocationClassName IN ['FileOutputStream', 'FileWriter', 'BufferedOutputStream'] OR
-  (sinkNode.selector = 'transferTo' AND sinkNode.type = 'MultipartFile') OR
-  ('write' IN sinkNode.selectors AND 'FileItem' IN sinkNode.receiverTypes AND coalesce(sinkNode.argPosition, -1) = 0) OR
-  ('write' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND coalesce(sinkNode.argPosition, -1) = 0) OR
-  ('copy' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND coalesce(sinkNode.argPosition, -1) = 1) OR
-  ('copyInputStreamToFile' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND coalesce(sinkNode.argPosition, -1) = 1) OR
-  ('writeByteArrayToFile' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND coalesce(sinkNode.argPosition, -1) = 0) OR
-  ('toFile' IN sinkNode.selectors AND 'ByteSource' IN sinkNode.receiverTypes AND coalesce(sinkNode.argPosition, -1) = 0) OR
-  ('uploadFile' IN sinkNode.selectors AND 'FileUploadService' IN sinkNode.receiverTypes AND coalesce(sinkNode.argPosition, -1) = 0) OR
-  ('save' IN sinkNode.selectors AND 'StorageService' IN sinkNode.receiverTypes AND coalesce(sinkNode.argPosition, -1) = 0) OR
-  ('handleFileUpload' IN sinkNode.selectors AND 'UploadController' IN sinkNode.receiverTypes AND coalesce(sinkNode.argPosition, -1) = 0)
+  (sinkNode)
+  WHERE
+  // -------------- 基础文件输出流（直接写入文件系统）--------------
+  sinkNode.AllocationClassName = 'FileOutputStream' OR  // 构造函数接收文件路径，直接写入
+  sinkNode.AllocationClassName = 'FileWriter' OR  // 字符流写入文件
+  sinkNode.AllocationClassName = 'BufferedOutputStream' OR  // 缓冲输出流（常包装文件流）
+  ('write' IN sinkNode.selectors AND 'FileOutputStream' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 写入字节（第一个参数为数据）
+  ('write' IN sinkNode.selectors AND 'FileWriter' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 写入字符（第一个参数为数据）
+  ('write' IN sinkNode.selectors AND 'BufferedOutputStream' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 缓冲流写入
+
+  // -------------- Spring MultipartFile相关（Web文件上传核心）--------------
+  (sinkNode.selector = 'getInputStream' AND sinkNode.type = 'MultipartFile') OR  // 获取上传文件输入流（风险：未校验直接处理）
+  (sinkNode.selector = 'getBytes' AND sinkNode.type = 'MultipartFile') OR  // 获取文件字节数组（可能用于写入）
+  (sinkNode.selector = 'transferTo' AND sinkNode.type = 'MultipartFile' AND sinkNode.argPosition = 0) OR  // 直接转存到文件（参数为目标路径/File）
+  (sinkNode.selector = 'getOriginalFilename' AND sinkNode.type = 'MultipartFile') OR  // 获取原始文件名（风险：未过滤直接用作保存名）
+
+  // -------------- Servlet文件上传（传统Web框架）--------------
+  ('parseRequest' IN sinkNode.selectors AND 'ServletFileUpload' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 解析上传请求（获取文件项）
+  ('write' IN sinkNode.selectors AND 'FileItem' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // FileItem.write(File) 直接写入
+  ('getInputStream' IN sinkNode.selectors AND 'FileItem' IN sinkNode.receiverTypes) OR  // 获取文件项输入流（未校验风险）
+
+  // -------------- Java NIO文件操作（现代文件API）--------------
+  ('write' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // Files.write(Path, 数据) 第一个参数为路径
+  ('copy' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 1) OR  // Files.copy(输入流, 目标路径) 第二个参数为路径
+  ('newByteChannel' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 打开文件通道（用于写入）
+
+  // -------------- 工具类文件操作（Apache/Guava等）--------------
+  ('copyInputStreamToFile' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 1) OR  // 输入流复制到文件（第二个参数为目标文件）
+  ('writeByteArrayToFile' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 字节数组写入文件（第一个参数为文件）
+  ('copy' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 1) OR  // IOUtils.copy(输入流, 输出流) 输出流可能指向文件
+  ('toFile' IN sinkNode.selectors AND 'ByteSource' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // Guava ByteSource写入文件
+
+  // -------------- 框架/服务层文件处理--------------
+  ('uploadFile' IN sinkNode.selectors AND 'FileUploadService' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 自定义上传服务（第一个参数为文件/路径）
+  ('save' IN sinkNode.selectors AND 'StorageService' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 存储服务保存文件
+  ('handleFileUpload' IN sinkNode.selectors AND 'UploadController' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 控制器处理上传
+
+  // -------------- 特殊文件操作（风险较高）--------------
+  ('createNewFile' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR  // 创建新文件（路径可控风险）
+  ('mkdirs' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR  // 创建目录（路径可控可能导致路径穿越）
+  ('renameTo' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0)  // 文件重命名（目标路径可控风险）
 
 MATCH
-  p = shortestPath((sourceNode)-[:ARG|REF|CALLS|HAS_CALL*1..16]->(sinkNode))
-WHERE
-  NONE(n IN nodes(p) WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer', 'int', 'long']) AND
-  EXISTS {
-    MATCH (argNode)-[argRel:ARG]->(sinkNode)
-    WHERE
-      coalesce(argRel.argIndex, -1) >= 0 AND
-      NOT 'Lit' IN labels(argNode) AND
-      (sourceNode)-[:ARG|REF|CALLS|HAS_CALL*1..8]->(argNode)
-  }
-WITH sourceNode, sinkNode, p
-ORDER BY length(p) ASC
-WITH
-  coalesce(sourceNode.id, toString(id(sourceNode))) AS sId,
-  coalesce(sinkNode.id, toString(id(sinkNode))) AS tId,
-  collect(p)[0] AS path
+  p = shortestPath((sourceNode)-[*..30]->(sinkNode))
+  WHERE none(n IN nodes(p)
+    WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer', 'int', 'long'])
 RETURN
-  path AS path
+  p AS path
+
 
 /*
 Chanzi-Separator
 
-鏂囦欢涓婁紶婕忔礊
+文件上传漏洞
 
-鏂囦欢涓婁紶鍩烘湰鍘熺悊娑夊強鍒癢eb搴旂敤绋嬪簭濡備綍澶勭悊鐢ㄦ埛涓婁紶鐨勬枃浠躲€備互涓嬫槸杩欎竴婕忔礊鐨勫叧閿偣锛?
+文件上传基本原理涉及到Web应用程序如何处理用户上传的文件。以下是这一漏洞的关键点：
 
-    鐢ㄦ埛涓婁紶鎺ュ彛锛歐eb搴旂敤绋嬪簭閫氬父鍖呭惈涓婁紶鏂囦欢鐨勫姛鑳斤紝鍏佽鐢ㄦ埛灏嗘枃浠讹紙濡傚浘鐗囥€佹枃妗ｇ瓑锛変笂浼犲埌鏈嶅姟鍣ㄣ€?
+    用户上传接口：Web应用程序通常包含上传文件的功能，允许用户将文件（如图片、文档等）上传到服务器。
 
-    杈撳叆楠岃瘉涓嶈冻锛氬鏋滃簲鐢ㄧ▼搴忔湭鑳藉厖鍒嗛獙璇佺敤鎴蜂笂浼犵殑鏂囦欢绫诲瀷鍜屽唴瀹癸紝灏卞彲鑳藉厑璁告伓鎰忔枃浠朵笂浼犮€?
+    输入验证不足：如果应用程序未能充分验证用户上传的文件类型和内容，就可能允许恶意文件上传。
 
-    鏂囦欢绫诲瀷杩囨护锛氬簲鐢ㄧ▼搴忓彲鑳介€氳繃妫€鏌ユ枃浠舵墿灞曞悕鎴朚IME绫诲瀷鏉ラ檺鍒跺厑璁镐笂浼犵殑鏂囦欢绫诲瀷銆傜劧鑰岋紝杩欑鏂规硶涓嶅畨鍏紝鍥犱负鎵╁睍鍚嶅拰MIME绫诲瀷鍙互琚吉閫犮€?
+    文件类型过滤：应用程序可能通过检查文件扩展名或MIME类型来限制允许上传的文件类型。然而，这种方法不安全，因为扩展名和MIME类型可以被伪造。
 
-    鎵ц鏉冮檺锛氬鏋滀笂浼犵殑鏂囦欢锛堢壒鍒槸鑴氭湰鎴栧彲鎵ц鏂囦欢锛夎鏀剧疆鍦ㄥ叿鏈夋墽琛屾潈闄愮殑鐩綍涓紝瀹冧滑鍙兘琚玏eb鏈嶅姟鍣ㄦ墽琛屻€?
+    执行权限：如果上传的文件（特别是脚本或可执行文件）被放置在具有执行权限的目录中，它们可能被Web服务器执行。
 
-    璺緞閬嶅巻锛氭敾鍑昏€呭彲鑳藉皾璇曢€氳繃鍦ㄦ枃浠跺悕涓娇鐢ㄧ壒娈婂瓧绗︼紙濡?./锛夋潵璁块棶鏈嶅姟鍣ㄤ笂鐨勫叾浠栫洰褰曞拰鏂囦欢銆?
+    路径遍历：攻击者可能尝试通过在文件名中使用特殊字符（如../）来访问服务器上的其他目录和文件。
 
-    鏈嶅姟绔В鏋愭紡娲烇細鏌愪簺Web鏈嶅姟鍣ㄦ垨搴旂敤绋嬪簭鍙兘瀛樺湪瑙ｆ瀽婕忔礊锛屽厑璁稿鐗瑰畾绫诲瀷鐨勬枃浠惰繘琛岄敊璇殑瑙ｉ噴锛屼緥濡傚皢涓€涓湅璧锋潵鍍忓浘鐗囩殑鏂囦欢瑙ｆ瀽涓哄彲鎵ц鑴氭湰銆?
+    服务端解析漏洞：某些Web服务器或应用程序可能存在解析漏洞，允许对特定类型的文件进行错误的解释，例如将一个看起来像图片的文件解析为可执行脚本。
 
-    鏂囦欢鍖呭惈婕忔礊锛氬鏋滃簲鐢ㄧ▼搴忎娇鐢ㄧ敤鎴峰彲鎺х殑杈撳叆鏉ュ寘鍚枃浠讹紝鏀诲嚮鑰呭彲鑳藉埄鐢ㄨ繖涓€鐐规潵鍖呭惈骞舵墽琛屼笂浼犵殑鎭舵剰鏂囦欢銆?
+    文件包含漏洞：如果应用程序使用用户可控的输入来包含文件，攻击者可能利用这一点来包含并执行上传的恶意文件。
 
-    瀛樺偍浣嶇疆锛氬鏋滀笂浼犵殑鏂囦欢瀛樺偍鍦╓eb鏍圭洰褰曟垨鍙叕寮€璁块棶鐨勪綅缃紝鏀诲嚮鑰呭彲鑳界洿鎺ラ€氳繃URL璁块棶杩欎簺鏂囦欢銆?
+    存储位置：如果上传的文件存储在Web根目录或可公开访问的位置，攻击者可能直接通过URL访问这些文件。
 
-    璁块棶鎺у埗锛氬簲鐢ㄧ▼搴忓彲鑳芥湭鑳芥纭疄鏂借闂帶鍒讹紝鍏佽鏈粡鎺堟潈鐨勭敤鎴疯闂垨鎵ц涓婁紶鐨勬枃浠躲€?
+    访问控制：应用程序可能未能正确实施访问控制，允许未经授权的用户访问或执行上传的文件。
 
-    瀹夊叏閰嶇疆锛歐eb鏈嶅姟鍣ㄦ垨搴旂敤绋嬪簭鐨勪笉瀹夊叏閰嶇疆鍙兘澧炲姞鏂囦欢涓婁紶婕忔礊鐨勯闄┿€?
+    安全配置：Web服务器或应用程序的不安全配置可能增加文件上传漏洞的风险。
 
 
 Chanzi-Separator
 
-淇Java涓枃浠朵笂浼犳紡娲為渶瑕侀噰鍙栦竴绯诲垪瀹夊叏鎺柦鏉ョ‘淇濅笂浼犵殑鏂囦欢涓嶄細瀵规湇鍔″櫒瀹夊叏閫犳垚濞佽儊銆備互涓嬫槸涓€浜涘叧閿殑淇寤鸿锛?
+修复Java中文件上传漏洞需要采取一系列安全措施来确保上传的文件不会对服务器安全造成威胁。以下是一些关键的修复建议：
 
-    浣跨敤鐧藉悕鍗曪細浠呭厑璁哥壒瀹氱被鍨嬬殑鏂囦欢涓婁紶锛屽鍥剧墖鍜屾枃妗ｏ紝骞剁‘淇濊繖浜涚被鍨嬩笉鍙兘琚墽琛屻€?
+    使用白名单：仅允许特定类型的文件上传，如图片和文档，并确保这些类型不可能被执行。
 
-    闄愬埗鏂囦欢瑙ｆ瀽锛氬浜庣敤鎴蜂笂浼犵殑鏂囦欢锛屽啀娆￠€氳繃 url 璁块棶璇ユ枃浠舵椂锛岀洿鎺ヤ互鏂囦欢涓嬭浇鏂瑰紡杩斿洖锛屽嵆浣夸笂浼犱簡 html銆乯sp涔熶笉杩涜瑙ｆ瀽銆?
+    限制文件解析：对于用户上传的文件，再次通过 url 访问该文件时，直接以文件下载方式返回，即使上传了 html、jsp也不进行解析。
 
-    鏂囦欢绫诲瀷楠岃瘉锛氬湪鏈嶅姟鍣ㄧ楠岃瘉鏂囦欢鐨凪IME绫诲瀷锛岀‘淇濅笂浼犵殑鏂囦欢涓庢墍澹版槑鐨勭被鍨嬬浉绗︺€?
+    文件类型验证：在服务器端验证文件的MIME类型，确保上传的文件与所声明的类型相符。
 
-    鏂囦欢鎵╁睍鍚嶆鏌ワ細妫€鏌ユ枃浠舵墿灞曞悕鏄惁鍦ㄥ厑璁哥殑鍒楄〃涓紝浣嗚娉ㄦ剰杩欏苟涓嶈冻浠ラ槻姝㈡敾鍑伙紝鍥犱负鎵╁睍鍚嶅彲浠ヨ浼€犮€?
+    文件扩展名检查：检查文件扩展名是否在允许的列表中，但要注意这并不足以防止攻击，因为扩展名可以被伪造。
 
-    鍐呭妫€鏌ワ細瀵逛笂浼犵殑鏂囦欢杩涜鎵弿锛屾煡鎵惧彲鑳界殑鎭舵剰浠ｇ爜锛岀壒鍒槸瀵逛簬鑴氭湰鍜屽彲鎵ц鏂囦欢銆?
+    内容检查：对上传的文件进行扫描，查找可能的恶意代码，特别是对于脚本和可执行文件。
 
-    闅忔満閲嶅懡鍚嶆枃浠讹細鏇存敼涓婁紶鏂囦欢鐨勫悕绉帮紝浣跨敤闅忔満鐢熸垚鐨勫悕绉帮紝浠ラ槻姝㈤鏈熺殑鏂囦欢鍚嶆敾鍑汇€?
+    随机重命名文件：更改上传文件的名称，使用随机生成的名称，以防止预期的文件名攻击。
 
-    闄愬埗鏂囦欢澶у皬锛氳缃枃浠跺ぇ灏忛檺鍒讹紝闃叉杩囧ぇ鐨勬枃浠朵笂浼犳秷鑰楁湇鍔″櫒璧勬簮鎴栧埄鐢ㄦ綔鍦ㄧ殑婕忔礊銆?
+    限制文件大小：设置文件大小限制，防止过大的文件上传消耗服务器资源或利用潜在的漏洞。
 
-    鏂囦欢涓婁紶鐩綍鏉冮檺锛氱‘淇濇枃浠朵笂浼犵洰褰曚笉鍏佽鎵ц鏉冮檺锛岃繖鏍峰嵆浣夸笂浼犱簡鑴氭湰鏂囦欢锛屼篃鏃犳硶琚湇鍔″櫒鎵ц銆?
+    文件上传目录权限：确保文件上传目录不允许执行权限，这样即使上传了脚本文件，也无法被服务器执行。
 
-    浣跨敤瀹夊叏鐨勬枃浠跺鐞嗗簱锛氫娇鐢ㄦ垚鐔熺殑鏂囦欢澶勭悊搴撴潵澶勭悊涓婁紶鐨勬枃浠讹紝閬垮厤鑷繁澶勭悊鏂囦欢涓婁紶鏃跺彲鑳藉紩鍏ョ殑瀹夊叏椋庨櫓銆?
+    使用安全的文件处理库：使用成熟的文件处理库来处理上传的文件，避免自己处理文件上传时可能引入的安全风险。
 
-    鍓嶇鍜屽悗绔獙璇侊細鍦ㄥ墠绔拰鍚庣閮借繘琛屾枃浠堕獙璇侊紝纭繚鍗充娇鍓嶇楠岃瘉琚粫杩囷紝鍚庣涔熻兘鎻愪緵瀹夊叏淇濋殰銆?
+    前端和后端验证：在前端和后端都进行文件验证，确保即使前端验证被绕过，后端也能提供安全保障。
 
-    閬垮厤浣跨敤../锛氱‘淇濇枃浠朵笂浼犺矾寰勪笉鍖呭惈../锛岄槻姝㈡敾鍑昏€呴€氳繃璺緞閬嶅巻璁块棶鍏朵粬鐩綍銆?
+    避免使用../：确保文件上传路径不包含../，防止攻击者通过路径遍历访问其他目录。
 
-    浣跨敤HTTPS锛氶€氳繃浣跨敤HTTPS鏉ヤ笂浼犳枃浠讹紝纭繚鏂囦欢鍦ㄤ紶杈撹繃绋嬩腑鐨勫畨鍏ㄦ€э紝闃叉涓棿浜烘敾鍑汇€?
+    使用HTTPS：通过使用HTTPS来上传文件，确保文件在传输过程中的安全性，防止中间人攻击。
 
-    閿欒娑堟伅澶勭悊锛氶伩鍏嶅湪閿欒娑堟伅涓樉绀烘晱鎰熶俊鎭紝濡傛枃浠惰矾寰勬垨鏈嶅姟鍣ㄩ厤缃€?
+    错误消息处理：避免在错误消息中显示敏感信息，如文件路径或服务器配置。
 
 Chanzi-Separator
 */

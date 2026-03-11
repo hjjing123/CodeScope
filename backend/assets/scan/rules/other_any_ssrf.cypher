@@ -108,21 +108,11 @@ MATCH
   ('subscribe' IN sinkNode.selectors AND 'StompClient' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0)  // STOMP协议订阅（含URL）
 
 MATCH
-  p = shortestPath((sourceNode)-[:ARG|REF|CALLS|HAS_CALL*1..30]->(sinkNode))
+  p = shortestPath((sourceNode)-[*..30]->(sinkNode))
   WHERE none(n IN nodes(p)
     WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Boolean','Integer', 'int', 'long'])
-WITH sourceNode, sinkNode, p
-ORDER BY length(p) ASC
-WITH
-  coalesce(sourceNode.name, '') AS sName,
-  coalesce(sourceNode.method, '') AS sMethod,
-  coalesce(sourceNode.type, '') AS sType,
-  coalesce(sinkNode.selector, '') AS sinkSelector,
-  coalesce(sinkNode.methodFullName, '') AS sinkMfn,
-  coalesce(sinkNode.AllocationClassName, '') AS sinkAlloc,
-  collect(p)[0] AS path
 RETURN
-  path AS path
+  p AS path
 
 /*
 Chanzi-Separator

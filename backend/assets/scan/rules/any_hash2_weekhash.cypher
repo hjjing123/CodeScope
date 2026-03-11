@@ -30,7 +30,7 @@ MATCH
   ('md5Hex' IN sinkNode.selectors AND 'DigestUtils' IN sinkNode.receivers) OR
   ('sha1Hex' IN sinkNode.selectors AND 'DigestUtils' IN sinkNode.receivers)
 MATCH
-  p = shortestPath((sourceNode)-[:ARG|REF|CALLS|HAS_CALL*..12]->(sinkNode))
+  p = shortestPath((sourceNode)-[*..30]->(sinkNode))
     WHERE NONE(n IN nodes(p) WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer','int','long'] )
 
 RETURN

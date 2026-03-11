@@ -2,29 +2,29 @@ MATCH
   (sinkNode:YmlKeyValue|PropertiesKeyValue)
 WHERE
      (
-     (sinkNode.nameLower ENDS WITH 'password' AND NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'pass' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'passwd' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'secretkey' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'apikey' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'apitoken' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'accesstoken' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'sessionKey' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'encryptionkey' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'decryptionkey' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'encryptkey' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'bearertoken' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'sshkey' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'jwtsecret' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'jwt.secret' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'jwtkey' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'presharedkey' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'privatekey' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'private-key' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'admin.key' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'secret.key' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'signkey' AND  NOT sinkNode.valueLower STARTS WITH '${') OR
-     (sinkNode.nameLower ENDS WITH 'secret' AND  NOT sinkNode.valueLower STARTS WITH '${')
+     (LOWER(sinkNode.name) ENDS WITH 'password' AND NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'pass' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'passwd' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'secretkey' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'apikey' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'apitoken' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'accesstoken' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'sessionKey' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'encryptionkey' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'decryptionkey' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'encryptkey' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'bearertoken' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'sshkey' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'jwtsecret' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'jwt.secret' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'jwtkey' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'presharedkey' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'privatekey' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'private-key' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'admin.key' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'secret.key' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'signkey' AND  NOT LOWER(sinkNode.value) STARTS WITH '${') OR
+     (LOWER(sinkNode.name) ENDS WITH 'secret' AND  NOT LOWER(sinkNode.value) STARTS WITH '${')
      )
      AND NOT sinkNode.name CONTAINS ' '
      // 排除 语言文件，比如 messages_zh_CN.properties

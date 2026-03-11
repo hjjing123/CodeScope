@@ -31,36 +31,11 @@ MATCH
   ('println' IN  sinkNode.selectors AND 'PrintWriter' IN  sinkNode.receiverTypes)
 
 MATCH
-  (sinkArgNode)-[argRel:ARG]->(sinkNode)
-WHERE
-  coalesce(argRel.argIndex, -1) > 0
-  AND NOT 'Lit' IN labels(sinkArgNode)
-
-MATCH
-  (sourceNode)-[:ARG]->(sourceMethod:Method)
-WHERE
-  NOT any(lb IN labels(sourceNode) WHERE lb IN ['WebServletArg', 'WebXmlServletArg', 'WebXmlFilterArg', 'JspServiceArg', 'HttpHandlerArg'])
-  OR EXISTS {
-    MATCH (sourceMethod)-[:HAS_CALL]->(extractCall:Call)
-    WHERE
-      coalesce(extractCall.selector, '') IN [
-        'getParameter', 'getParameterValues', 'getParameterMap',
-        'getHeader', 'getHeaders', 'getQueryString',
-        'getInputStream', 'getReader', 'getPart', 'getParts', 'getCookies'
-      ]
-      OR any(sel IN coalesce(extractCall.selectors, []) WHERE sel IN [
-        'getParameter', 'getParameterValues', 'getParameterMap',
-        'getHeader', 'getHeaders', 'getQueryString',
-        'getInputStream', 'getReader', 'getPart', 'getParts', 'getCookies'
-      ])
-  }
-
-MATCH
-  p = shortestPath((sourceNode)-[*..30]->(sinkArgNode))
+  p = shortestPath((sourceNode)-[*..30]->(sinkNode))
   WHERE none(n IN nodes(p)
     WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer', 'int', 'long'])
 RETURN
-  DISTINCT p AS path
+  p AS path
 
 /*
 Chanzi-Separator
