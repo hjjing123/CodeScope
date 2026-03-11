@@ -1,0 +1,88 @@
+[2026-03-10T11:53:32] 进入阶段 Analyze
+[2026-03-10T11:53:32] [joern] 执行命令: builtin:joern
+[2026-03-10T11:53:32] [joern] 路径准备: source_dir=/mnt/e/CodeScope/backend/storage/snapshots/f4777711-a36c-40d7-9561-bbbf83529bcb/source, cpg_file=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin, import_dir=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/import_csv, joern_bin=/mnt/e/CodeScope/infra/tools/joern-cli/joern, export_script=/mnt/e/CodeScope/backend/assets/scan/joern/export_java_min.sc
+[2026-03-10T11:53:32] [joern] 执行 parse 命令: command=/mnt/e/CodeScope/infra/tools/joern-cli/joern-parse /mnt/e/CodeScope/backend/storage/snapshots/f4777711-a36c-40d7-9561-bbbf83529bcb/source --output /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin, script=/mnt/e/CodeScope/backend/assets/scan/joern/export_java_min.sc, cpg_file=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin, import_dir=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/import_csv
+[2026-03-10T11:54:09] [joern] 执行 export 命令: command=/mnt/e/CodeScope/infra/tools/joern-cli/joern --script /mnt/e/CodeScope/backend/assets/scan/joern/export_java_min.sc --param cpgFile=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin --param outDir=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/import_csv --param ENABLE_CALLS=false --param ENABLE_REF=false --param AST_MODE=local, script=/mnt/e/CodeScope/backend/assets/scan/joern/export_java_min.sc, cpg_file=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin, import_dir=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/import_csv
+[2026-03-10T11:54:42] [joern] 导出完成: command=/mnt/e/CodeScope/infra/tools/joern-cli/joern --script /mnt/e/CodeScope/backend/assets/scan/joern/export_java_min.sc --param cpgFile=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin --param outDir=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/import_csv --param ENABLE_CALLS=false --param ENABLE_REF=false --param AST_MODE=local, script=/mnt/e/CodeScope/backend/assets/scan/joern/export_java_min.sc, cpg_file=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin, import_dir=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/import_csv, stdout_tail=[INFO ] initialising from existing storage (/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/joern-runtime/workspace/cpg/cpg.bin.tmp)
+[OK] exported to /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/import_csv
+, stderr_tail=executing /mnt/e/CodeScope/backend/assets/scan/joern/export_java_min.sc with params=HashMap(outDir -> /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/import_csv, ENABLE_CALLS -> false, AST_MODE -> local, cpgFile -> /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin, ENABLE_REF -> false)
+Creating project `cpg` for CPG at `/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin`
+Creating working copy of CPG to be safe
+Loading base CPG from: /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/joern-runtime/workspace/cpg/cpg.bin.tmp
+Overlay dataflowOss already exists - skipping
+The graph has been modified. You may want to use the `save` command to persist changes to disk.  All changes will also be saved collectively on exit
+closing/saving project `cpg`
+, nodes=10, relationships=6
+[2026-03-10T11:54:42] [joern] stdout: Parsing code at: /mnt/e/CodeScope/backend/storage/snapshots/f4777711-a36c-40d7-9561-bbbf83529bcb/source - language: `JAVA`
+[+] Running language frontend
+=======================================================================================================
+Invoking CPG generator in a separate process. Note that the new process will consume additional memory.
+If you are importing a large codebase (and/or running into memory issues), please try the following:
+1) exit joern
+2) invoke the frontend: /mnt/e/CodeScope/infra/tools/joern-cli/jimple2cpg -J-Xmx3898m /mnt/e/CodeScope/backend/storage/snapshots/f4777711-a36c-40d7-9561-bbbf83529bcb/source --output /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin
+3) start joern, import the cpg: `importCpg("path/to/cpg")`
+=======================================================================================================
+
+[+] Applying default overlays
+Successfully wrote graph to: /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin
+To load the graph, type `joern /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin`
+
+[INFO ] initialising from existing storage (/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/joern-runtime/workspace/cpg/cpg.bin.tmp)
+[OK] exported to /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/import_csv
+
+nodes=10 rels=6
+[2026-03-10T11:54:42] [joern] stderr: executing /mnt/e/CodeScope/backend/assets/scan/joern/export_java_min.sc with params=HashMap(outDir -> /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/import_csv, ENABLE_CALLS -> false, AST_MODE -> local, cpgFile -> /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin, ENABLE_REF -> false)
+Creating project `cpg` for CPG at `/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/code.bin`
+Creating working copy of CPG to be safe
+Loading base CPG from: /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/joern-runtime/workspace/cpg/cpg.bin.tmp
+Overlay dataflowOss already exists - skipping
+The graph has been modified. You may want to use the `save` command to persist changes to disk.  All changes will also be saved collectively on exit
+closing/saving project `cpg`
+[2026-03-10T11:54:42] [joern] 执行完成: exit_code=0, duration_ms=70126
+[2026-03-10T11:54:42] [neo4j_import] 执行命令: builtin:neo4j_import
+[2026-03-10T11:54:47] [neo4j_import] 执行导入命令: image=neo4j:5.26, database=neo4j, data_mount=codescope_neo4j_data_300023f9-27d5-41ee-8c15-64c8ef78733a, import_host=/mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/import_csv, command=docker run --rm -t -v codescope_neo4j_data_300023f9-27d5-41ee-8c15-64c8ef78733a:/data -v /mnt/e/CodeScope/backend/storage/workspaces/scans/e8eebdbf-b50b-4733-bbb8-7e857e47888b/300023f9-27d5-41ee-8c15-64c8ef78733a/external/import_csv:/import:ro neo4j:5.26 bash -lc NEO4J_ADMIN=; if command -v neo4j-admin >/dev/null 2>&1; then NEO4J_ADMIN=neo4j-admin; elif [ -x /var/lib/neo4j/bin/neo4j-admin ]; then NEO4J_ADMIN=/var/lib/neo4j/bin/neo4j-admin; elif [ -x /usr/share/neo4j/bin/neo4j-admin ]; then NEO4J_ADMIN=/usr/share/neo4j/bin/neo4j-admin; else echo neo4j-admin-not-found 1>&2; exit 127; fi; $NEO4J_ADMIN database import full neo4j --overwrite-destination=true --id-type=STRING --multiline-fields=true --array-delimiter="\001" --nodes=Call=/import/nodes_Call_header.csv,/import/nodes_Call_data.csv --nodes=File=/import/nodes_File_header.csv,/import/nodes_File_data.csv --nodes=GradleDependency=/import/nodes_GradleDependency_header.csv,/import/nodes_GradleDependency_data.csv --nodes=Lit=/import/nodes_Lit_header.csv,/import/nodes_Lit_data.csv --nodes=Method=/import/nodes_Method_header.csv,/import/nodes_Method_data.csv --nodes=PomDependency=/import/nodes_PomDependency_header.csv,/import/nodes_PomDependency_data.csv --nodes=PropertiesKeyValue=/import/nodes_PropertiesKeyValue_header.csv,/import/nodes_PropertiesKeyValue_data.csv --nodes=Var=/import/nodes_Var_header.csv,/import/nodes_Var_data.csv --nodes=XmlElement=/import/nodes_XmlElement_header.csv,/import/nodes_XmlElement_data.csv --nodes=YmlKeyValue=/import/nodes_YmlKeyValue_header.csv,/import/nodes_YmlKeyValue_data.csv --relationships=ARG=/import/edges_ARG_header.csv,/import/edges_ARG_data.csv --relationships=AST=/import/edges_AST_header.csv,/import/edges_AST_data.csv --relationships=CALLS=/import/edges_CALLS_header.csv,/import/edges_CALLS_data.csv --relationships=HAS_CALL=/import/edges_HAS_CALL_header.csv,/import/edges_HAS_CALL_data.csv --relationships=IN_FILE=/import/edges_IN_FILE_header.csv,/import/edges_IN_FILE_data.csv --relationships=REF=/import/edges_REF_header.csv,/import/edges_REF_data.csv
+[2026-03-10T11:55:02] [neo4j_import] 启动导入阶段 Neo4j 容器: codescope_neo4j_300023f9-27d5-41ee-8c15-64c8ef78733a-import
+[2026-03-10T11:55:14] [neo4j_import] 导入阶段 Neo4j 容器已运行: codescope_neo4j_300023f9-27d5-41ee-8c15-64c8ef78733a-import, uri=bolt://127.0.0.1:45188
+[2026-03-10T11:55:15] [neo4j_import] 导入阶段 Neo4j 容器已销毁: codescope_neo4j_300023f9-27d5-41ee-8c15-64c8ef78733a-import
+[2026-03-10T11:55:15] [neo4j_import] 启动查询阶段 Neo4j 容器: codescope_neo4j_300023f9-27d5-41ee-8c15-64c8ef78733a-query
+[2026-03-10T11:55:28] [neo4j_import] 查询阶段 Neo4j 容器就绪: codescope_neo4j_300023f9-27d5-41ee-8c15-64c8ef78733a-query, uri=bolt://127.0.0.1:46014
+[2026-03-10T11:55:28] [neo4j_import] 导入完成: nodes=10, relationships=6, database=neo4j
+[2026-03-10T11:55:28] [neo4j_import] stdout: ......  85% ∆0ms [311ms]
+.......... .......... .......... .......... ..........  90% ∆0ms [311ms]
+.......... .......... .......... .......... ..........  95% ∆0ms [311ms]
+.......... .......... .......... .......... .......... 100% ∆0ms [311ms]
+Relationship linking COMPLETED in 312ms
+
+(4/4) Post processing 2026-03-10 11:55:01.444+0000
+  Estimated required memory usage: 510.0MiB
+-......... .......... .......... .......... ..........   5% ∆553ms [553ms]
+.......... .......... .......... .......... ..........  10% ∆0ms [553ms]
+.......... .......... .......... .......... ..........  15% ∆0ms [553ms]
+.......... .......... .......... .......... ..........  20% ∆0ms [553ms]
+.......... .......... .......... .......... ..........  25% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  30% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  35% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  40% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  45% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  50% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  55% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  60% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  65% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  70% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  75% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  80% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  85% ∆0ms [554ms]
+.......... .......... .......... .......... ..........  90% ∆0ms [555ms]
+.......... .......... .......... .......... ..........  95% ∆0ms [555ms]
+.......... .......... .......... .......... .......... 100% ∆0ms [555ms]
+Post processing COMPLETED in 555ms
+
+
+IMPORT DONE in 10s 412ms. 
+Imported:
+  40220 nodes
+  93572 relationships
+  577297 properties
+Peak memory usage: 547.6MiB
+
+[2026-03-10T11:55:28] [neo4j_import] 执行完成: exit_code=0, duration_ms=45424

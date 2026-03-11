@@ -1,0 +1,1141 @@
+{
+  "round": 1,
+  "generated_at": "2026-03-10T11:57:23Z",
+  "rule_rows": {
+    "any_activiti_ssti": 0,
+    "any_any_cmdi": 12,
+    "any_any_ldapi": 0,
+    "any_any_pathtraver": 0,
+    "any_any_sqli": 0,
+    "any_any_ssrf": 4,
+    "any_any_upload": 0,
+    "any_any_urlredirect": 3,
+    "any_any_xss": 0,
+    "any_any_xxe": 1,
+    "any_BeanShell_codei": 0,
+    "any_el_codei": 0,
+    "any_fastjson_deserialization": 0,
+    "any_freemarker_ssti": 0,
+    "any_freemarker_xss": 0,
+    "any_groovyshell_codei": 0,
+    "any_hash2_weekhash": 0,
+    "any_hash_weekhash": 0,
+    "any_hessian_deserialization": 0,
+    "any_java_deserialization": 0,
+    "any_jdbc_sqli": 0,
+    "any_jdbctemplate_sqli": 3,
+    "any_jndi_jndii": 0,
+    "any_jpa_sqli": 0,
+    "any_jshell_codei": 0,
+    "any_mvel_codei": 0,
+    "any_mybatis_sqli": 0,
+    "any_mybatisplus_sqli": 0,
+    "any_ognl_codei": 0,
+    "any_oss_upload": 0,
+    "any_qlexpress_codei": 0,
+    "any_reflect_codei": 0,
+    "any_ScriptEngine_codei": 0,
+    "any_snakeyaml_deserialization": 6,
+    "any_socket_ssrf": 0,
+    "any_spel_codei": 9,
+    "any_thymeleaf_ssti": 2,
+    "any_velocity_ssti": 9,
+    "any_velocity_xss": 3,
+    "any_XMLDecoder_deserialization": 0,
+    "any_xstream_deserialization": 9,
+    "asterisk_alloworigin_cors": 0,
+    "config_actuator2_misconfig": 0,
+    "config_actuator_misconfig": 0,
+    "config_druid_misconfig": 0,
+    "config_h2_misconfig": 0,
+    "config_secret_hardcode": 0,
+    "config_secret_weekpass": 0,
+    "cookie_response_cookiesecure": 0,
+    "exception_any_infoleak": 0,
+    "id_jdbc_hpe": 0,
+    "id_jdbctemplate_hpe": 0,
+    "id_mybatis_hpe": 0,
+    "id_otherdbquery_hpe": 0,
+    "java_druid_misconfig": 0,
+    "java_secret2_hardcode": 0,
+    "java_secret2_weekpass": 0,
+    "java_secret_hardcode": 0,
+    "java_swagger_misconfig": 0,
+    "jfinal_any_upload": 0,
+    "jsp_any_xss": 0,
+    "origin_alloworigin_cors": 0,
+    "other_activiti_ssti": 0,
+    "other_any_cmdi": 0,
+    "other_any_ldapi": 0,
+    "other_any_pathtraver": 0,
+    "other_any_ssrf": 0,
+    "other_any_urlredirect": 0,
+    "other_any_xss": 0,
+    "other_any_xxe": 0,
+    "other_BeanShell_codei": 0,
+    "other_el_codei": 0,
+    "other_fastjson_deserialization": 0,
+    "other_freemarker_ssti": 0,
+    "other_freemarker_xss": 0,
+    "other_groovyshell_codei": 0,
+    "other_hash2_weekhash": 0,
+    "other_hash_weekhash": 0,
+    "other_java_deserialization": 0,
+    "other_jdbc_sqli": 0,
+    "other_jdbctemplate_sqli": 0,
+    "other_jndi_jndii": 0,
+    "other_jpa_sqli": 0,
+    "other_jshell_codei": 0,
+    "other_mvel_codei": 0,
+    "other_mybatis_sqli": 0,
+    "other_ognl_codei": 0,
+    "other_oss_upload": 0,
+    "other_qlexpress_codei": 0,
+    "other_reflect_codei": 0,
+    "other_ScriptEngine_codei": 0,
+    "other_snakeyaml_deserialization": 0,
+    "other_socket_ssrf": 0,
+    "other_spel_codei": 0,
+    "other_thymeleaf2_ssti": 0,
+    "other_thymeleaf_ssti": 0,
+    "other_velocity_ssti": 0,
+    "other_velocity_xss": 0,
+    "other_XMLDecoder_deserialization": 0,
+    "other_xstream_deserialization": 0,
+    "pom_dubbo_deserialization": 0,
+    "pom_fastjson_deserialization": 0,
+    "pom_jacksondatabind_deserialization": 0,
+    "pom_jxpath_codei": 0,
+    "pom_log4j_codei": 0,
+    "pom_shiro_deserialization": 0,
+    "pom_snakeyaml_deserialization": 0,
+    "pom_springgateway_codei": 0,
+    "pom_struts2_codei": 0,
+    "pom_xstream_deserialization": 0,
+    "pom_xxljob_codei": 0,
+    "readobject_any_cmdi": 0,
+    "socket_any_cmdi": 0,
+    "socket_java_deserialization": 0,
+    "spring_templet_xss": 0,
+    "spring_thymeleaf_ssti": 2,
+    "websocket_any_cmdi": 0,
+    "websocket_any_deserialization": 0,
+    "xml_druid_misconfig": 0,
+    "xml_secret2_hardcode": 0,
+    "xml_secret2_weekpass": 0,
+    "xml_secret_hardcode": 0,
+    "xml_secret_weekpass": 0
+  },
+  "rule_summary": {
+    "total_rules": 123,
+    "hit_rules": 12,
+    "zero_rules": 111,
+    "total_rows": 63
+  },
+  "rule_results": [
+    {
+      "rule": "any_activiti_ssti",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 299,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_any_cmdi",
+      "status": "succeeded",
+      "rows": 12,
+      "duration_ms": 888,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_any_ldapi",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 133,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_any_pathtraver",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 256,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_any_sqli",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 90,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_any_ssrf",
+      "status": "succeeded",
+      "rows": 4,
+      "duration_ms": 1627,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_any_upload",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 687,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_any_urlredirect",
+      "status": "succeeded",
+      "rows": 3,
+      "duration_ms": 293,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_any_xss",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 312,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_any_xxe",
+      "status": "succeeded",
+      "rows": 1,
+      "duration_ms": 491,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_BeanShell_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 142,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_el_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 137,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_fastjson_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 134,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_freemarker_ssti",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 104,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_freemarker_xss",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 533,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_groovyshell_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 130,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_hash2_weekhash",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 115,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_hash_weekhash",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 122,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_hessian_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 95,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_java_deserialization",
+      "status": "failed",
+      "rows": 0,
+      "duration_ms": 181,
+      "error_code": "SCAN_EXTERNAL_RULES_FAILED",
+      "message": "执行 Cypher 失败"
+    },
+    {
+      "rule": "any_jdbc_sqli",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 161,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_jdbctemplate_sqli",
+      "status": "succeeded",
+      "rows": 3,
+      "duration_ms": 588,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_jndi_jndii",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 102,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_jpa_sqli",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 131,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_jshell_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 87,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_mvel_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 62,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_mybatis_sqli",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 2824,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_mybatisplus_sqli",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 297,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_ognl_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 86,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_oss_upload",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 203,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_qlexpress_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 58,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_reflect_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 5512,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_ScriptEngine_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 170,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_snakeyaml_deserialization",
+      "status": "succeeded",
+      "rows": 6,
+      "duration_ms": 448,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_socket_ssrf",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 58,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_spel_codei",
+      "status": "succeeded",
+      "rows": 9,
+      "duration_ms": 552,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_thymeleaf_ssti",
+      "status": "succeeded",
+      "rows": 2,
+      "duration_ms": 5999,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_velocity_ssti",
+      "status": "succeeded",
+      "rows": 9,
+      "duration_ms": 581,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_velocity_xss",
+      "status": "succeeded",
+      "rows": 3,
+      "duration_ms": 2376,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_XMLDecoder_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 109,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "any_xstream_deserialization",
+      "status": "succeeded",
+      "rows": 9,
+      "duration_ms": 544,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "asterisk_alloworigin_cors",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 65,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "config_actuator2_misconfig",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 44,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "config_actuator_misconfig",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 85,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "config_druid_misconfig",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 62,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "config_h2_misconfig",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 22,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "config_secret_hardcode",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 105,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "config_secret_weekpass",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 61,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "cookie_response_cookiesecure",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 140,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "exception_any_infoleak",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 89,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "id_jdbc_hpe",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 126,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "id_jdbctemplate_hpe",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 166,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "id_mybatis_hpe",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 121,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "id_otherdbquery_hpe",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 119,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "java_druid_misconfig",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 27,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "java_secret2_hardcode",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 88,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "java_secret2_weekpass",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 81,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "java_secret_hardcode",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 52,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "java_swagger_misconfig",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 95,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "jfinal_any_upload",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 306,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "jsp_any_xss",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 124,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "origin_alloworigin_cors",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 82,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_activiti_ssti",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 668,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_any_cmdi",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 1391,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_any_ldapi",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 672,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_any_pathtraver",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 1821,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_any_ssrf",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 3631,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_any_urlredirect",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 1155,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_any_xss",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 1555,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_any_xxe",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 2141,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_BeanShell_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 694,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_el_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 557,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_fastjson_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 549,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_freemarker_ssti",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 556,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_freemarker_xss",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 756,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_groovyshell_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 768,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_hash2_weekhash",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 691,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_hash_weekhash",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 92,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_java_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 567,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_jdbc_sqli",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 1115,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_jdbctemplate_sqli",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 1619,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_jndi_jndii",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 611,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_jpa_sqli",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 1099,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_jshell_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 613,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_mvel_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 556,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_mybatis_sqli",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 535,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_ognl_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 582,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_oss_upload",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 901,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_qlexpress_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 523,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_reflect_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 770,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_ScriptEngine_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 1405,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_snakeyaml_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 699,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_socket_ssrf",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 524,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_spel_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 906,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_thymeleaf2_ssti",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 92,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_thymeleaf_ssti",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 1454,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_velocity_ssti",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 927,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_velocity_xss",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 487,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_XMLDecoder_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 330,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "other_xstream_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 566,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "pom_dubbo_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 45,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "pom_fastjson_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 40,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "pom_jacksondatabind_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 38,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "pom_jxpath_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 48,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "pom_log4j_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 37,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "pom_shiro_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 23,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "pom_snakeyaml_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 58,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "pom_springgateway_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 21,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "pom_struts2_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 50,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "pom_xstream_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 65,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "pom_xxljob_codei",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 21,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "readobject_any_cmdi",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 101,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "socket_any_cmdi",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 76,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "socket_java_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 63,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "spring_templet_xss",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 286,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "spring_thymeleaf_ssti",
+      "status": "succeeded",
+      "rows": 2,
+      "duration_ms": 5454,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "websocket_any_cmdi",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 132,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "websocket_any_deserialization",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 71,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "xml_druid_misconfig",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 28,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "xml_secret2_hardcode",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 96,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "xml_secret2_weekpass",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 60,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "xml_secret_hardcode",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 74,
+      "error_code": null,
+      "message": null
+    },
+    {
+      "rule": "xml_secret_weekpass",
+      "status": "succeeded",
+      "rows": 0,
+      "duration_ms": 80,
+      "error_code": null,
+      "message": null
+    }
+  ],
+  "partial_failures": [
+    {
+      "rule": "any_java_deserialization",
+      "error_code": "SCAN_EXTERNAL_RULES_FAILED",
+      "message": "执行 Cypher 失败",
+      "duration_ms": 181
+    }
+  ],
+  "execution_summary": {
+    "total_rules": 123,
+    "executed_rules": 123,
+    "succeeded_rules": 122,
+    "failed_rules": 1,
+    "failed_rule_keys": [
+      "any_java_deserialization"
+    ],
+    "failure_mode": "permissive",
+    "has_partial_failures": true,
+    "partial_failure_effect": "continued"
+  }
+}

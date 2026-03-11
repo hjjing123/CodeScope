@@ -1,0 +1,257 @@
+[2026-03-10T11:55:28] 进入阶段 Query
+[2026-03-10T11:55:28] [post_labels] 执行命令: builtin:post_labels
+[2026-03-10T11:55:28] [post_labels] 开始执行脚本 1/1: post_labels.cypher
+[2026-03-10T11:56:02] [post_labels] 脚本执行完成 1/1: post_labels.cypher, statements=217, total_rows=0, duration_ms=34395
+[2026-03-10T11:56:02] [post_labels] 执行完成: scripts=1, statements=217, total_rows=0
+[2026-03-10T11:56:02] [post_labels] stdout: {"scripts": [{"script": "post_labels.cypher", "statement_count": 217, "total_rows": 0, "duration_ms": 34395}], "script_count": 1, "statement_count": 217, "total_rows": 0}
+[2026-03-10T11:56:03] [post_labels] 执行完成: exit_code=0, duration_ms=34507
+[2026-03-10T11:56:03] [rules] 执行命令: builtin:rules
+[2026-03-10T11:56:04] [rules] 开始执行规则 1/123: any_activiti_ssti
+[2026-03-10T11:56:04] [rules] 规则执行完成 1/123: any_activiti_ssti, rows=0, duration_ms=299
+[2026-03-10T11:56:04] [rules] 开始执行规则 2/123: any_any_cmdi
+[2026-03-10T11:56:05] [rules] 规则执行完成 2/123: any_any_cmdi, rows=12, duration_ms=888
+[2026-03-10T11:56:05] [rules] 开始执行规则 3/123: any_any_ldapi
+[2026-03-10T11:56:05] [rules] 规则执行完成 3/123: any_any_ldapi, rows=0, duration_ms=133
+[2026-03-10T11:56:05] [rules] 开始执行规则 4/123: any_any_pathtraver
+[2026-03-10T11:56:06] [rules] 规则执行完成 4/123: any_any_pathtraver, rows=0, duration_ms=256
+[2026-03-10T11:56:06] [rules] 开始执行规则 5/123: any_any_sqli
+[2026-03-10T11:56:06] [rules] 规则执行完成 5/123: any_any_sqli, rows=0, duration_ms=90
+[2026-03-10T11:56:06] [rules] 开始执行规则 6/123: any_any_ssrf
+[2026-03-10T11:56:08] [rules] 规则执行完成 6/123: any_any_ssrf, rows=4, duration_ms=1627
+[2026-03-10T11:56:08] [rules] 开始执行规则 7/123: any_any_upload
+[2026-03-10T11:56:08] [rules] 规则执行完成 7/123: any_any_upload, rows=0, duration_ms=687
+[2026-03-10T11:56:08] [rules] 开始执行规则 8/123: any_any_urlredirect
+[2026-03-10T11:56:09] [rules] 规则执行完成 8/123: any_any_urlredirect, rows=3, duration_ms=293
+[2026-03-10T11:56:09] [rules] 开始执行规则 9/123: any_any_xss
+[2026-03-10T11:56:09] [rules] 规则执行完成 9/123: any_any_xss, rows=0, duration_ms=312
+[2026-03-10T11:56:09] [rules] 开始执行规则 10/123: any_any_xxe
+[2026-03-10T11:56:10] [rules] 规则执行完成 10/123: any_any_xxe, rows=1, duration_ms=491
+[2026-03-10T11:56:10] [rules] 开始执行规则 11/123: any_BeanShell_codei
+[2026-03-10T11:56:10] [rules] 规则执行完成 11/123: any_BeanShell_codei, rows=0, duration_ms=142
+[2026-03-10T11:56:10] [rules] 开始执行规则 12/123: any_el_codei
+[2026-03-10T11:56:10] [rules] 规则执行完成 12/123: any_el_codei, rows=0, duration_ms=137
+[2026-03-10T11:56:10] [rules] 开始执行规则 13/123: any_fastjson_deserialization
+[2026-03-10T11:56:10] [rules] 规则执行完成 13/123: any_fastjson_deserialization, rows=0, duration_ms=134
+[2026-03-10T11:56:10] [rules] 开始执行规则 14/123: any_freemarker_ssti
+[2026-03-10T11:56:10] [rules] 规则执行完成 14/123: any_freemarker_ssti, rows=0, duration_ms=104
+[2026-03-10T11:56:10] [rules] 开始执行规则 15/123: any_freemarker_xss
+[2026-03-10T11:56:11] [rules] 规则执行完成 15/123: any_freemarker_xss, rows=0, duration_ms=533
+[2026-03-10T11:56:11] [rules] 开始执行规则 16/123: any_groovyshell_codei
+[2026-03-10T11:56:11] [rules] 规则执行完成 16/123: any_groovyshell_codei, rows=0, duration_ms=130
+[2026-03-10T11:56:11] [rules] 开始执行规则 17/123: any_hash2_weekhash
+[2026-03-10T11:56:11] [rules] 规则执行完成 17/123: any_hash2_weekhash, rows=0, duration_ms=115
+[2026-03-10T11:56:11] [rules] 开始执行规则 18/123: any_hash_weekhash
+[2026-03-10T11:56:12] [rules] 规则执行完成 18/123: any_hash_weekhash, rows=0, duration_ms=122
+[2026-03-10T11:56:12] [rules] 开始执行规则 19/123: any_hessian_deserialization
+[2026-03-10T11:56:12] [rules] 规则执行完成 19/123: any_hessian_deserialization, rows=0, duration_ms=95
+[2026-03-10T11:56:12] [rules] 开始执行规则 20/123: any_java_deserialization
+[2026-03-10T11:56:12] [rules] 规则执行失败 20/123: any_java_deserialization, error_code=SCAN_EXTERNAL_RULES_FAILED, duration_ms=181
+[2026-03-10T11:56:12] [rules] 开始执行规则 21/123: any_jdbc_sqli
+[2026-03-10T11:56:12] [rules] 规则执行完成 21/123: any_jdbc_sqli, rows=0, duration_ms=161
+[2026-03-10T11:56:12] [rules] 开始执行规则 22/123: any_jdbctemplate_sqli
+[2026-03-10T11:56:13] [rules] 规则执行完成 22/123: any_jdbctemplate_sqli, rows=3, duration_ms=588
+[2026-03-10T11:56:13] [rules] 开始执行规则 23/123: any_jndi_jndii
+[2026-03-10T11:56:13] [rules] 规则执行完成 23/123: any_jndi_jndii, rows=0, duration_ms=102
+[2026-03-10T11:56:13] [rules] 开始执行规则 24/123: any_jpa_sqli
+[2026-03-10T11:56:13] [rules] 规则执行完成 24/123: any_jpa_sqli, rows=0, duration_ms=131
+[2026-03-10T11:56:13] [rules] 开始执行规则 25/123: any_jshell_codei
+[2026-03-10T11:56:13] [rules] 规则执行完成 25/123: any_jshell_codei, rows=0, duration_ms=87
+[2026-03-10T11:56:13] [rules] 开始执行规则 26/123: any_mvel_codei
+[2026-03-10T11:56:13] [rules] 规则执行完成 26/123: any_mvel_codei, rows=0, duration_ms=62
+[2026-03-10T11:56:13] [rules] 开始执行规则 27/123: any_mybatis_sqli
+[2026-03-10T11:56:16] [rules] 规则执行完成 27/123: any_mybatis_sqli, rows=0, duration_ms=2824
+[2026-03-10T11:56:16] [rules] 开始执行规则 28/123: any_mybatisplus_sqli
+[2026-03-10T11:56:17] [rules] 规则执行完成 28/123: any_mybatisplus_sqli, rows=0, duration_ms=297
+[2026-03-10T11:56:17] [rules] 开始执行规则 29/123: any_ognl_codei
+[2026-03-10T11:56:17] [rules] 规则执行完成 29/123: any_ognl_codei, rows=0, duration_ms=86
+[2026-03-10T11:56:17] [rules] 开始执行规则 30/123: any_oss_upload
+[2026-03-10T11:56:17] [rules] 规则执行完成 30/123: any_oss_upload, rows=0, duration_ms=203
+[2026-03-10T11:56:17] [rules] 开始执行规则 31/123: any_qlexpress_codei
+[2026-03-10T11:56:17] [rules] 规则执行完成 31/123: any_qlexpress_codei, rows=0, duration_ms=58
+[2026-03-10T11:56:17] [rules] 开始执行规则 32/123: any_reflect_codei
+[2026-03-10T11:56:23] [rules] 规则执行完成 32/123: any_reflect_codei, rows=0, duration_ms=5512
+[2026-03-10T11:56:23] [rules] 开始执行规则 33/123: any_ScriptEngine_codei
+[2026-03-10T11:56:23] [rules] 规则执行完成 33/123: any_ScriptEngine_codei, rows=0, duration_ms=170
+[2026-03-10T11:56:23] [rules] 开始执行规则 34/123: any_snakeyaml_deserialization
+[2026-03-10T11:56:24] [rules] 规则执行完成 34/123: any_snakeyaml_deserialization, rows=6, duration_ms=448
+[2026-03-10T11:56:24] [rules] 开始执行规则 35/123: any_socket_ssrf
+[2026-03-10T11:56:24] [rules] 规则执行完成 35/123: any_socket_ssrf, rows=0, duration_ms=58
+[2026-03-10T11:56:24] [rules] 开始执行规则 36/123: any_spel_codei
+[2026-03-10T11:56:24] [rules] 规则执行完成 36/123: any_spel_codei, rows=9, duration_ms=552
+[2026-03-10T11:56:24] [rules] 开始执行规则 37/123: any_thymeleaf_ssti
+[2026-03-10T11:56:30] [rules] 规则执行完成 37/123: any_thymeleaf_ssti, rows=2, duration_ms=5999
+[2026-03-10T11:56:30] [rules] 开始执行规则 38/123: any_velocity_ssti
+[2026-03-10T11:56:31] [rules] 规则执行完成 38/123: any_velocity_ssti, rows=9, duration_ms=581
+[2026-03-10T11:56:31] [rules] 开始执行规则 39/123: any_velocity_xss
+[2026-03-10T11:56:33] [rules] 规则执行完成 39/123: any_velocity_xss, rows=3, duration_ms=2376
+[2026-03-10T11:56:33] [rules] 开始执行规则 40/123: any_XMLDecoder_deserialization
+[2026-03-10T11:56:34] [rules] 规则执行完成 40/123: any_XMLDecoder_deserialization, rows=0, duration_ms=109
+[2026-03-10T11:56:34] [rules] 开始执行规则 41/123: any_xstream_deserialization
+[2026-03-10T11:56:34] [rules] 规则执行完成 41/123: any_xstream_deserialization, rows=9, duration_ms=544
+[2026-03-10T11:56:34] [rules] 开始执行规则 42/123: asterisk_alloworigin_cors
+[2026-03-10T11:56:34] [rules] 规则执行完成 42/123: asterisk_alloworigin_cors, rows=0, duration_ms=65
+[2026-03-10T11:56:34] [rules] 开始执行规则 43/123: config_actuator2_misconfig
+[2026-03-10T11:56:34] [rules] 规则执行完成 43/123: config_actuator2_misconfig, rows=0, duration_ms=44
+[2026-03-10T11:56:35] [rules] 开始执行规则 44/123: config_actuator_misconfig
+[2026-03-10T11:56:35] [rules] 规则执行完成 44/123: config_actuator_misconfig, rows=0, duration_ms=85
+[2026-03-10T11:56:35] [rules] 开始执行规则 45/123: config_druid_misconfig
+[2026-03-10T11:56:35] [rules] 规则执行完成 45/123: config_druid_misconfig, rows=0, duration_ms=62
+[2026-03-10T11:56:35] [rules] 开始执行规则 46/123: config_h2_misconfig
+[2026-03-10T11:56:35] [rules] 规则执行完成 46/123: config_h2_misconfig, rows=0, duration_ms=22
+[2026-03-10T11:56:35] [rules] 开始执行规则 47/123: config_secret_hardcode
+[2026-03-10T11:56:35] [rules] 规则执行完成 47/123: config_secret_hardcode, rows=0, duration_ms=105
+[2026-03-10T11:56:35] [rules] 开始执行规则 48/123: config_secret_weekpass
+[2026-03-10T11:56:35] [rules] 规则执行完成 48/123: config_secret_weekpass, rows=0, duration_ms=61
+[2026-03-10T11:56:35] [rules] 开始执行规则 49/123: cookie_response_cookiesecure
+[2026-03-10T11:56:35] [rules] 规则执行完成 49/123: cookie_response_cookiesecure, rows=0, duration_ms=140
+[2026-03-10T11:56:35] [rules] 开始执行规则 50/123: exception_any_infoleak
+[2026-03-10T11:56:36] [rules] 规则执行完成 50/123: exception_any_infoleak, rows=0, duration_ms=89
+[2026-03-10T11:56:36] [rules] 开始执行规则 51/123: id_jdbc_hpe
+[2026-03-10T11:56:36] [rules] 规则执行完成 51/123: id_jdbc_hpe, rows=0, duration_ms=126
+[2026-03-10T11:56:36] [rules] 开始执行规则 52/123: id_jdbctemplate_hpe
+[2026-03-10T11:56:36] [rules] 规则执行完成 52/123: id_jdbctemplate_hpe, rows=0, duration_ms=166
+[2026-03-10T11:56:36] [rules] 开始执行规则 53/123: id_mybatis_hpe
+[2026-03-10T11:56:36] [rules] 规则执行完成 53/123: id_mybatis_hpe, rows=0, duration_ms=121
+[2026-03-10T11:56:36] [rules] 开始执行规则 54/123: id_otherdbquery_hpe
+[2026-03-10T11:56:36] [rules] 规则执行完成 54/123: id_otherdbquery_hpe, rows=0, duration_ms=119
+[2026-03-10T11:56:36] [rules] 开始执行规则 55/123: java_druid_misconfig
+[2026-03-10T11:56:36] [rules] 规则执行完成 55/123: java_druid_misconfig, rows=0, duration_ms=27
+[2026-03-10T11:56:36] [rules] 开始执行规则 56/123: java_secret2_hardcode
+[2026-03-10T11:56:37] [rules] 规则执行完成 56/123: java_secret2_hardcode, rows=0, duration_ms=88
+[2026-03-10T11:56:37] [rules] 开始执行规则 57/123: java_secret2_weekpass
+[2026-03-10T11:56:37] [rules] 规则执行完成 57/123: java_secret2_weekpass, rows=0, duration_ms=81
+[2026-03-10T11:56:37] [rules] 开始执行规则 58/123: java_secret_hardcode
+[2026-03-10T11:56:37] [rules] 规则执行完成 58/123: java_secret_hardcode, rows=0, duration_ms=52
+[2026-03-10T11:56:37] [rules] 开始执行规则 59/123: java_swagger_misconfig
+[2026-03-10T11:56:37] [rules] 规则执行完成 59/123: java_swagger_misconfig, rows=0, duration_ms=95
+[2026-03-10T11:56:37] [rules] 开始执行规则 60/123: jfinal_any_upload
+[2026-03-10T11:56:37] [rules] 规则执行完成 60/123: jfinal_any_upload, rows=0, duration_ms=306
+[2026-03-10T11:56:37] [rules] 开始执行规则 61/123: jsp_any_xss
+[2026-03-10T11:56:38] [rules] 规则执行完成 61/123: jsp_any_xss, rows=0, duration_ms=124
+[2026-03-10T11:56:38] [rules] 开始执行规则 62/123: origin_alloworigin_cors
+[2026-03-10T11:56:38] [rules] 规则执行完成 62/123: origin_alloworigin_cors, rows=0, duration_ms=82
+[2026-03-10T11:56:38] [rules] 开始执行规则 63/123: other_activiti_ssti
+[2026-03-10T11:56:38] [rules] 规则执行完成 63/123: other_activiti_ssti, rows=0, duration_ms=668
+[2026-03-10T11:56:38] [rules] 开始执行规则 64/123: other_any_cmdi
+[2026-03-10T11:56:40] [rules] 规则执行完成 64/123: other_any_cmdi, rows=0, duration_ms=1391
+[2026-03-10T11:56:40] [rules] 开始执行规则 65/123: other_any_ldapi
+[2026-03-10T11:56:41] [rules] 规则执行完成 65/123: other_any_ldapi, rows=0, duration_ms=672
+[2026-03-10T11:56:41] [rules] 开始执行规则 66/123: other_any_pathtraver
+[2026-03-10T11:56:42] [rules] 规则执行完成 66/123: other_any_pathtraver, rows=0, duration_ms=1821
+[2026-03-10T11:56:43] [rules] 开始执行规则 67/123: other_any_ssrf
+[2026-03-10T11:56:46] [rules] 规则执行完成 67/123: other_any_ssrf, rows=0, duration_ms=3631
+[2026-03-10T11:56:46] [rules] 开始执行规则 68/123: other_any_urlredirect
+[2026-03-10T11:56:47] [rules] 规则执行完成 68/123: other_any_urlredirect, rows=0, duration_ms=1155
+[2026-03-10T11:56:47] [rules] 开始执行规则 69/123: other_any_xss
+[2026-03-10T11:56:49] [rules] 规则执行完成 69/123: other_any_xss, rows=0, duration_ms=1555
+[2026-03-10T11:56:49] [rules] 开始执行规则 70/123: other_any_xxe
+[2026-03-10T11:56:51] [rules] 规则执行完成 70/123: other_any_xxe, rows=0, duration_ms=2141
+[2026-03-10T11:56:51] [rules] 开始执行规则 71/123: other_BeanShell_codei
+[2026-03-10T11:56:52] [rules] 规则执行完成 71/123: other_BeanShell_codei, rows=0, duration_ms=694
+[2026-03-10T11:56:52] [rules] 开始执行规则 72/123: other_el_codei
+[2026-03-10T11:56:53] [rules] 规则执行完成 72/123: other_el_codei, rows=0, duration_ms=557
+[2026-03-10T11:56:53] [rules] 开始执行规则 73/123: other_fastjson_deserialization
+[2026-03-10T11:56:53] [rules] 规则执行完成 73/123: other_fastjson_deserialization, rows=0, duration_ms=549
+[2026-03-10T11:56:53] [rules] 开始执行规则 74/123: other_freemarker_ssti
+[2026-03-10T11:56:54] [rules] 规则执行完成 74/123: other_freemarker_ssti, rows=0, duration_ms=556
+[2026-03-10T11:56:54] [rules] 开始执行规则 75/123: other_freemarker_xss
+[2026-03-10T11:56:55] [rules] 规则执行完成 75/123: other_freemarker_xss, rows=0, duration_ms=756
+[2026-03-10T11:56:55] [rules] 开始执行规则 76/123: other_groovyshell_codei
+[2026-03-10T11:56:56] [rules] 规则执行完成 76/123: other_groovyshell_codei, rows=0, duration_ms=768
+[2026-03-10T11:56:56] [rules] 开始执行规则 77/123: other_hash2_weekhash
+[2026-03-10T11:56:56] [rules] 规则执行完成 77/123: other_hash2_weekhash, rows=0, duration_ms=691
+[2026-03-10T11:56:56] [rules] 开始执行规则 78/123: other_hash_weekhash
+[2026-03-10T11:56:56] [rules] 规则执行完成 78/123: other_hash_weekhash, rows=0, duration_ms=92
+[2026-03-10T11:56:56] [rules] 开始执行规则 79/123: other_java_deserialization
+[2026-03-10T11:56:57] [rules] 规则执行完成 79/123: other_java_deserialization, rows=0, duration_ms=567
+[2026-03-10T11:56:57] [rules] 开始执行规则 80/123: other_jdbc_sqli
+[2026-03-10T11:56:58] [rules] 规则执行完成 80/123: other_jdbc_sqli, rows=0, duration_ms=1115
+[2026-03-10T11:56:58] [rules] 开始执行规则 81/123: other_jdbctemplate_sqli
+[2026-03-10T11:57:00] [rules] 规则执行完成 81/123: other_jdbctemplate_sqli, rows=0, duration_ms=1619
+[2026-03-10T11:57:00] [rules] 开始执行规则 82/123: other_jndi_jndii
+[2026-03-10T11:57:01] [rules] 规则执行完成 82/123: other_jndi_jndii, rows=0, duration_ms=611
+[2026-03-10T11:57:01] [rules] 开始执行规则 83/123: other_jpa_sqli
+[2026-03-10T11:57:02] [rules] 规则执行完成 83/123: other_jpa_sqli, rows=0, duration_ms=1099
+[2026-03-10T11:57:02] [rules] 开始执行规则 84/123: other_jshell_codei
+[2026-03-10T11:57:02] [rules] 规则执行完成 84/123: other_jshell_codei, rows=0, duration_ms=613
+[2026-03-10T11:57:03] [rules] 开始执行规则 85/123: other_mvel_codei
+[2026-03-10T11:57:03] [rules] 规则执行完成 85/123: other_mvel_codei, rows=0, duration_ms=556
+[2026-03-10T11:57:03] [rules] 开始执行规则 86/123: other_mybatis_sqli
+[2026-03-10T11:57:04] [rules] 规则执行完成 86/123: other_mybatis_sqli, rows=0, duration_ms=535
+[2026-03-10T11:57:04] [rules] 开始执行规则 87/123: other_ognl_codei
+[2026-03-10T11:57:04] [rules] 规则执行完成 87/123: other_ognl_codei, rows=0, duration_ms=582
+[2026-03-10T11:57:04] [rules] 开始执行规则 88/123: other_oss_upload
+[2026-03-10T11:57:05] [rules] 规则执行完成 88/123: other_oss_upload, rows=0, duration_ms=901
+[2026-03-10T11:57:05] [rules] 开始执行规则 89/123: other_qlexpress_codei
+[2026-03-10T11:57:06] [rules] 规则执行完成 89/123: other_qlexpress_codei, rows=0, duration_ms=523
+[2026-03-10T11:57:06] [rules] 开始执行规则 90/123: other_reflect_codei
+[2026-03-10T11:57:07] [rules] 规则执行完成 90/123: other_reflect_codei, rows=0, duration_ms=770
+[2026-03-10T11:57:07] [rules] 开始执行规则 91/123: other_ScriptEngine_codei
+[2026-03-10T11:57:08] [rules] 规则执行完成 91/123: other_ScriptEngine_codei, rows=0, duration_ms=1405
+[2026-03-10T11:57:08] [rules] 开始执行规则 92/123: other_snakeyaml_deserialization
+[2026-03-10T11:57:09] [rules] 规则执行完成 92/123: other_snakeyaml_deserialization, rows=0, duration_ms=699
+[2026-03-10T11:57:09] [rules] 开始执行规则 93/123: other_socket_ssrf
+[2026-03-10T11:57:10] [rules] 规则执行完成 93/123: other_socket_ssrf, rows=0, duration_ms=524
+[2026-03-10T11:57:10] [rules] 开始执行规则 94/123: other_spel_codei
+[2026-03-10T11:57:11] [rules] 规则执行完成 94/123: other_spel_codei, rows=0, duration_ms=906
+[2026-03-10T11:57:11] [rules] 开始执行规则 95/123: other_thymeleaf2_ssti
+[2026-03-10T11:57:11] [rules] 规则执行完成 95/123: other_thymeleaf2_ssti, rows=0, duration_ms=92
+[2026-03-10T11:57:11] [rules] 开始执行规则 96/123: other_thymeleaf_ssti
+[2026-03-10T11:57:12] [rules] 规则执行完成 96/123: other_thymeleaf_ssti, rows=0, duration_ms=1454
+[2026-03-10T11:57:12] [rules] 开始执行规则 97/123: other_velocity_ssti
+[2026-03-10T11:57:13] [rules] 规则执行完成 97/123: other_velocity_ssti, rows=0, duration_ms=927
+[2026-03-10T11:57:13] [rules] 开始执行规则 98/123: other_velocity_xss
+[2026-03-10T11:57:14] [rules] 规则执行完成 98/123: other_velocity_xss, rows=0, duration_ms=487
+[2026-03-10T11:57:14] [rules] 开始执行规则 99/123: other_XMLDecoder_deserialization
+[2026-03-10T11:57:14] [rules] 规则执行完成 99/123: other_XMLDecoder_deserialization, rows=0, duration_ms=330
+[2026-03-10T11:57:14] [rules] 开始执行规则 100/123: other_xstream_deserialization
+[2026-03-10T11:57:15] [rules] 规则执行完成 100/123: other_xstream_deserialization, rows=0, duration_ms=566
+[2026-03-10T11:57:15] [rules] 开始执行规则 101/123: pom_dubbo_deserialization
+[2026-03-10T11:57:15] [rules] 规则执行完成 101/123: pom_dubbo_deserialization, rows=0, duration_ms=45
+[2026-03-10T11:57:15] [rules] 开始执行规则 102/123: pom_fastjson_deserialization
+[2026-03-10T11:57:15] [rules] 规则执行完成 102/123: pom_fastjson_deserialization, rows=0, duration_ms=40
+[2026-03-10T11:57:15] [rules] 开始执行规则 103/123: pom_jacksondatabind_deserialization
+[2026-03-10T11:57:15] [rules] 规则执行完成 103/123: pom_jacksondatabind_deserialization, rows=0, duration_ms=38
+[2026-03-10T11:57:15] [rules] 开始执行规则 104/123: pom_jxpath_codei
+[2026-03-10T11:57:15] [rules] 规则执行完成 104/123: pom_jxpath_codei, rows=0, duration_ms=48
+[2026-03-10T11:57:15] [rules] 开始执行规则 105/123: pom_log4j_codei
+[2026-03-10T11:57:15] [rules] 规则执行完成 105/123: pom_log4j_codei, rows=0, duration_ms=37
+[2026-03-10T11:57:15] [rules] 开始执行规则 106/123: pom_shiro_deserialization
+[2026-03-10T11:57:15] [rules] 规则执行完成 106/123: pom_shiro_deserialization, rows=0, duration_ms=23
+[2026-03-10T11:57:15] [rules] 开始执行规则 107/123: pom_snakeyaml_deserialization
+[2026-03-10T11:57:16] [rules] 规则执行完成 107/123: pom_snakeyaml_deserialization, rows=0, duration_ms=58
+[2026-03-10T11:57:16] [rules] 开始执行规则 108/123: pom_springgateway_codei
+[2026-03-10T11:57:16] [rules] 规则执行完成 108/123: pom_springgateway_codei, rows=0, duration_ms=21
+[2026-03-10T11:57:16] [rules] 开始执行规则 109/123: pom_struts2_codei
+[2026-03-10T11:57:16] [rules] 规则执行完成 109/123: pom_struts2_codei, rows=0, duration_ms=50
+[2026-03-10T11:57:16] [rules] 开始执行规则 110/123: pom_xstream_deserialization
+[2026-03-10T11:57:16] [rules] 规则执行完成 110/123: pom_xstream_deserialization, rows=0, duration_ms=65
+[2026-03-10T11:57:16] [rules] 开始执行规则 111/123: pom_xxljob_codei
+[2026-03-10T11:57:16] [rules] 规则执行完成 111/123: pom_xxljob_codei, rows=0, duration_ms=21
+[2026-03-10T11:57:16] [rules] 开始执行规则 112/123: readobject_any_cmdi
+[2026-03-10T11:57:16] [rules] 规则执行完成 112/123: readobject_any_cmdi, rows=0, duration_ms=101
+[2026-03-10T11:57:16] [rules] 开始执行规则 113/123: socket_any_cmdi
+[2026-03-10T11:57:16] [rules] 规则执行完成 113/123: socket_any_cmdi, rows=0, duration_ms=76
+[2026-03-10T11:57:16] [rules] 开始执行规则 114/123: socket_java_deserialization
+[2026-03-10T11:57:16] [rules] 规则执行完成 114/123: socket_java_deserialization, rows=0, duration_ms=63
+[2026-03-10T11:57:16] [rules] 开始执行规则 115/123: spring_templet_xss
+[2026-03-10T11:57:17] [rules] 规则执行完成 115/123: spring_templet_xss, rows=0, duration_ms=286
+[2026-03-10T11:57:17] [rules] 开始执行规则 116/123: spring_thymeleaf_ssti
+[2026-03-10T11:57:22] [rules] 规则执行完成 116/123: spring_thymeleaf_ssti, rows=2, duration_ms=5454
+[2026-03-10T11:57:22] [rules] 开始执行规则 117/123: websocket_any_cmdi
+[2026-03-10T11:57:22] [rules] 规则执行完成 117/123: websocket_any_cmdi, rows=0, duration_ms=132
+[2026-03-10T11:57:23] [rules] 开始执行规则 118/123: websocket_any_deserialization
+[2026-03-10T11:57:23] [rules] 规则执行完成 118/123: websocket_any_deserialization, rows=0, duration_ms=71
+[2026-03-10T11:57:23] [rules] 开始执行规则 119/123: xml_druid_misconfig
+[2026-03-10T11:57:23] [rules] 规则执行完成 119/123: xml_druid_misconfig, rows=0, duration_ms=28
+[2026-03-10T11:57:23] [rules] 开始执行规则 120/123: xml_secret2_hardcode
+[2026-03-10T11:57:23] [rules] 规则执行完成 120/123: xml_secret2_hardcode, rows=0, duration_ms=96
+[2026-03-10T11:57:23] [rules] 开始执行规则 121/123: xml_secret2_weekpass
+[2026-03-10T11:57:23] [rules] 规则执行完成 121/123: xml_secret2_weekpass, rows=0, duration_ms=60
+[2026-03-10T11:57:23] [rules] 开始执行规则 122/123: xml_secret_hardcode
+[2026-03-10T11:57:23] [rules] 规则执行完成 122/123: xml_secret_hardcode, rows=0, duration_ms=74
+[2026-03-10T11:57:23] [rules] 开始执行规则 123/123: xml_secret_weekpass
+[2026-03-10T11:57:23] [rules] 规则执行完成 123/123: xml_secret_weekpass, rows=0, duration_ms=80
+[2026-03-10T11:57:23] [rules] 执行完成: total_rules=123, hit_rules=12, succeeded_rules=122, failed_rules=1, partial_failures=1
+[2026-03-10T11:57:23] [rules] stdout: l}, {"rule": "pom_springgateway_codei", "status": "succeeded", "rows": 0, "duration_ms": 21, "error_code": null, "message": null}, {"rule": "pom_struts2_codei", "status": "succeeded", "rows": 0, "duration_ms": 50, "error_code": null, "message": null}, {"rule": "pom_xstream_deserialization", "status": "succeeded", "rows": 0, "duration_ms": 65, "error_code": null, "message": null}, {"rule": "pom_xxljob_codei", "status": "succeeded", "rows": 0, "duration_ms": 21, "error_code": null, "message": null}, {"rule": "readobject_any_cmdi", "status": "succeeded", "rows": 0, "duration_ms": 101, "error_code": null, "message": null}, {"rule": "socket_any_cmdi", "status": "succeeded", "rows": 0, "duration_ms": 76, "error_code": null, "message": null}, {"rule": "socket_java_deserialization", "status": "succeeded", "rows": 0, "duration_ms": 63, "error_code": null, "message": null}, {"rule": "spring_templet_xss", "status": "succeeded", "rows": 0, "duration_ms": 286, "error_code": null, "message": null}, {"rule": "spring_thymeleaf_ssti", "status": "succeeded", "rows": 2, "duration_ms": 5454, "error_code": null, "message": null}, {"rule": "websocket_any_cmdi", "status": "succeeded", "rows": 0, "duration_ms": 132, "error_code": null, "message": null}, {"rule": "websocket_any_deserialization", "status": "succeeded", "rows": 0, "duration_ms": 71, "error_code": null, "message": null}, {"rule": "xml_druid_misconfig", "status": "succeeded", "rows": 0, "duration_ms": 28, "error_code": null, "message": null}, {"rule": "xml_secret2_hardcode", "status": "succeeded", "rows": 0, "duration_ms": 96, "error_code": null, "message": null}, {"rule": "xml_secret2_weekpass", "status": "succeeded", "rows": 0, "duration_ms": 60, "error_code": null, "message": null}, {"rule": "xml_secret_hardcode", "status": "succeeded", "rows": 0, "duration_ms": 74, "error_code": null, "message": null}, {"rule": "xml_secret_weekpass", "status": "succeeded", "rows": 0, "duration_ms": 80, "error_code": null, "message": null}]}
+[2026-03-10T11:57:23] [rules] 执行完成: exit_code=0, duration_ms=80745

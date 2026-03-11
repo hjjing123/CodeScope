@@ -1,0 +1,3 @@
+[2026-03-10T11:57:23] 读取外部结果 round=1, reports_dir=/mnt/e/CodeScope/backend/storage/workspaces/scans/300023f9-27d5-41ee-8c15-64c8ef78733a/external/reports
+[2026-03-10T11:57:23] external 结果汇总完成: findings=63, hit_rules=12
+[2026-03-10T11:57:23] 进入阶段 Aggregate
