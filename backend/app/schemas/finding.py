@@ -65,20 +65,59 @@ class FindingLabelActionPayload(BaseModel):
     label: FindingLabelPayload
 
 
+class FindingPathNodePayload(BaseModel):
+    node_id: int
+    labels: list[str]
+    file: str | None = None
+    line: int | None = None
+    column: int | None = None
+    func_name: str | None = None
+    display_name: str | None = None
+    symbol_name: str | None = None
+    owner_method: str | None = None
+    type_name: str | None = None
+    node_kind: str | None = None
+    code_snippet: str | None = None
+    node_ref: str
+    raw_props: dict[str, object] = Field(default_factory=dict)
+
+
 class FindingPathStepPayload(BaseModel):
     step_id: int
     labels: list[str]
     file: str | None = None
     line: int | None = None
+    column: int | None = None
     func_name: str | None = None
+    display_name: str | None = None
+    symbol_name: str | None = None
+    owner_method: str | None = None
+    type_name: str | None = None
+    node_kind: str | None = None
     code_snippet: str | None = None
     node_ref: str
+
+
+class FindingPathEdgePayload(BaseModel):
+    edge_id: int
+    edge_type: str
+    from_node_id: int | None = None
+    to_node_id: int | None = None
+    from_step_id: int | None = None
+    to_step_id: int | None = None
+    from_node_ref: str | None = None
+    to_node_ref: str | None = None
+    label: str | None = None
+    is_hidden: bool = False
+    props_json: dict[str, object] = Field(default_factory=dict)
 
 
 class FindingPathPayload(BaseModel):
     path_id: int
     path_length: int
     steps: list[FindingPathStepPayload]
+    nodes: list[FindingPathNodePayload] = Field(default_factory=list)
+    edges: list[FindingPathEdgePayload] = Field(default_factory=list)
 
 
 class FindingPathListPayload(BaseModel):

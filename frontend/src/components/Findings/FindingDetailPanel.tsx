@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Drawer, Typography, Tag, Button, Space, message, Spin, Empty, Tabs } from 'antd';
 import { BugOutlined, CheckCircleOutlined, CloseCircleOutlined, WarningOutlined, CodeOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { FindingService } from '../../services/findings';
@@ -6,9 +6,12 @@ import { getVersionFile } from '../../services/projectVersion';
 import FindingPathViewer from './FindingPathViewer';
 import CodeViewer from './CodeViewer';
 import type { Finding, FindingPath, FindingPathStep, FindingLabelRequest } from '../../types/finding';
+import { pickPreferredPathStep } from './findingPathGraph';
+import { buildFallbackFindingPaths } from './findingPathFallback';
 import '../ProjectVersion/CodeBrowser.css';
 
 const { Text } = Typography;
+const DEFAULT_EMPTY_PATH_MESSAGE = 'No path available';
 
 const hasValidLine = (value?: number | null) => typeof value === 'number' && value > 0;
 
@@ -39,53 +42,26 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
   const [sourceFileContent, setSourceFileContent] = useState<string>('');
   const [sourceFileSummary, setSourceFileSummary] = useState<string>('');
   const [loadingSourceFile, setLoadingSourceFile] = useState(false);
+  const [pathEmptyMessage, setPathEmptyMessage] = useState(DEFAULT_EMPTY_PATH_MESSAGE);
 
-  useEffect(() => {
-    if (visible && finding) {
-      fetchPaths();
-    } else {
-      setPaths([]);
-      setSelectedPath(null);
-      setSelectedStep(null);
-      setSourceFileContent('');
-      setSourceFileSummary('');
-    }
-  }, [visible, finding]);
-
-  const fetchPaths = async () => {
-    if (!finding) return;
-    setLoading(true);
-    try {
-      const res = await FindingService.getFindingPaths(finding.id, { mode: 'all', limit: 10 });
-      if (res && res.items && res.items.length > 0) {
-        setPaths(res.items);
-        setSelectedPath(res.items[0]);
-        if (res.items[0].steps && res.items[0].steps.length > 0) {
-          void handleStepClick(res.items[0].steps[0], res.items[0], finding.id, finding.version_id);
-        }
-      } else {
-        setPaths([]);
-        setSelectedPath(null);
-        setSelectedStep(null);
-        setSourceFileContent('');
-        setSourceFileSummary('');
-      }
-    } catch (error) {
-      console.error('Failed to fetch finding paths:', error);
-      message.error('Failed to load finding paths');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const resetPathState = useCallback((emptyMessage = DEFAULT_EMPTY_PATH_MESSAGE) => {
+    setPaths([]);
+    setSelectedPath(null);
+    setSelectedStep(null);
+    setSourceFileContent('');
+    setSourceFileSummary('');
+    setPathEmptyMessage(emptyMessage);
+  }, []);
 
   const handlePathSelect = (path: FindingPath) => {
     setSelectedPath(path);
-    if (path.steps.length > 0 && finding) {
-      void handleStepClick(path.steps[0], path, finding.id, finding.version_id);
+    const preferredStep = pickPreferredPathStep(path);
+    if (preferredStep && finding) {
+      void handleStepClick(preferredStep, path, finding.id, finding.version_id);
     }
   };
 
-  const handleStepClick = async (
+  const handleStepClick = useCallback(async (
     step: FindingPathStep,
     path: FindingPath,
     _findingId: string,
@@ -116,16 +92,89 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
     } finally {
       setLoadingSourceFile(false);
     }
+  }, []);
+
+  const applyPaths = useCallback(async (nextPaths: FindingPath[], activeFinding: Finding) => {
+    setPaths(nextPaths);
+    setPathEmptyMessage(DEFAULT_EMPTY_PATH_MESSAGE);
+
+    const initialPath = nextPaths[0] ?? null;
+    setSelectedPath(initialPath);
+
+    if (!initialPath) {
+      setSelectedStep(null);
+      setSourceFileContent('');
+      setSourceFileSummary('');
+      return;
+    }
+
+    const preferredStep = pickPreferredPathStep(initialPath);
+    if (preferredStep) {
+      await handleStepClick(preferredStep, initialPath, activeFinding.id, activeFinding.version_id);
+      return;
+    }
+
+    setSelectedStep(null);
+    setSourceFileContent('// Select a propagation step to load the full source file');
+    setSourceFileSummary('');
+  }, [handleStepClick]);
+
+  const resolvePathErrorMessage = (error: unknown) => {
+    const responseData = (error as {
+      response?: { data?: { error?: { message?: string }; message?: string } };
+    })?.response?.data;
+    return responseData?.error?.message || responseData?.message || DEFAULT_EMPTY_PATH_MESSAGE;
   };
 
-  const highlightedLines = selectedPath && selectedStep?.file
-    ? Array.from(
-        new Set(
-          selectedPath.steps
-            .filter((step) => step.file === selectedStep.file && hasValidLine(step.line))
-            .map((step) => step.line as number)
-        )
-      ).sort((left, right) => left - right)
+  const fetchPaths = useCallback(async () => {
+    if (!finding) return;
+
+    setLoading(true);
+    setPathEmptyMessage(DEFAULT_EMPTY_PATH_MESSAGE);
+
+    try {
+      if (!finding.has_path) {
+        const fallbackPaths = buildFallbackFindingPaths(finding);
+        if (fallbackPaths.length > 0) {
+          await applyPaths(fallbackPaths, finding);
+        } else {
+          resetPathState();
+        }
+        return;
+      }
+
+      const res = await FindingService.getFindingPaths(finding.id, { mode: 'all', limit: 10 });
+      const nextPaths = res?.items?.length ? res.items : buildFallbackFindingPaths(finding);
+
+      if (nextPaths.length > 0) {
+        await applyPaths(nextPaths, finding);
+      } else {
+        resetPathState();
+      }
+    } catch (error) {
+      const fallbackPaths = buildFallbackFindingPaths(finding);
+      if (fallbackPaths.length > 0) {
+        await applyPaths(fallbackPaths, finding);
+        return;
+      }
+
+      console.error('Failed to fetch finding paths:', error);
+      resetPathState(resolvePathErrorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [applyPaths, finding, resetPathState]);
+
+  useEffect(() => {
+    if (visible && finding) {
+      void fetchPaths();
+    } else {
+      resetPathState();
+    }
+  }, [visible, finding, fetchPaths, resetPathState]);
+
+  const highlightedLines = selectedStep?.file && hasValidLine(selectedStep.line)
+    ? [selectedStep.line as number]
     : [];
 
   const handleStatusUpdate = async (status: string, fp_reason?: string) => {
@@ -262,7 +311,7 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
           </div>
 
           {/* Right Pane: Propagation Path (Sidebar) */}
-          <div className="code-browser-tree-panel" style={{ width: 280, borderRight: 'none', borderLeft: '1px solid #e5e7eb' }}>
+          <div className="code-browser-tree-panel" style={{ width: 360, borderRight: 'none', borderLeft: '1px solid #e5e7eb' }}>
             <div style={{ flex: 1, overflow: 'hidden' }}>
               {paths.length > 0 && selectedPath ? (
                 <FindingPathViewer
@@ -274,7 +323,7 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
                 />
               ) : (
                 <Empty 
-                  description={<Text type="secondary">No path available</Text>} 
+                  description={<Text type="secondary">{pathEmptyMessage}</Text>} 
                   style={{ marginTop: 64 }} 
                   image={Empty.PRESENTED_IMAGE_SIMPLE} 
                 />

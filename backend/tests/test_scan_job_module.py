@@ -161,10 +161,12 @@ def external_scan_settings(tmp_path: Path):
         "scan_external_stage_joern_command",
         "scan_external_stage_import_command",
         "scan_external_stage_post_labels_command",
+        "scan_external_stage_source_semantic_command",
         "scan_external_stage_rules_command",
         "scan_external_stage_joern_timeout_seconds",
         "scan_external_stage_import_timeout_seconds",
         "scan_external_stage_post_labels_timeout_seconds",
+        "scan_external_stage_source_semantic_timeout_seconds",
         "scan_external_stage_rules_timeout_seconds",
     ]
     old_values = {key: getattr(settings, key) for key in tracked_keys}
@@ -231,10 +233,14 @@ def external_scan_settings(tmp_path: Path):
     settings.scan_external_stage_joern_command = "stage-joern-{job_id}"
     settings.scan_external_stage_import_command = "stage-import-{job_id}"
     settings.scan_external_stage_post_labels_command = "stage-post-labels-{job_id}"
+    settings.scan_external_stage_source_semantic_command = (
+        "stage-source-semantic-{job_id}"
+    )
     settings.scan_external_stage_rules_command = "stage-rules-{job_id}"
     settings.scan_external_stage_joern_timeout_seconds = 30
     settings.scan_external_stage_import_timeout_seconds = 30
     settings.scan_external_stage_post_labels_timeout_seconds = 30
+    settings.scan_external_stage_source_semantic_timeout_seconds = 30
     settings.scan_external_stage_rules_timeout_seconds = 30
 
     try:
@@ -1014,10 +1020,12 @@ def test_scan_job_cancel_running(client, db_session):
     assert detail_resp.status_code == 200
     payload = detail_resp.json()["data"]
     assert payload["status"] == JobStatus.CANCELED.value
-    assert payload["progress"]["percent"] == 0
+    assert payload["progress"]["percent"] == 10
     assert payload["result_summary"]["cleanup"]["workspace_released"] is True
-    assert all(
-        item["status"] == JobStepStatus.CANCELED.value for item in payload["steps"]
+    step_by_key = {item["step_key"]: item["status"] for item in payload["steps"]}
+    assert all(status != JobStepStatus.RUNNING.value for status in step_by_key.values())
+    assert any(
+        status == JobStepStatus.CANCELED.value for status in step_by_key.values()
     )
     assert not workspace_dir.exists()
 
@@ -1682,12 +1690,12 @@ def test_scan_job_external_stage_orchestration_succeeds(
     assert "rule_execution" in payload["result_summary"]
     assert "summary" in payload["result_summary"]["rule_execution"]
     assert "rule_results" in payload["result_summary"]["rule_execution"]
-    assert len(payload["result_summary"]["external_stages"]) == 4
+    assert len(payload["result_summary"]["external_stages"]) == 5
     assert all(
         item["status"] == "succeeded"
         for item in payload["result_summary"]["external_stages"]
     )
-    assert len(commands) == 4
+    assert len(commands) == 5
     assert cleanup_statuses == [JobStatus.RUNNING.value]
     workspace_dir = (
         Path(external_scan_settings["settings"].scan_workspace_root)
@@ -1787,6 +1795,7 @@ def test_scan_job_external_builtin_joern_contract_failure_maps_failure_code(
     settings.scan_external_stage_joern_command = "builtin:joern"
     settings.scan_external_stage_import_command = "builtin:neo4j_import"
     settings.scan_external_stage_post_labels_command = "builtin:post_labels"
+    settings.scan_external_stage_source_semantic_command = "builtin:source_semantic"
     settings.scan_external_stage_rules_command = "builtin:rules"
 
     def _fake_run_builtin_command(command, *, deadline, env=None):
@@ -1933,6 +1942,7 @@ def test_scan_job_external_builtin_stage_pipeline(
     settings.scan_external_stage_joern_command = "builtin:joern"
     settings.scan_external_stage_import_command = "builtin:neo4j_import"
     settings.scan_external_stage_post_labels_command = "builtin:post_labels"
+    settings.scan_external_stage_source_semantic_command = "builtin:source_semantic"
     settings.scan_external_stage_rules_command = "builtin:rules"
     joern_home = Path(settings.scan_external_joern_home)
     windows_joern_bin = joern_home / "joern.bat"
@@ -1943,7 +1953,14 @@ def test_scan_job_external_builtin_stage_pipeline(
     captured_paths: dict[str, str] = {}
 
     def _fake_builtin_stage(
-        *, builtin_key, job, settings, context, append_log, timeout_seconds
+        *,
+        builtin_key,
+        job,
+        settings,
+        context,
+        append_log,
+        timeout_seconds,
+        on_rule_finding=None,
     ):
         executed.append(str(builtin_key))
         if builtin_key == "joern":
@@ -2004,7 +2021,13 @@ def test_scan_job_external_builtin_stage_pipeline(
     assert detail_resp.status_code == 200
     payload = detail_resp.json()["data"]
     assert payload["status"] == JobStatus.SUCCEEDED.value
-    assert executed == ["joern", "neo4j_import", "post_labels", "rules"]
+    assert executed == [
+        "joern",
+        "neo4j_import",
+        "post_labels",
+        "source_semantic",
+        "rules",
+    ]
     assert captured_paths["joern_bin"] == str(joern_home / "joern")
     assert Path(captured_paths["import_dir"]).parts[-4:] == (
         project_id,
@@ -2032,12 +2055,20 @@ def test_scan_job_external_builtin_stage_pipeline_paths_stable_across_retries(
     settings.scan_external_stage_joern_command = "builtin:joern"
     settings.scan_external_stage_import_command = "builtin:neo4j_import"
     settings.scan_external_stage_post_labels_command = "builtin:post_labels"
+    settings.scan_external_stage_source_semantic_command = "builtin:source_semantic"
     settings.scan_external_stage_rules_command = "builtin:rules"
 
     joern_runs: list[dict[str, str]] = []
 
     def _fake_builtin_stage(
-        *, builtin_key, job, settings, context, append_log, timeout_seconds
+        *,
+        builtin_key,
+        job,
+        settings,
+        context,
+        append_log,
+        timeout_seconds,
+        on_rule_finding=None,
     ):
         if builtin_key == "joern":
             joern_runs.append(
@@ -2136,6 +2167,7 @@ def test_builtin_neo4j_import_creates_runtime_container_when_missing(
     settings.scan_external_stage_joern_command = ""
     settings.scan_external_stage_import_command = "builtin:neo4j_import"
     settings.scan_external_stage_post_labels_command = ""
+    settings.scan_external_stage_source_semantic_command = ""
     settings.scan_external_stage_rules_command = ""
     settings.scan_external_neo4j_runtime_restart_mode = "docker"
     settings.scan_external_neo4j_runtime_container_name = "CodeScope_neo4j"
@@ -2265,6 +2297,7 @@ def test_scan_job_external_builtin_rules_honors_string_rule_names(
     settings.scan_external_stage_joern_command = ""
     settings.scan_external_stage_import_command = ""
     settings.scan_external_stage_post_labels_command = ""
+    settings.scan_external_stage_source_semantic_command = ""
     settings.scan_external_stage_rules_command = "builtin:rules"
 
     executed_rules: list[str] = []
@@ -2274,7 +2307,7 @@ def test_scan_job_external_builtin_rules_honors_string_rule_names(
         return CypherExecutionSummary(statement_count=1, total_rows=1, row_counts=[1])
 
     monkeypatch.setattr(
-        builtin_module, "execute_cypher_file", _fake_execute_cypher_file
+        builtin_module, "execute_cypher_file_stream", _fake_execute_cypher_file
     )
 
     developer = _create_user(
@@ -2370,6 +2403,7 @@ def test_scan_job_external_builtin_live_smoke(
     settings.scan_external_stage_joern_command = ""
     settings.scan_external_stage_import_command = ""
     settings.scan_external_stage_post_labels_command = "builtin:post_labels"
+    settings.scan_external_stage_source_semantic_command = "builtin:source_semantic"
     settings.scan_external_stage_rules_command = "builtin:rules"
     settings.scan_external_post_labels_cypher = str(
         backend_root / "assets" / "scan" / "query" / "post_labels.cypher"
@@ -2471,6 +2505,7 @@ def test_scan_job_external_builtin_live_full_smoke(
     settings.scan_external_stage_joern_command = "builtin:joern"
     settings.scan_external_stage_import_command = "builtin:neo4j_import"
     settings.scan_external_stage_post_labels_command = "builtin:post_labels"
+    settings.scan_external_stage_source_semantic_command = "builtin:source_semantic"
     settings.scan_external_stage_rules_command = "builtin:rules"
 
     settings.scan_external_joern_home = str(joern_home)
@@ -2562,11 +2597,12 @@ def test_scan_job_external_builtin_live_full_smoke(
     assert payload["status"] == JobStatus.SUCCEEDED.value
     assert payload["result_summary"]["engine_mode"] == "external"
     stages = payload["result_summary"].get("external_stages", [])
-    assert len(stages) == 4
+    assert len(stages) == 5
     assert [item["stage"] for item in stages] == [
         "joern",
         "neo4j_import",
         "post_labels",
+        "source_semantic",
         "rules",
     ]
 

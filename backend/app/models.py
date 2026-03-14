@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
 )
@@ -451,9 +452,43 @@ class FindingPathStep(Base):
     labels_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     file_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     line_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    func_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    column_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    func_name: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    symbol_name: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    owner_method: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    type_name: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    node_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
     code_snippet: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    node_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    node_ref: Mapped[str] = mapped_column(Text(), nullable=False)
+    raw_props_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
+
+
+class FindingPathEdge(Base):
+    __tablename__ = "finding_path_edges"
+    __table_args__ = (
+        UniqueConstraint(
+            "finding_path_id", "edge_order", name="uq_finding_path_edges_order"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    finding_path_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("finding_paths.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    edge_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    from_step_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    to_step_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    edge_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    props_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, index=True
     )

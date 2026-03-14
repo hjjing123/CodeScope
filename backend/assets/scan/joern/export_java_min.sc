@@ -9,7 +9,8 @@ import java.nio.file.{Files, Paths}
   outDir: String = "",
   ENABLE_CALLS: String = "",
   ENABLE_REF: String   = "",
-  AST_MODE: String     = ""  // none | local | wide
+  AST_MODE: String     = "",  // none | local | wide
+  ARRAY_DELIM: String  = ""
 ): Unit = {
 
   def pickArg(v: String, k: String): String = {
@@ -31,6 +32,12 @@ import java.nio.file.{Files, Paths}
   val astMode     = pickArg(AST_MODE, "AST_MODE").toLowerCase match {
     case "none" | "local" | "wide" => pickArg(AST_MODE, "AST_MODE").toLowerCase
     case _ => "local"
+  }
+  val arrayDelimRaw = pickArg(ARRAY_DELIM, "ARRAY_DELIM")
+  val arrayDelim = arrayDelimRaw match {
+    case "001" | "\\001" | "\\u0001" | "\u0001" => "\u0001"
+    case other if Option(other).exists(_.nonEmpty) => other
+    case _ => "\u0001"
   }
 
   val cpgFileFinal = cpgFileVal
@@ -61,7 +68,7 @@ import java.nio.file.{Files, Paths}
     if (parts.nonEmpty) parts.last else noArr
   }
   def arr(values: Seq[String]): String =
-    values.filter(_.nonEmpty).distinct.mkString(";")
+    values.filter(_.nonEmpty).distinct.mkString(arrayDelim)
   def labelStr(values: Iterable[String]): String =
     values.filter(_.nonEmpty).toSeq.distinct.mkString(";")
   def iAny(v: Any): Int = v match {
@@ -114,6 +121,7 @@ import java.nio.file.{Files, Paths}
   def uid(kind: String, file: String, line: Int, col: Int, extra: String): String =
     s"$kind|$file|$line|$col|$extra"
   def methodNameOf(m: Method): String = Option(m.name).getOrElse("")
+  def methodFullNameOf(m: Method): String = Option(m.fullName).getOrElse("")
   def selectorsOf(c: Call): String = arr(Seq(Option(c.name).getOrElse("")))
   def receiverTypesOf(c: Call): String = {
     val rt = receiverType(c)
@@ -162,8 +170,13 @@ import java.nio.file.{Files, Paths}
       td.map(t => Try(t.member.name.l).toOption.getOrElse(Nil)).getOrElse(Nil)
     }
   }
-  def mkVarRow(id: String, name: String, vtype: String, vmethod: String, file: String, line: Int, col: Int, code: String, segLabels: String, classAnns: Seq[String], methodAnns: Seq[String], paramAnns: Seq[String], flatArgs: Seq[String], declKind: String, assignRight: String): String =
-    s"${esc(id)},${esc("Var")},${esc(name)},${esc(vtype)},${esc(vmethod)},${esc(file)},$line,$col,${esc(code)},${esc(segLabels)},${esc(arr(classAnns))},${esc(arr(methodAnns))},${esc(arr(paramAnns))},${esc(arr(flatArgs))},${esc(declKind)},${esc(assignRight)},${esc("Var")}" 
+  def paramIndexOf(p: MethodParameterIn): Int = {
+    val idx = iAny(Try(p.asInstanceOf[{ def index: Any }].index).toOption.getOrElse(None))
+    if (idx >= 0) idx
+    else iAny(Try(p.asInstanceOf[{ def order: Any }].order).toOption.getOrElse(None))
+  }
+  def mkVarRow(id: String, name: String, vtype: String, vmethod: String, file: String, line: Int, col: Int, code: String, segLabels: String, classAnns: Seq[String], methodAnns: Seq[String], paramAnns: Seq[String], flatArgs: Seq[String], declKind: String, assignRight: String, paramIndex: Int): String =
+    s"${esc(id)},${esc("Var")},${esc(name)},${esc(vtype)},${esc(vmethod)},${esc(file)},$line,$col,${esc(code)},${esc(segLabels)},${esc(arr(classAnns))},${esc(arr(methodAnns))},${esc(arr(paramAnns))},${esc(arr(flatArgs))},${esc(declKind)},${esc(assignRight)},$paramIndex,${esc("Var")}" 
   def trimQuotes(v: String): String = {
     val s = Option(v).map(_.trim).getOrElse("")
     if ((s.startsWith("\"") && s.endsWith("\"") && s.length >= 2) || (s.startsWith("'") && s.endsWith("'") && s.length >= 2)) s.substring(1, s.length - 1)
@@ -260,6 +273,29 @@ import java.nio.file.{Files, Paths}
     }
     out.toSeq
   }
+  def parseMybatisPlaceholders(content: String): Seq[(String, String, String, String, Int, String)] = {
+    val namespace = """(?s)<mapper[^>]*namespace\s*=\s*['\"]([^'\"]+)['\"][^>]*>""".r.findFirstMatchIn(content).map(_.group(1).trim).getOrElse("")
+    if (namespace.isEmpty) return Nil
+    val out = scala.collection.mutable.ArrayBuffer[(String, String, String, String, Int, String)]()
+    val stmtRe = """(?s)<(select|update|insert|delete)\b([^>]*)>(.*?)</\1>""".r
+    val idRe = """id\s*=\s*['\"]([^'\"]+)['\"]""".r
+    val phRe = """\$\{([^}]+)\}""".r
+    stmtRe.findAllMatchIn(content).foreach { m =>
+      val stmtType = Option(m.group(1)).map(_.trim).getOrElse("")
+      val attrs = Option(m.group(2)).getOrElse("")
+      val body = Option(m.group(3)).getOrElse("")
+      val block = m.group(0).replace("\r\n", "\n")
+      val stmtId = idRe.findFirstMatchIn(attrs).map(_.group(1).trim).getOrElse("")
+      if (stmtType.nonEmpty && stmtId.nonEmpty) {
+        val ln = lineAt(content, m.start)
+        phRe.findAllMatchIn(body).foreach { mm =>
+          val expr = Option(mm.group(1)).map(_.trim).getOrElse("")
+          if (expr.nonEmpty) out += ((namespace, stmtId, stmtType, expr, ln, block))
+        }
+      }
+    }
+    out.toSeq.distinct
+  }
   def normalizePath(p: String): String =
     Option(p).getOrElse("").replace("\\", "/")
   def isConfigLikeFile(path: String): Boolean = {
@@ -270,6 +306,19 @@ import java.nio.file.{Files, Paths}
     p.endsWith(".xml") ||
     p.endsWith("build.gradle") ||
     p.endsWith("build.gradle.kts")
+  }
+  val ignoredPathSegments = Set(".git", ".idea", "target", "build", "node_modules", "dist", "out")
+  def isIgnoredPath(path: String): Boolean = {
+    val p = normalizePath(path).toLowerCase
+    p.split("/").exists(seg => ignoredPathSegments.contains(seg))
+  }
+  def isSourceLikeFile(path: String): Boolean = {
+    val p = normalizePath(path).toLowerCase
+    p.endsWith(".java") ||
+    p.endsWith(".kt") ||
+    p.endsWith(".kts") ||
+    p.endsWith(".jsp") ||
+    p.endsWith(".jspx")
   }
   def suffixMatchScore(candidate: String, tail: String): Int = {
     val cSeg = normalizePath(candidate).toLowerCase.split("/").filter(_.nonEmpty)
@@ -326,7 +375,31 @@ import java.nio.file.{Files, Paths}
               val fp = it.next()
               if (Files.isRegularFile(fp)) {
                 val p = normalizePath(fp.toString)
-                if (isConfigLikeFile(p)) rows += p
+                if (isConfigLikeFile(p) && !isIgnoredPath(p)) rows += p
+              }
+            }
+          } finally {
+            Try(st.close())
+          }
+        }
+      }
+    }
+    rows.distinct.toSeq
+  }
+  val localSourceFiles: Seq[String] = {
+    val rows = scala.collection.mutable.ArrayBuffer[String]()
+    scanRoots.foreach { r =>
+      val root = Try(Paths.get(r)).toOption
+      root.filter(Files.isDirectory(_)).foreach { rp =>
+        val stream = Try(Files.walk(rp)).toOption
+        stream.foreach { st =>
+          try {
+            val it = st.iterator()
+            while (it.hasNext) {
+              val fp = it.next()
+              if (Files.isRegularFile(fp)) {
+                val p = normalizePath(fp.toString)
+                if (isSourceLikeFile(p) && !isIgnoredPath(p)) rows += p
               }
             }
           } finally {
@@ -347,6 +420,62 @@ import java.nio.file.{Files, Paths}
       }
     }
     m.map { case (k, v) => k -> v.toSeq.distinct }.toMap
+  }
+  val localSourceByName: Map[String, Seq[String]] = {
+    val m = scala.collection.mutable.Map[String, scala.collection.mutable.ArrayBuffer[String]]()
+    localSourceFiles.foreach { p =>
+      val name = normalizePath(p).toLowerCase.split("/").lastOption.getOrElse("")
+      if (name.nonEmpty) {
+        val bucket = m.getOrElseUpdate(name, scala.collection.mutable.ArrayBuffer[String]())
+        bucket += p
+      }
+    }
+    m.map { case (k, v) => k -> v.toSeq.distinct }.toMap
+  }
+  val localSourceSet: Set[String] = localSourceFiles.map(normalizePath).toSet
+  def isTrackedCodeFile(path: String): Boolean = {
+    val p = normalizePath(path)
+    p.nonEmpty && (localSourceSet.contains(p) || isConfigLikeFile(p))
+  }
+  def sourcePathTails(path: String): Seq[String] = {
+    val lower = normalizePath(path).toLowerCase
+    val tailFromTmp = ".*/jimple2cpg-[^/]+/(.*)".r.findFirstMatchIn(lower).map(_.group(1)).getOrElse("")
+    val rawTails = Seq(lower, tailFromTmp).filter(_.nonEmpty).distinct
+    rawTails.flatMap { t =>
+      val alt = Seq(t, t.replace(".class", ".java"), t.replace(".class", ".kt"))
+      alt.flatMap { item =>
+        val seg = item.split("/").filter(_.nonEmpty)
+        val last2 = if (seg.length >= 2) Seq(seg.takeRight(2).mkString("/")) else Nil
+        val last3 = if (seg.length >= 3) Seq(seg.takeRight(3).mkString("/")) else Nil
+        val srcMainJava = item.split("/src/main/java/").lift(1).toSeq
+        val srcTestJava = item.split("/src/test/java/").lift(1).toSeq
+        Seq(item) ++ last2 ++ last3 ++ srcMainJava ++ srcTestJava
+      }
+    }.filter(_.nonEmpty).distinct
+  }
+  def resolveSourcePath(path: String): String = {
+    val p = normalizePath(path).trim
+    if (p.isEmpty) ""
+    else {
+      val direct = Try(BFile(p)).toOption.filter(_.isRegularFile).map(f => normalizePath(f.path.toString)).getOrElse("")
+      if (direct.nonEmpty) direct
+      else {
+        val baseName = normalizePath(p).toLowerCase.split("/").lastOption.getOrElse("").replace(".class", ".java")
+        val candidates = localSourceByName.getOrElse(baseName, Nil)
+        if (candidates.isEmpty) ""
+        else {
+          val tails = sourcePathTails(p)
+          val ranked = candidates.map { c =>
+            val cl = normalizePath(c).toLowerCase
+            val suffix = tails.map(t => suffixMatchScore(cl, t)).foldLeft(0)((a, b) => Math.max(a, b))
+            val srcBonus = if (cl.contains("/src/main/java/")) 2 else if (cl.contains("/src/test/java/")) 1 else 0
+            val score = suffix * 10 + srcBonus
+            (c, score, cl.length)
+          }.sortBy(x => (-x._2, x._3))
+          if (ranked.nonEmpty && ranked.head._2 > 0) ranked.head._1 else ""
+        }
+      }
+    }
   }
   def resolveContentPath(path: String): String = {
     val p = normalizePath(path).trim
@@ -563,8 +692,8 @@ import java.nio.file.{Files, Paths}
   // Neo4j-admin CSV headers（id:ID 方便导入）
   writeHeader(nFileH, "id:ID,kind,name,file,line:INT,col:INT,code,:LABEL\n")
   writeHeader(nMethH, "id:ID,kind,name,fullName,file,line:INT,col:INT,code,classAnnotations:STRING[],methodAnnotations:STRING[],paramTypes:STRING[],paramNames:STRING[],:LABEL\n")
-  writeHeader(nCallH, "id:ID,kind,name,methodFullName,receiverType,selectors:STRING[],receiverTypes:STRING[],AllocationClassName,method,file,line:INT,col:INT,code,isThisReceiver:BOOLEAN,segLabels:STRING[],:LABEL\n")
-  writeHeader(nVarH,  "id:ID,kind,name,type,method,file,line:INT,col:INT,code,segLabels:STRING[],classAnnotations:STRING[],methodAnnotations:STRING[],paramAnnotations:STRING[],flatArgs:STRING[],declKind,assignRight,:LABEL\n")
+  writeHeader(nCallH, "id:ID,kind,name,methodFullName,receiverType,selectors:STRING[],receiverTypes:STRING[],receivers:STRING[],AllocationClassName,method,ownerMethod,ownerMethodFullName,file,line:INT,col:INT,code,isThisReceiver:BOOLEAN,segLabels:STRING[],:LABEL\n")
+  writeHeader(nVarH,  "id:ID,kind,name,type,method,file,line:INT,col:INT,code,segLabels:STRING[],classAnnotations:STRING[],methodAnnotations:STRING[],paramAnnotations:STRING[],flatArgs:STRING[],declKind,assignRight,paramIndex:INT,:LABEL\n")
   writeHeader(nLitH,  "id:ID,kind,type,file,line:INT,col:INT,code,:LABEL\n")
   writeHeader(nPropH, "id:ID,kind,name,value,file,line:INT,col:INT,code,:LABEL\n")
   writeHeader(nYmlH,  "id:ID,kind,name,value,file,line:INT,col:INT,code,:LABEL\n")
@@ -621,6 +750,14 @@ import java.nio.file.{Files, Paths}
   def isThisReceiver(c: Call): Boolean = {
     receiverNodes(c).exists(isThisNode)
   }
+  def receiverNamesOf(c: Call): String = {
+    val names = receiverNodes(c).flatMap { r =>
+      val name = Try(r.asInstanceOf[{ def name: String }].name).toOption.getOrElse("").trim
+      val code = Try(r.asInstanceOf[{ def code: String }].code).toOption.getOrElse("").trim
+      Seq(name, code).filter(_.nonEmpty)
+    }.filterNot(_ == "this").distinct
+    arr(names)
+  }
 
   def isStaticMethod(m: Method): Boolean =
     Try(m.asInstanceOf[{ def isStatic: Boolean }].isStatic).toOption.getOrElse(false)
@@ -670,62 +807,88 @@ import java.nio.file.{Files, Paths}
 
   // ---------- export FILE ----------
   cpg.file.l.foreach { f =>
-    val fn = Option(f.name).getOrElse("")
-    val id = uid("File", fn, -1, -1, fn)
-    fileRows.update(id, s"${esc(id)},${esc("File")},${esc(fn)},${esc(fn)},-1,-1,${esc("")},${esc("File")}")
+    val fn = normalizePath(Option(f.name).getOrElse(""))
+    if (isTrackedCodeFile(fn)) {
+      val id = uid("File", fn, -1, -1, fn)
+      fileRows.update(id, s"${esc(id)},${esc("File")},${esc(fn)},${esc(fn)},-1,-1,${esc("")},${esc("File")}")
+    }
   }
 
   cpg.member.l.foreach { f =>
-    val ff = Try(f.location.filename).toOption.getOrElse("")
-    val fl = lineNum(f); val fc = colNum(f)
-    val fname = nameStr(f)
-    val ftype = simpleType(typeFullNameStr(f))
-    val vid = uid("Var", ff, fl, fc, s"field|${fname}")
-    val vset = scala.collection.mutable.Set("Var","FieldDeclaration","Decl")
-    val segLabels = arr(vset.toSeq)
-    varRows.update(vid, mkVarRow(vid, fname, ftype, "", ff, fl, fc, codeStr(f), segLabels, Nil, Nil, Nil, Nil, "Field", ""))
+    val ff0 = Try(f.location.filename).toOption.getOrElse("")
+    val ff = {
+      val resolved = resolveSourcePath(ff0)
+      if (resolved.nonEmpty) resolved else ff0
+    }
+    if (isTrackedCodeFile(ff)) {
+      val fl = lineNum(f); val fc = colNum(f)
+      val fname = nameStr(f)
+      val ftype = simpleType(typeFullNameStr(f))
+      val vid = uid("Var", ff, fl, fc, s"field|${fname}")
+      val vset = scala.collection.mutable.Set("Var","FieldDeclaration","Decl")
+      val segLabels = arr(vset.toSeq)
+      varRows.update(vid, mkVarRow(vid, fname, ftype, "", ff, fl, fc, codeStr(f), segLabels, Nil, Nil, Nil, Nil, "Field", "", -1))
+    }
   }
 
-  cpg.file.l.foreach { f =>
-    val p = Option(f.name).getOrElse("")
-    val content = readContent(p, contentStr(f))
-    if (p.endsWith(".properties") && content.nonEmpty) {
-      parseProperties(content).foreach { case (k, v, ln, raw) =>
-        val id = uid("PropertiesKeyValue", p, ln, 1, k)
-        propRows.update(id, s"${esc(id)},${esc("PropertiesKeyValue")},${esc(k)},${esc(v)},${esc(p)},$ln,1,${esc(raw)},${esc("PropertiesKeyValue")}")
-      }
-    } else if ((p.endsWith(".yml") || p.endsWith(".yaml")) && content.nonEmpty) {
-      parseYaml(content).foreach { case (k, v, ln, raw) =>
-        val id = uid("YmlKeyValue", p, ln, 1, k)
-        ymlRows.update(id, s"${esc(id)},${esc("YmlKeyValue")},${esc(k)},${esc(v)},${esc(p)},$ln,1,${esc(raw)},${esc("YmlKeyValue")}")
-      }
-    } else if (p.endsWith("pom.xml") && content.nonEmpty) {
-      val (_, deps) = parsePom(content)
-      deps.foreach { case (g, a, v, rv, ln, block) =>
-        val id = uid("PomDependency", p, ln, 1, s"$g:$a:$v")
-        pomRows.update(id, s"${esc(id)},${esc("PomDependency")},${esc(g)},${esc(a)},${esc(v)},${esc(rv)},${esc(p)},$ln,1,${esc(block)},${esc("PomDependency")}")
-      }
-    } else if ((p.endsWith("build.gradle") || p.endsWith("build.gradle.kts")) && content.nonEmpty) {
-      val deps = parseGradle(content)
-      deps.foreach { case (g, a, v, rv, ln, block) =>
-        val id = uid("GradleDependency", p, ln, 1, s"$g:$a:$v")
-        gradleRows.update(id, s"${esc(id)},${esc("GradleDependency")},${esc(g)},${esc(a)},${esc(v)},${esc(rv)},${esc(p)},$ln,1,${esc(block)},${esc("GradleDependency")}")
-      }
-    } else if (p.endsWith(".xml") && content.nonEmpty) {
-      parseXml(content).foreach { case (q, v, t, ln, raw) =>
-        val key = if (v.length > 80) v.take(80) else v
-        val id = uid("XmlElement", p, ln, 1, s"$q:$key")
-        xmlRows.update(id, s"${esc(id)},${esc("XmlElement")},${esc(q)},${esc(v)},${esc(t)},${esc(p)},$ln,1,${esc(raw)},${esc("XmlElement")}")
-        val fid = uid("File", p, -1, -1, p)
-        fileRows.update(fid, s"${esc(fid)},${esc("File")},${esc(p)},${esc(p)},-1,-1,${esc("")},${esc("File")}")
-        eInFile.add(s"${esc(id)},${esc(fid)},IN_FILE")
+  localConfigFiles.foreach { rawPath =>
+    val p = normalizePath(rawPath)
+    val content = readContent(p, "")
+    if (content.nonEmpty) {
+      val fid = uid("File", p, -1, -1, p)
+      fileRows.update(fid, s"${esc(fid)},${esc("File")},${esc(p)},${esc(p)},-1,-1,${esc("")},${esc("File")}")
+      if (p.endsWith(".properties")) {
+        parseProperties(content).foreach { case (k, v, ln, raw) =>
+          val id = uid("PropertiesKeyValue", p, ln, 1, k)
+          propRows.update(id, s"${esc(id)},${esc("PropertiesKeyValue")},${esc(k)},${esc(v)},${esc(p)},$ln,1,${esc(raw)},${esc("PropertiesKeyValue")}")
+          eInFile.add(s"${esc(id)},${esc(fid)},IN_FILE")
+        }
+      } else if (p.endsWith(".yml") || p.endsWith(".yaml")) {
+        parseYaml(content).foreach { case (k, v, ln, raw) =>
+          val id = uid("YmlKeyValue", p, ln, 1, k)
+          ymlRows.update(id, s"${esc(id)},${esc("YmlKeyValue")},${esc(k)},${esc(v)},${esc(p)},$ln,1,${esc(raw)},${esc("YmlKeyValue")}")
+          eInFile.add(s"${esc(id)},${esc(fid)},IN_FILE")
+        }
+      } else if (p.endsWith("pom.xml")) {
+        val (_, deps) = parsePom(content)
+        deps.foreach { case (g, a, v, rv, ln, block) =>
+          val id = uid("PomDependency", p, ln, 1, s"$g:$a:$v")
+          pomRows.update(id, s"${esc(id)},${esc("PomDependency")},${esc(g)},${esc(a)},${esc(v)},${esc(rv)},${esc(p)},$ln,1,${esc(block)},${esc("PomDependency")}")
+          eInFile.add(s"${esc(id)},${esc(fid)},IN_FILE")
+        }
+      } else if (p.endsWith("build.gradle") || p.endsWith("build.gradle.kts")) {
+        val deps = parseGradle(content)
+        deps.foreach { case (g, a, v, rv, ln, block) =>
+          val id = uid("GradleDependency", p, ln, 1, s"$g:$a:$v")
+          gradleRows.update(id, s"${esc(id)},${esc("GradleDependency")},${esc(g)},${esc(a)},${esc(v)},${esc(rv)},${esc(p)},$ln,1,${esc(block)},${esc("GradleDependency")}")
+          eInFile.add(s"${esc(id)},${esc(fid)},IN_FILE")
+        }
+      } else if (p.endsWith(".xml")) {
+        parseXml(content).foreach { case (q, v, t, ln, raw) =>
+          val key = if (v.length > 80) v.take(80) else v
+          val id = uid("XmlElement", p, ln, 1, s"$q:$key")
+          xmlRows.update(id, s"${esc(id)},${esc("XmlElement")},${esc(q)},${esc(v)},${esc(t)},${esc(p)},$ln,1,${esc(raw)},${esc("XmlElement")}")
+          eInFile.add(s"${esc(id)},${esc(fid)},IN_FILE")
+        }
+        if (p.toLowerCase.contains("/mybatis/") || p.toLowerCase.contains("mapper.xml")) {
+          parseMybatisPlaceholders(content).foreach { case (namespace, stmtId, stmtType, expr, ln, block) =>
+            val id = uid("XmlElement", p, ln, 1, s"mybatis:$namespace#$stmtId#$expr")
+            xmlRows.update(id, s"${esc(id)},${esc("XmlElement")},${esc("mybatis.placeholder")},${esc(expr)},${esc(s"$namespace#$stmtId#$stmtType")},${esc(p)},$ln,1,${esc(block)},${esc("XmlElement")}")
+            eInFile.add(s"${esc(id)},${esc(fid)},IN_FILE")
+          }
+        }
       }
     }
   }
 
   // ---------- export METHOD + edges ----------
   cpg.method.l.foreach { m =>
-    val mf = Try(m.location.filename).toOption.getOrElse("")
+    val mf0 = Try(m.location.filename).toOption.getOrElse("")
+    val mf = {
+      val resolved = resolveSourcePath(mf0)
+      if (resolved.nonEmpty) resolved else mf0
+    }
+    if (isTrackedCodeFile(mf)) {
     val line = lineNum(m); val col = colNum(m)
     val mid  = uid("Method", mf, line, col, m.fullName)
 
@@ -744,9 +907,15 @@ import java.nio.file.{Files, Paths}
 
     if (enableCalls) {
       Try(m.callee.l).toOption.getOrElse(Nil).foreach { cal =>
-        val cf = Try(cal.location.filename).toOption.getOrElse("")
-        val cid = uid("Method", cf, lineNum(cal), colNum(cal), cal.fullName)
-        eCalls.add(s"${esc(mid)},${esc(cid)},CALLS")
+        val cf0 = Try(cal.location.filename).toOption.getOrElse("")
+        val cf = {
+          val resolved = resolveSourcePath(cf0)
+          if (resolved.nonEmpty) resolved else cf0
+        }
+        if (isTrackedCodeFile(cf)) {
+          val cid = uid("Method", cf, lineNum(cal), colNum(cal), cal.fullName)
+          eCalls.add(s"${esc(mid)},${esc(cid)},CALLS")
+        }
       }
     }
 
@@ -762,7 +931,11 @@ import java.nio.file.{Files, Paths}
     Try(m.call.name("<operator>.assignment").l).toOption.getOrElse(Nil).foreach { ass =>
       val rhs = Try(ass.argument(2).code).toOption.getOrElse("")
       Try(ass.argument(1)).toOption.foreach { a =>
-        val af = Try(a.location.filename).toOption.getOrElse(mf)
+        val af0 = Try(a.location.filename).toOption.getOrElse(mf)
+        val af = {
+          val resolved = resolveSourcePath(af0)
+          if (resolved.nonEmpty) resolved else af0
+        }
         val al = lineNum(a); val ac = colNum(a)
         a match {
           case idn: Identifier =>
@@ -773,7 +946,7 @@ import java.nio.file.{Files, Paths}
             val vtype = simpleType(idn.typeFullName)
             val vmethod = methodNameOf(m)
             val segLabels = arr(vset.toSeq)
-            varRows.update(aid, mkVarRow(aid, idn.name, vtype, vmethod, af, al, ac, codeStr(idn), segLabels, Nil, Nil, Nil, Nil, "Identifier", rhs))
+            varRows.update(aid, mkVarRow(aid, idn.name, vtype, vmethod, af, al, ac, codeStr(idn), segLabels, Nil, Nil, Nil, Nil, "Identifier", rhs, -1))
           case p: MethodParameterIn =>
             val aid = uid("Var", af, al, ac, s"param|${p.name}|${m.fullName}")
             assignLeftIds.add(aid)
@@ -785,7 +958,7 @@ import java.nio.file.{Files, Paths}
             val segLabels = arr(vset.toSeq)
             val pAnns = paramAnnotationsOf(p)
             val flat = flatArgsOf(p)
-            varRows.update(aid, mkVarRow(aid, p.name, vtype, vmethod, af, al, ac, codeStr(p), segLabels, mClassAnns, mMethodAnns, pAnns, flat, "Param", rhs))
+            varRows.update(aid, mkVarRow(aid, p.name, vtype, vmethod, af, al, ac, codeStr(p), segLabels, mClassAnns, mMethodAnns, pAnns, flat, "Param", rhs, paramIndexOf(p)))
           case l: Local =>
             val aid = uid("Var", af, al, ac, s"decl|${l.name}|${m.fullName}")
             assignLeftIds.add(aid)
@@ -794,7 +967,7 @@ import java.nio.file.{Files, Paths}
             val vtype = simpleType(l.typeFullName)
             val vmethod = methodNameOf(m)
             val segLabels = arr(vset.toSeq)
-            varRows.update(aid, mkVarRow(aid, l.name, vtype, vmethod, af, al, ac, codeStr(l), segLabels, Nil, Nil, Nil, Nil, "Local", rhs))
+            varRows.update(aid, mkVarRow(aid, l.name, vtype, vmethod, af, al, ac, codeStr(l), segLabels, Nil, Nil, Nil, Nil, "Local", rhs, -1))
           case other if isFieldIdentifier(other.asInstanceOf[AnyRef]) =>
             val aid = uid("Var", af, al, ac, s"field|${nameStr(other.asInstanceOf[AnyRef])}|${m.fullName}")
             assignLeftIds.add(aid)
@@ -802,14 +975,18 @@ import java.nio.file.{Files, Paths}
             val vset = scala.collection.mutable.Set("Var","FieldIdentifier","Reference","AssignLeft")
             val vmethod = methodNameOf(m)
             val segLabels = arr(vset.toSeq)
-            varRows.update(aid, mkVarRow(aid, nameStr(other.asInstanceOf[AnyRef]), "", vmethod, af, al, ac, codeStr(other.asInstanceOf[AnyRef]), segLabels, Nil, Nil, Nil, Nil, "FieldIdentifier", rhs))
+            varRows.update(aid, mkVarRow(aid, nameStr(other.asInstanceOf[AnyRef]), "", vmethod, af, al, ac, codeStr(other.asInstanceOf[AnyRef]), segLabels, Nil, Nil, Nil, Nil, "FieldIdentifier", rhs, -1))
           case _ =>
         }
       }
     }
 
     m.local.l.foreach { l =>
-      val lf = Try(l.location.filename).toOption.getOrElse(mf)
+      val lf0 = Try(l.location.filename).toOption.getOrElse(mf)
+      val lf = {
+        val resolved = resolveSourcePath(lf0)
+        if (resolved.nonEmpty) resolved else lf0
+      }
       val ll = lineNum(l); val lc = colNum(l)
       val vid = uid("Var", lf, ll, lc, s"decl|${l.name}|${m.fullName}")
       val vset = scala.collection.mutable.Set("Var","Decl","LocalDeclaration")
@@ -817,11 +994,15 @@ import java.nio.file.{Files, Paths}
       val vmethod = methodNameOf(m)
       val segLabels = arr(vset.toSeq)
       val assignRight = assignRightByVar.getOrElse(vid, "")
-      varRows.update(vid, mkVarRow(vid, l.name, vtype, vmethod, lf, ll, lc, codeStr(l), segLabels, Nil, Nil, Nil, Nil, "Local", assignRight))
+      varRows.update(vid, mkVarRow(vid, l.name, vtype, vmethod, lf, ll, lc, codeStr(l), segLabels, Nil, Nil, Nil, Nil, "Local", assignRight, -1))
     }
 
-    m.parameter.l.foreach { p =>
-      val pf = Try(p.location.filename).toOption.getOrElse(mf)
+    m.parameter.l.zipWithIndex.foreach { case (p, fallbackParamIndex) =>
+      val pf0 = Try(p.location.filename).toOption.getOrElse(mf)
+      val pf = {
+        val resolved = resolveSourcePath(pf0)
+        if (resolved.nonEmpty) resolved else pf0
+      }
       val pl = lineNum(p); val pc = colNum(p)
       val pid = uid("Var", pf, pl, pc, s"param|${p.name}|${m.fullName}")
       val vset = scala.collection.mutable.Set[String]() ++ labelForParam(p, m)
@@ -832,13 +1013,22 @@ import java.nio.file.{Files, Paths}
       val pAnns = paramAnnotationsOf(p)
       val flat = flatArgsOf(p)
       val assignRight = assignRightByVar.getOrElse(pid, "")
-      varRows.update(pid, mkVarRow(pid, p.name, vtype, vmethod, pf, pl, pc, codeStr(p), segLabels, mClassAnns, mMethodAnns, pAnns, flat, "Param", assignRight))
+      val paramIndex = {
+        val raw = paramIndexOf(p)
+        if (raw >= 0) raw else fallbackParamIndex
+      }
+      varRows.update(pid, mkVarRow(pid, p.name, vtype, vmethod, pf, pl, pc, codeStr(p), segLabels, mClassAnns, mMethodAnns, pAnns, flat, "Param", assignRight, paramIndex))
       eArg.add(s"${esc(pid)},${esc(mid)},-1,ARG")
     }
 
     // method 内 callsite
     m.call.l.foreach { c =>
-      val cf = Try(c.location.filename).toOption.getOrElse(mf)
+      val cf0 = Try(c.location.filename).toOption.getOrElse(mf)
+      val cf = {
+        val resolved = resolveSourcePath(cf0)
+        if (resolved.nonEmpty) resolved else cf0
+      }
+      if (isTrackedCodeFile(cf)) {
       val cl = lineNum(c); val cc = colNum(c)
       val cid = callIdOf(c, cf, cl, cc)
 
@@ -847,7 +1037,7 @@ import java.nio.file.{Files, Paths}
       val selectors = selectorsOf(c)
       val receiverTypesRaw = receiverTypesOf(c)
       val allocClsRaw = allocationClassName(c)
-      val rtList0 = receiverTypesRaw.split(";").toSeq.filter(_.nonEmpty).filter(_ != "<unresolvedNamespace>")
+      val rtList0 = receiverTypesRaw.split(arrayDelim, -1).toSeq.filter(_.nonEmpty).filter(_ != "<unresolvedNamespace>")
       val rtList1 = {
         var s = rtList0
         if (Option(c.name).getOrElse("") == "exec" && !s.exists(_.contains("Runtime")) && hasGetRuntime) s = s :+ "Runtime"
@@ -855,19 +1045,27 @@ import java.nio.file.{Files, Paths}
         s.distinct
       }
       val receiverTypes = arr(rtList1)
+      val receivers = receiverNamesOf(c)
       val allocCls = {
         var a = allocClsRaw
         if (a.isEmpty && Option(c.name).getOrElse("") == "start" && rtList1.exists(_.contains("ProcessBuilder"))) a = "ProcessBuilder"
         a
       }
       val mname = Option(c.name).getOrElse("")
+      val ownerMethod = methodNameOf(m)
+      val ownerMethodFullName = methodFullNameOf(m)
 
       val isThis = if (isThisReceiverInMethod(c, m)) "true" else "false"
-      callRows.update(cid, s"${esc(cid)},${esc("Call")},${esc(c.name)},${esc(c.methodFullName)},${esc(recvType)},${esc(selectors)},${esc(receiverTypes)},${esc(allocCls)},${esc(mname)},${esc(cf)},$cl,$cc,${esc(codeStr(c))},${isThis},${esc(segLabels)},${esc("Call")}")
+      callRows.update(cid, s"${esc(cid)},${esc("Call")},${esc(c.name)},${esc(c.methodFullName)},${esc(recvType)},${esc(selectors)},${esc(receiverTypes)},${esc(receivers)},${esc(allocCls)},${esc(mname)},${esc(ownerMethod)},${esc(ownerMethodFullName)},${esc(cf)},$cl,$cc,${esc(codeStr(c))},${isThis},${esc(segLabels)},${esc("Call")}")
       eHasCall.add(s"${esc(mid)},${esc(cid)},HAS_CALL")
 
       c.argument.l.foreach { a =>
-        val af = Try(a.location.filename).toOption.getOrElse(cf)
+        val af0 = Try(a.location.filename).toOption.getOrElse(cf)
+        val af = {
+          val resolved = resolveSourcePath(af0)
+          if (resolved.nonEmpty) resolved else af0
+        }
+        if (isTrackedCodeFile(af)) {
         val al = lineNum(a); val ac = colNum(a)
         val argIdx = Try(a.argumentIndex).toOption.getOrElse(-1)
 
@@ -883,7 +1081,7 @@ import java.nio.file.{Files, Paths}
             val pAnns = paramAnnotationsOf(p)
             val flat = flatArgsOf(p)
             val assignRight = assignRightByVar.getOrElse(vid, "")
-            (vid, "Var", mkVarRow(vid, p.name, vtype, vmethod, af, al, ac, p.code, segLabels, mClassAnns, mMethodAnns, pAnns, flat, "Param", assignRight))
+            (vid, "Var", mkVarRow(vid, p.name, vtype, vmethod, af, al, ac, p.code, segLabels, mClassAnns, mMethodAnns, pAnns, flat, "Param", assignRight, paramIndexOf(p)))
 
           case l: Literal =>
             val lid = litIdOf(af, al, ac, l.typeFullName, l.code, m.fullName)
@@ -896,7 +1094,11 @@ import java.nio.file.{Files, Paths}
             if (assignLeftIds.contains(vid)) vset += "AssignLeft"
             if (enableRef) {
               Try(idn.refsTo.l).toOption.getOrElse(Nil).headOption.foreach { decl =>
-                val df = Try(decl.location.filename).toOption.getOrElse(af)
+                val df0 = Try(decl.location.filename).toOption.getOrElse(af)
+                val df = {
+                  val resolved = resolveSourcePath(df0)
+                  if (resolved.nonEmpty) resolved else df0
+                }
                 val dl = lineNum(decl); val dc = colNum(decl)
                 val dname = nameStr(decl)
                 val dtype = simpleType(typeFullNameStr(decl))
@@ -914,8 +1116,7 @@ import java.nio.file.{Files, Paths}
                   case _: Local => "Local"
                   case _ => "Decl"
                 }
-                varRows.update(did, mkVarRow(did, dname, dtype, dmethod, df, dl, dc, dcode, segLabels, Nil, Nil, Nil, Nil, declKind, assignRight))
-                eRef.add(s"${esc(vid)},${esc(did)},REF")
+                varRows.update(did, mkVarRow(did, dname, dtype, dmethod, df, dl, dc, dcode, segLabels, Nil, Nil, Nil, Nil, declKind, assignRight, -1))
                 eRef.add(s"${esc(did)},${esc(vid)},REF")
               }
             }
@@ -923,7 +1124,7 @@ import java.nio.file.{Files, Paths}
             val vmethod = methodNameOf(m)
             val segLabels = arr(vset.toSeq)
             val assignRight = assignRightByVar.getOrElse(vid, "")
-            (vid, "Var", mkVarRow(vid, idn.name, vtype, vmethod, af, al, ac, idn.code, segLabels, Nil, Nil, Nil, Nil, "Identifier", assignRight))
+            (vid, "Var", mkVarRow(vid, idn.name, vtype, vmethod, af, al, ac, idn.code, segLabels, Nil, Nil, Nil, Nil, "Identifier", assignRight, -1))
 
           case other if isFieldIdentifier(other.asInstanceOf[AnyRef]) =>
             val aid = uid("Var", af, al, ac, s"field|${nameStr(other.asInstanceOf[AnyRef])}|${m.fullName}")
@@ -932,7 +1133,7 @@ import java.nio.file.{Files, Paths}
             val vmethod = methodNameOf(m)
             val segLabels = arr(vset.toSeq)
             val assignRight = assignRightByVar.getOrElse(aid, "")
-            (aid, "Var", mkVarRow(aid, nameStr(other.asInstanceOf[AnyRef]), "", vmethod, af, al, ac, codeStr(other.asInstanceOf[AnyRef]), segLabels, Nil, Nil, Nil, Nil, "FieldIdentifier", assignRight))
+            (aid, "Var", mkVarRow(aid, nameStr(other.asInstanceOf[AnyRef]), "", vmethod, af, al, ac, codeStr(other.asInstanceOf[AnyRef]), segLabels, Nil, Nil, Nil, Nil, "FieldIdentifier", assignRight, -1))
 
 
           case cc2: Call =>
@@ -944,7 +1145,10 @@ import java.nio.file.{Files, Paths}
             val allocCls2 = allocationClassName(cc2)
             val mname2 = Option(cc2.name).getOrElse("")
             val isThis2 = if (isThisReceiver(cc2)) "true" else "false"
-            (nid, "Call", s"${esc(nid)},${esc("Call")},${esc(cc2.name)},${esc(cc2.methodFullName)},${esc(r2)},${esc(selectors2)},${esc(receiverTypes2)},${esc(allocCls2)},${esc(mname2)},${esc(af)},$al,$ac,${esc(codeStr(cc2))},${isThis2},${esc(segLabels2)},${esc("Call")}")
+            val receivers2 = receiverNamesOf(cc2)
+            val ownerMethod2 = methodNameOf(m)
+            val ownerMethodFullName2 = methodFullNameOf(m)
+            (nid, "Call", s"${esc(nid)},${esc("Call")},${esc(cc2.name)},${esc(cc2.methodFullName)},${esc(r2)},${esc(selectors2)},${esc(receiverTypes2)},${esc(receivers2)},${esc(allocCls2)},${esc(mname2)},${esc(ownerMethod2)},${esc(ownerMethodFullName2)},${esc(af)},$al,$ac,${esc(codeStr(cc2))},${isThis2},${esc(segLabels2)},${esc("Call")}")
 
           case other =>
             val ocode = codeStr(other.asInstanceOf[AnyRef])
@@ -954,7 +1158,7 @@ import java.nio.file.{Files, Paths}
             val vmethod = methodNameOf(m)
             val segLabels = arr(vset.toSeq)
             val assignRight = assignRightByVar.getOrElse(vid, "")
-            (vid, "Var", mkVarRow(vid, "", "", vmethod, af, al, ac, ocode, segLabels, Nil, Nil, Nil, Nil, "Expr", assignRight))
+            (vid, "Var", mkVarRow(vid, "", "", vmethod, af, al, ac, ocode, segLabels, Nil, Nil, Nil, Nil, "Expr", assignRight, -1))
         }
 
         kind match {
@@ -980,7 +1184,7 @@ import java.nio.file.{Files, Paths}
               val vmethod = methodNameOf(m)
               val segLabels = arr(vset.toSeq)
               val assignRight = assignRightByVar.getOrElse(nid, "")
-              varRows.update(nid, mkVarRow(nid, ii.name, typeStr(ii), vmethod, af, nil, nic, codeStr(ii), segLabels, Nil, Nil, Nil, Nil, "Identifier", assignRight))
+              varRows.update(nid, mkVarRow(nid, ii.name, typeStr(ii), vmethod, af, nil, nic, codeStr(ii), segLabels, Nil, Nil, Nil, Nil, "Identifier", assignRight, -1))
               eAst.add(s"${esc(aid)},${esc(nid)},AST")
             case other if isFieldIdentifier(other.asInstanceOf[AnyRef]) =>
               val nil = lineNum(other.asInstanceOf[AnyRef]); val nic = colNum(other.asInstanceOf[AnyRef])
@@ -991,7 +1195,7 @@ import java.nio.file.{Files, Paths}
               val vmethod = methodNameOf(m)
               val segLabels = arr(vset.toSeq)
               val assignRight = assignRightByVar.getOrElse(nid, "")
-              varRows.update(nid, mkVarRow(nid, name, "", vmethod, af, nil, nic, codeStr(other.asInstanceOf[AnyRef]), segLabels, Nil, Nil, Nil, Nil, "FieldIdentifier", assignRight))
+              varRows.update(nid, mkVarRow(nid, name, "", vmethod, af, nil, nic, codeStr(other.asInstanceOf[AnyRef]), segLabels, Nil, Nil, Nil, Nil, "FieldIdentifier", assignRight, -1))
               eAst.add(s"${esc(aid)},${esc(nid)},AST")
             case ll: Literal =>
               val nll = lineNum(ll); val nlc = colNum(ll)
@@ -1008,12 +1212,18 @@ import java.nio.file.{Files, Paths}
               val allocCls3 = allocationClassName(cl2)
               val mname3 = Option(cl2.name).getOrElse("")
               val isThis3 = if (isThisReceiver(cl2)) "true" else "false"
-              callRows.update(nid, s"${esc(nid)},${esc("Call")},${esc(cl2.name)},${esc(cl2.methodFullName)},${esc(r3)},${esc(selectors3)},${esc(receiverTypes3)},${esc(allocCls3)},${esc(mname3)},${esc(af)},${ncl},${ncc},${esc(codeStr(cl2))},${isThis3},${esc(segLabels3)},${esc("Call")}")
+              val receivers3 = receiverNamesOf(cl2)
+              val ownerMethod3 = methodNameOf(m)
+              val ownerMethodFullName3 = methodFullNameOf(m)
+              callRows.update(nid, s"${esc(nid)},${esc("Call")},${esc(cl2.name)},${esc(cl2.methodFullName)},${esc(r3)},${esc(selectors3)},${esc(receiverTypes3)},${esc(receivers3)},${esc(allocCls3)},${esc(mname3)},${esc(ownerMethod3)},${esc(ownerMethodFullName3)},${esc(af)},${ncl},${ncc},${esc(codeStr(cl2))},${isThis3},${esc(segLabels3)},${esc("Call")}")
               eAst.add(s"${esc(aid)},${esc(nid)},AST")
             case _ =>
           }
         }
+        }
       }
+      }
+    }
     }
   }
 

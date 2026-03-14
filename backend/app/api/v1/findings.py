@@ -29,7 +29,9 @@ from app.schemas.finding import (
     FindingLabelPayload,
     FindingLabelRequest,
     FindingListPayload,
+    FindingPathEdgePayload,
     FindingPathListPayload,
+    FindingPathNodePayload,
     FindingPathNodeContextPayload,
     FindingPathPayload,
     FindingPathStepPayload,
@@ -514,6 +516,12 @@ def list_finding_paths(
                 path_id=int(item["path_id"]),
                 path_length=int(item["path_length"]),
                 steps=[FindingPathStepPayload(**step) for step in item["steps"]],
+                nodes=[
+                    FindingPathNodePayload(**node) for node in item.get("nodes") or []
+                ],
+                edges=[
+                    FindingPathEdgePayload(**edge) for edge in item.get("edges") or []
+                ],
             )
             for item in paths
         ],

@@ -77,15 +77,54 @@ export interface FindingPathStep {
   labels: string[];
   file?: string | null;
   line?: number | null;
+  column?: number | null;
   func_name?: string | null;
+  display_name?: string | null;
+  symbol_name?: string | null;
+  owner_method?: string | null;
+  type_name?: string | null;
+  node_kind?: string | null;
   code_snippet?: string | null;
   node_ref: string;
+}
+
+export interface FindingPathNode {
+  node_id: number;
+  labels: string[];
+  file?: string | null;
+  line?: number | null;
+  column?: number | null;
+  func_name?: string | null;
+  display_name?: string | null;
+  symbol_name?: string | null;
+  owner_method?: string | null;
+  type_name?: string | null;
+  node_kind?: string | null;
+  code_snippet?: string | null;
+  node_ref: string;
+  raw_props?: Record<string, unknown>;
+}
+
+export interface FindingPathEdge {
+  edge_id: number;
+  edge_type: string;
+  from_node_id?: number | null;
+  to_node_id?: number | null;
+  from_step_id?: number | null;
+  to_step_id?: number | null;
+  from_node_ref?: string | null;
+  to_node_ref?: string | null;
+  label?: string | null;
+  is_hidden: boolean;
+  props_json: Record<string, unknown>;
 }
 
 export interface FindingPath {
   path_id: number;
   path_length: number;
   steps: FindingPathStep[];
+  nodes?: FindingPathNode[];
+  edges?: FindingPathEdge[];
 }
 
 export interface FindingPathListResponse {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import tarfile
 import uuid
@@ -10,9 +11,17 @@ from app.core.errors import AppError
 
 
 def _snapshot_root() -> Path:
-    root = Path(get_settings().snapshot_storage_root)
+    root = _absolute_storage_path(get_settings().snapshot_storage_root)
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _absolute_storage_path(path: str | Path) -> Path:
+    normalized = Path(os.path.normpath(str(path)))
+    if normalized.is_absolute():
+        return normalized
+    backend_root = Path(__file__).resolve().parents[2]
+    return Path(os.path.normpath(str(backend_root / normalized)))
 
 
 def _version_base_dir(version_id: uuid.UUID) -> Path:

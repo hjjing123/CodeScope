@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.core.errors import AppError
 from app.services.scan_external import builtin as builtin_module
 from app.services.scan_external import context as context_module
+from app.services.scan_external import source_semantic_enhance as source_semantic_module
 from app.services.scan_external.contracts import ExternalScanContext
 
 
@@ -72,7 +73,7 @@ def test_run_builtin_joern_uses_params_and_logs_contract(
     captured_command: list[str] = []
     captured_env: dict[str, str] = {}
 
-    def _fake_run(command, *, deadline, env=None):
+    def _fake_run(command, *, deadline, env=None, cwd=None):
         if "--script" in command:
             captured_command[:] = command
             captured_env.update(env or {})
@@ -94,12 +95,112 @@ def test_run_builtin_joern_uses_params_and_logs_contract(
     assert "--param" in captured_command
     assert f"cpgFile={context.cpg_file}" in captured_command
     assert f"outDir={context.import_dir}" in captured_command
+    assert any(str(item).startswith("ARRAY_DELIM=") for item in captured_command)
+    assert "ENABLE_CALLS=false" in captured_command
+    assert "ENABLE_REF=true" in captured_command
     assert captured_env.get("cpgFile") == str(context.cpg_file)
     assert captured_env.get("outDir") == str(context.import_dir)
+    assert captured_env.get("ARRAY_DELIM") == "001"
+    assert captured_env.get("ENABLE_CALLS") == "false"
+    assert captured_env.get("ENABLE_REF") == "true"
     assert any("command=" in message and "script=" in message for _, message in logs)
     assert any(
         "cpg_file=" in message and "import_dir=" in message for _, message in logs
     )
+
+
+def test_run_builtin_joern_respects_patch_flag_overrides(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    job, context, _logs = _build_builtin_context(tmp_path)
+    job.payload = {"joern_patch": {"ENABLE_CALLS": "false", "ENABLE_REF": "0"}}
+    captured_env: dict[str, str] = {}
+
+    def _fake_run(command, *, deadline, env=None, cwd=None):
+        if "--script" in command:
+            captured_env.update(env or {})
+            _write_required_csv_files(context.import_dir)
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr(builtin_module, "_run_command_with_deadline", _fake_run)
+
+    builtin_module._run_builtin_joern(
+        job=job,
+        context=context,
+        append_log=lambda *_args: None,
+        deadline=9999999999.0,
+    )
+
+    assert captured_env.get("ENABLE_CALLS") == "false"
+    assert captured_env.get("ENABLE_REF") == "false"
+
+
+def test_run_source_semantic_enhance_serializes_summary_counters(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _job, context, logs = _build_builtin_context(tmp_path)
+    context.base_env["CODESCOPE_SCAN_NEO4J_URI"] = "bolt://127.0.0.1:7687"
+    context.base_env["CODESCOPE_SCAN_NEO4J_USER"] = "neo4j"
+    context.base_env["CODESCOPE_SCAN_NEO4J_PASSWORD"] = "secret"
+    context.base_env["CODESCOPE_SCAN_NEO4J_DATABASE"] = "neo4j"
+
+    class _FakeCounters:
+        contains_updates = True
+        nodes_created = 3
+        relationships_created = 2
+        properties_set = 7
+
+    class _FakeSummary:
+        counters = _FakeCounters()
+
+    class _FakeResult:
+        def consume(self):
+            return _FakeSummary()
+
+    class _FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def run(self, _cypher):
+            return _FakeResult()
+
+    class _FakeDriver:
+        def verify_connectivity(self):
+            return None
+
+        def session(self, **kwargs):
+            assert kwargs["database"] == "neo4j"
+            return _FakeSession()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        source_semantic_module.GraphDatabase,
+        "driver",
+        lambda uri, auth: _FakeDriver(),
+    )
+
+    stdout, stderr = source_semantic_module.run_source_semantic_enhance(
+        settings=SimpleNamespace(
+            scan_external_neo4j_uri="",
+            scan_external_neo4j_user="",
+            scan_external_neo4j_password="",
+            scan_external_neo4j_database="",
+        ),
+        context=context,
+        append_log=lambda stage, message: logs.append((stage, message)),
+    )
+
+    payload = json.loads(stdout)
+    assert stderr == ""
+    assert payload["statement_count"] == len(source_semantic_module.STATEMENTS)
+    assert payload["statements"][0]["counters"]["nodes_created"] == 3
+    assert payload["statements"][0]["counters"]["relationships_created"] == 2
+    assert any("source_semantic" in message for _, message in logs)
 
 
 def test_run_builtin_joern_missing_required_csv_reports_details(
@@ -107,7 +208,7 @@ def test_run_builtin_joern_missing_required_csv_reports_details(
 ) -> None:
     job, context, logs = _build_builtin_context(tmp_path)
 
-    def _fake_run(command, *, deadline, env=None):
+    def _fake_run(command, *, deadline, env=None, cwd=None):
         if "--script" in command:
             (context.import_dir / "nodes_File_header.csv").write_text(
                 "h\n", encoding="utf-8"
@@ -184,6 +285,8 @@ def test_build_scan_env_falls_back_default_export_script(tmp_path: Path) -> None
     assert env["CODESCOPE_SCAN_JOERN_EXPORT_SCRIPT"] == str(default_script.resolve())
     assert env["CODESCOPE_SCAN_RUNTIME_PROFILE"] == "wsl"
     assert env["CODESCOPE_SCAN_CONTAINER_COMPAT_MODE"] == "0"
+    assert env["CODE_ROOT"] == str((tmp_path / "source"))
+    assert env["SCAN_ROOT"] == str((tmp_path / "source"))
 
 
 def test_build_scan_env_uses_custom_export_script(tmp_path: Path) -> None:
@@ -231,6 +334,8 @@ def test_build_scan_env_uses_custom_export_script(tmp_path: Path) -> None:
     )
 
     assert env["CODESCOPE_SCAN_JOERN_EXPORT_SCRIPT"] == str(custom_script.resolve())
+    assert env["CODE_ROOT"] == str((tmp_path / "source"))
+    assert env["SCAN_ROOT"] == str((tmp_path / "source"))
 
 
 def test_build_scan_env_renders_job_scoped_database_names(tmp_path: Path) -> None:
@@ -407,6 +512,11 @@ def test_preflight_check_docker_daemon_reports_reachability_failure(
 
     monkeypatch.setattr(builtin_module.shutil, "which", lambda _: "docker")
     monkeypatch.setattr(builtin_module, "_run_command_with_deadline", _fake_run)
+    monkeypatch.setattr(
+        builtin_module,
+        "_wait_for_ephemeral_runtime_ready",
+        lambda **kwargs: None,
+    )
 
     with pytest.raises(AppError) as exc_info:
         builtin_module._preflight_check_docker_daemon(deadline=9999999999.0)
@@ -526,6 +636,11 @@ def test_run_builtin_neo4j_import_uses_host_mapping_and_logs_command(
 
     monkeypatch.setattr(builtin_module.shutil, "which", lambda _: "docker")
     monkeypatch.setattr(builtin_module, "_run_command_with_deadline", _fake_run)
+    monkeypatch.setattr(
+        builtin_module,
+        "_wait_for_ephemeral_runtime_ready",
+        lambda **kwargs: None,
+    )
 
     stdout, stderr = builtin_module._run_builtin_neo4j_import(
         settings=settings,
@@ -661,6 +776,11 @@ def test_run_builtin_neo4j_import_starts_container_after_import_when_initially_s
 
     monkeypatch.setattr(builtin_module.shutil, "which", lambda _: "docker")
     monkeypatch.setattr(builtin_module, "_run_command_with_deadline", _fake_run)
+    monkeypatch.setattr(
+        builtin_module,
+        "_wait_for_ephemeral_runtime_ready",
+        lambda **kwargs: None,
+    )
 
     stdout, stderr = builtin_module._run_builtin_neo4j_import(
         settings=settings,
@@ -1032,7 +1152,7 @@ def test_run_builtin_rules_executes_rules_without_runtime_validation(
         executed.append(Path(kwargs["cypher_file"]).name)
         return SimpleNamespace(total_rows=2)
 
-    monkeypatch.setattr(builtin_module, "execute_cypher_file", _fake_execute)
+    monkeypatch.setattr(builtin_module, "execute_cypher_file_stream", _fake_execute)
 
     stdout, stderr = builtin_module._run_builtin_rules(
         job=job,
@@ -1062,6 +1182,170 @@ def test_run_builtin_rules_executes_rules_without_runtime_validation(
     assert round_report["rule_results"][1]["status"] == "succeeded"
     assert round_report["rule_results"][0]["duration_ms"] >= 0
     assert round_report["rule_results"][1]["duration_ms"] >= 0
+
+
+def test_run_builtin_rules_dedupes_duplicate_path_findings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    job, context, _logs = _build_builtin_context(tmp_path)
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    context.base_env["CODESCOPE_SCAN_RULES_DIR"] = str(rules_dir)
+    (rules_dir / "dup_rule.cypher").write_text("RETURN 1;\n", encoding="utf-8")
+
+    settings = SimpleNamespace(
+        scan_external_neo4j_uri="bolt://127.0.0.1:7687",
+        scan_external_neo4j_user="neo4j",
+        scan_external_neo4j_password="",
+        scan_external_neo4j_database="neo4j",
+        scan_external_neo4j_connect_retry=1,
+        scan_external_neo4j_connect_wait_seconds=1,
+        scan_external_rules_max_count=0,
+        scan_external_rules_failure_mode="permissive",
+    )
+    job.payload["resolved_rule_keys"] = ["dup_rule"]
+
+    record = {
+        "path": {
+            "kind": "path",
+            "nodes": [
+                {
+                    "labels": ["Var", "SpringControllerArg"],
+                    "node_ref": "source-ref-a",
+                    "props": {
+                        "name": "cmd",
+                        "file": "/tmp/source/src/A.java",
+                        "line": 10,
+                        "type": "String",
+                        "kind": "Var",
+                    },
+                },
+                {
+                    "labels": ["Call"],
+                    "node_ref": "sink-ref-a",
+                    "props": {
+                        "name": "exec",
+                        "file": "/tmp/source/src/A.java",
+                        "line": 20,
+                        "kind": "Call",
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "type": "ARG",
+                    "from_node_ref": "source-ref-a",
+                    "to_node_ref": "sink-ref-a",
+                    "props": {"argIndex": 0},
+                }
+            ],
+        }
+    }
+
+    def _fake_execute(**kwargs):
+        kwargs["on_record"](record)
+        kwargs["on_record"](record)
+        return SimpleNamespace(total_rows=2)
+
+    monkeypatch.setattr(builtin_module, "execute_cypher_file_stream", _fake_execute)
+
+    emitted: list[dict[str, object]] = []
+    stdout, stderr = builtin_module._run_builtin_rules(
+        job=job,
+        settings=settings,
+        context=context,
+        append_log=lambda *_args: None,
+        on_rule_finding=lambda finding: emitted.append(finding),
+    )
+
+    payload = json.loads(stdout)
+    assert stderr == ""
+    assert len(emitted) == 1
+    assert payload["emitted_findings"] == 1
+    assert payload["rule_results"][0]["rows"] == 2
+
+
+def test_run_builtin_rules_filters_irrelevant_mybatis_cases(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    job, context, _logs = _build_builtin_context(tmp_path)
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    context.base_env["CODESCOPE_SCAN_RULES_DIR"] = str(rules_dir)
+    (rules_dir / "any_mybatis_sqli.cypher").write_text(
+        "RETURN 1;\n",
+        encoding="utf-8",
+    )
+
+    settings = SimpleNamespace(
+        scan_external_neo4j_uri="bolt://127.0.0.1:7687",
+        scan_external_neo4j_user="neo4j",
+        scan_external_neo4j_password="",
+        scan_external_neo4j_database="neo4j",
+        scan_external_neo4j_connect_retry=1,
+        scan_external_neo4j_connect_wait_seconds=1,
+        scan_external_rules_max_count=0,
+        scan_external_rules_failure_mode="permissive",
+    )
+    job.payload["resolved_rule_keys"] = ["any_mybatis_sqli"]
+
+    record = {
+        "path": {
+            "kind": "path",
+            "nodes": [
+                {
+                    "labels": ["Var", "SpringControllerArg"],
+                    "node_ref": "source-ref",
+                    "props": {
+                        "name": "orderBy",
+                        "file": "/tmp/source/src/Controller.java",
+                        "line": 12,
+                        "type": "String",
+                        "kind": "Var",
+                    },
+                },
+                {
+                    "labels": ["MybatisXmlUnsafeArg", "Var"],
+                    "node_ref": "sink-ref",
+                    "props": {
+                        "name": "orderUtil",
+                        "flatArgs": ["status"],
+                        "file": "/tmp/source/src/Mapper.xml",
+                        "line": 30,
+                        "type": "String",
+                        "kind": "Var",
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "type": "PARAM_PASS",
+                    "from_node_ref": "source-ref",
+                    "to_node_ref": "sink-ref",
+                    "props": {"argIndex": 0},
+                }
+            ],
+        }
+    }
+
+    def _fake_execute(**kwargs):
+        kwargs["on_record"](record)
+        return SimpleNamespace(total_rows=1)
+
+    monkeypatch.setattr(builtin_module, "execute_cypher_file_stream", _fake_execute)
+
+    emitted: list[dict[str, object]] = []
+    stdout, _stderr = builtin_module._run_builtin_rules(
+        job=job,
+        settings=settings,
+        context=context,
+        append_log=lambda *_args: None,
+        on_rule_finding=lambda finding: emitted.append(finding),
+    )
+
+    payload = json.loads(stdout)
+    assert emitted == []
+    assert payload["emitted_findings"] == 0
 
 
 def test_run_builtin_rules_strict_fails_on_execution_error(
@@ -1098,7 +1382,7 @@ def test_run_builtin_rules_strict_fails_on_execution_error(
             message="规则执行失败",
         )
 
-    monkeypatch.setattr(builtin_module, "execute_cypher_file", _fake_execute)
+    monkeypatch.setattr(builtin_module, "execute_cypher_file_stream", _fake_execute)
 
     with pytest.raises(AppError) as exc_info:
         builtin_module._run_builtin_rules(

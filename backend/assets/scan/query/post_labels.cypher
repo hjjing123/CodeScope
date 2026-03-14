@@ -14,6 +14,7 @@ CREATE INDEX call_type IF NOT EXISTS FOR (c:Call) ON (c.type);
 CREATE INDEX call_receivers IF NOT EXISTS FOR (c:Call) ON (c.receivers);
 CREATE INDEX var_type IF NOT EXISTS FOR (v:Var) ON (v.type);
 CREATE INDEX var_name IF NOT EXISTS FOR (v:Var) ON (v.name);
+CREATE INDEX var_paramIndex IF NOT EXISTS FOR (v:Var) ON (v.paramIndex);
 DROP INDEX var_assignRight IF EXISTS;
 CREATE TEXT INDEX var_assignRight IF NOT EXISTS FOR (v:Var) ON (v.assignRight);
 CREATE INDEX method_name IF NOT EXISTS FOR (m:Method) ON (m.name);
@@ -52,10 +53,36 @@ CALL () {
 } IN TRANSACTIONS OF 10000 ROWS;
 
 CALL () {
+  MATCH ()-[r:PARAM_PASS]->()
+  DELETE r
+} IN TRANSACTIONS OF 10000 ROWS;
+
+CALL () {
   MATCH (c:Call)
   WHERE c.methodFullName IS NOT NULL AND c.methodFullName <> ''
   MATCH (m:Method {fullName: c.methodFullName})
   MERGE (c)-[:CALLS]->(m)
+} IN TRANSACTIONS OF 10000 ROWS;
+
+CALL () {
+  MATCH (a)-[ra:ARG]->(c:Call)
+  WHERE ra.argIndex IS NOT NULL AND c.methodFullName IS NOT NULL AND c.methodFullName <> ''
+  MATCH (m:Method {fullName: c.methodFullName})
+  MATCH (p:Var)-[:ARG]->(m)
+  WHERE p.paramIndex IS NOT NULL
+    AND (
+      (
+        m.paramNames IS NOT NULL AND size(m.paramNames) > 0 AND m.paramNames[0] = 'this'
+        AND toInteger(p.paramIndex) = toInteger(ra.argIndex)
+      )
+      OR
+      (
+        (m.paramNames IS NULL OR size(m.paramNames) = 0 OR m.paramNames[0] <> 'this')
+        AND toInteger(p.paramIndex) + 1 = toInteger(ra.argIndex)
+      )
+    )
+    AND (p.name IS NULL OR p.name <> 'this')
+  MERGE (a)-[:PARAM_PASS {argIndex: toInteger(ra.argIndex)}]->(p)
 } IN TRANSACTIONS OF 10000 ROWS;
 
 CALL () {
@@ -1961,6 +1988,30 @@ CALL () {
 } IN TRANSACTIONS OF 10000 ROWS;
 
 CALL () {
+  MATCH (x:XmlElement)
+  WHERE x.qName = 'mybatis.placeholder' AND x.value IS NOT NULL AND x.value CONTAINS '.' AND x.innerText IS NOT NULL AND x.innerText CONTAINS '#'
+  WITH x, split(x.innerText, '#') AS meta, split(x.value, '.')[0] AS rootName
+  WHERE size(meta) >= 2 AND rootName IS NOT NULL AND rootName <> '' AND NOT rootName IN ['_parameter', 'value', 'param1']
+  MATCH (m:Method)
+  WHERE m.fullName STARTS WITH meta[0] + '.' + meta[1] + ':'
+  MATCH (p:Var)-[:ARG]->(m)
+  WHERE p.name = rootName
+  SET p:MybatisXmlUnsafeArg
+} IN TRANSACTIONS OF 10000 ROWS;
+
+CALL () {
+  MATCH (c:Call)-[:ARG]->(a)-[:PARAM_PASS]->(p:MybatisXmlUnsafeArg)
+  WHERE c:MybatisMethodArg
+  SET c:MybatisXmlUnsafeArg
+} IN TRANSACTIONS OF 10000 ROWS;
+
+CALL () {
+  MATCH (src:Var)-[:REF|PARAM_PASS|SRC_FLOW|ARG]->(dst:MybatisXmlUnsafeArg)
+  WHERE src.name IS NOT NULL AND src.name <> 'this'
+  SET src:MybatisXmlUnsafeArg
+} IN TRANSACTIONS OF 10000 ROWS;
+
+CALL () {
   MATCH (c:Call)-[:ARG]->(a:Lit)
   WHERE a.code IS NOT NULL AND toLower(a.code) = 'true'
   SET c:TrueLiteral
@@ -2037,22 +2088,15 @@ CALL () {
 
 CALL () {
   MATCH (m:Method)
-  WHERE (
+  WHERE m.name <> 'main' AND (
     (m.classAnnotations IS NOT NULL AND any(x IN m.classAnnotations WHERE
-      x IN ['Controller','RestController','RequestMapping','GetMapping','PostMapping','PutMapping','DeleteMapping','PatchMapping'] OR
+      x IN ['Controller','RestController','RequestMapping'] OR
       toLower(x) ENDS WITH '.controller' OR
       toLower(x) ENDS WITH '.restcontroller' OR
-      toLower(x) ENDS WITH '.requestmapping' OR
-      toLower(x) ENDS WITH '.getmapping' OR
-      toLower(x) ENDS WITH '.postmapping' OR
-      toLower(x) ENDS WITH '.putmapping' OR
-      toLower(x) ENDS WITH '.deletemapping' OR
-      toLower(x) ENDS WITH '.patchmapping'
+      toLower(x) ENDS WITH '.requestmapping'
     )) OR
     (m.methodAnnotations IS NOT NULL AND any(x IN m.methodAnnotations WHERE
-      x IN ['Controller','RestController','RequestMapping','GetMapping','PostMapping','PutMapping','DeleteMapping','PatchMapping'] OR
-      toLower(x) ENDS WITH '.controller' OR
-      toLower(x) ENDS WITH '.restcontroller' OR
+      x IN ['RequestMapping','GetMapping','PostMapping','PutMapping','DeleteMapping','PatchMapping'] OR
       toLower(x) ENDS WITH '.requestmapping' OR
       toLower(x) ENDS WITH '.getmapping' OR
       toLower(x) ENDS WITH '.postmapping' OR
@@ -2066,31 +2110,7 @@ CALL () {
 
 CALL () {
   MATCH (n:Var)-[:ARG]->(m:Method)
-  WHERE (n.name IS NULL OR n.name <> 'this') AND (
-    m:SpringController OR
-    (m.classAnnotations IS NOT NULL AND any(x IN m.classAnnotations WHERE
-      x IN ['Controller','RestController','RequestMapping','GetMapping','PostMapping','PutMapping','DeleteMapping','PatchMapping'] OR
-      toLower(x) ENDS WITH '.controller' OR
-      toLower(x) ENDS WITH '.restcontroller' OR
-      toLower(x) ENDS WITH '.requestmapping' OR
-      toLower(x) ENDS WITH '.getmapping' OR
-      toLower(x) ENDS WITH '.postmapping' OR
-      toLower(x) ENDS WITH '.putmapping' OR
-      toLower(x) ENDS WITH '.deletemapping' OR
-      toLower(x) ENDS WITH '.patchmapping'
-    )) OR
-    (m.methodAnnotations IS NOT NULL AND any(x IN m.methodAnnotations WHERE
-      x IN ['Controller','RestController','RequestMapping','GetMapping','PostMapping','PutMapping','DeleteMapping','PatchMapping'] OR
-      toLower(x) ENDS WITH '.controller' OR
-      toLower(x) ENDS WITH '.restcontroller' OR
-      toLower(x) ENDS WITH '.requestmapping' OR
-      toLower(x) ENDS WITH '.getmapping' OR
-      toLower(x) ENDS WITH '.postmapping' OR
-      toLower(x) ENDS WITH '.putmapping' OR
-      toLower(x) ENDS WITH '.deletemapping' OR
-      toLower(x) ENDS WITH '.patchmapping'
-    ))
-  )
+  WHERE (n.name IS NULL OR n.name <> 'this') AND m:SpringController
   SET n:SpringControllerArg
 } IN TRANSACTIONS OF 10000 ROWS;
 
@@ -2189,18 +2209,9 @@ CALL () {
 
 CALL () {
   MATCH (s:Var:SourceEntryArg)
-  WHERE s.method IS NOT NULL AND s.method <> '' AND s.file IS NOT NULL AND s.file <> ''
-  MATCH (m:Method)
-  WHERE m.name = s.method AND m.file = s.file
-  MERGE (s)-[:ARG]->(m)
-} IN TRANSACTIONS OF 10000 ROWS;
-
-CALL () {
-  MATCH (s:Var:SourceEntryArg)
   WHERE s.name IS NOT NULL AND s.name <> '' AND s.method IS NOT NULL AND s.method <> '' AND s.file IS NOT NULL AND s.file <> ''
   MATCH (a:Var:CallArg)-[:ARG]->(c:Call)
   WHERE a.name = s.name AND a.method = s.method AND a.file = s.file
-    AND (s.type IS NULL OR a.type IS NULL OR s.type = a.type)
   MERGE (s)-[:ARG]->(c)
 } IN TRANSACTIONS OF 10000 ROWS;
 
@@ -2211,14 +2222,39 @@ CALL () {
   WHERE v.id <> s.id AND v.name = s.name AND v.method = s.method AND v.file = s.file AND (
     v:Reference OR v:CallArg
   )
-  AND (s.type IS NULL OR v.type IS NULL OR s.type = v.type)
   MERGE (s)-[:REF]->(v)
+} IN TRANSACTIONS OF 10000 ROWS;
+
+CALL () {
+  MATCH (p:Var)-[:ARG]->(:Method)
+  WHERE p.declKind = 'Param' AND p.name IS NOT NULL AND p.name <> '' AND p.file IS NOT NULL AND p.file <> '' AND p.method IS NOT NULL AND p.method <> ''
+  MATCH (a:Var:CallArg)-[:ARG]->(c:Call)
+  WHERE a.name = p.name AND a.file = p.file AND a.method = p.method
+  MERGE (p)-[:ARG]->(c)
+} IN TRANSACTIONS OF 10000 ROWS;
+
+CALL () {
+  MATCH (p:Var)-[:ARG]->(:Method)
+  WHERE p.declKind = 'Param' AND p.name IS NOT NULL AND p.name <> '' AND p.file IS NOT NULL AND p.file <> '' AND p.method IS NOT NULL AND p.method <> ''
+  MATCH (v:Var)
+  WHERE v.id <> p.id AND v.name = p.name AND v.file = p.file AND v.method = p.method AND (v:Reference OR v:CallArg)
+  MERGE (p)-[:REF]->(v)
+} IN TRANSACTIONS OF 10000 ROWS;
+
+CALL () {
+  MATCH (v:Var)
+  WHERE v.name IS NOT NULL AND v.name <> '' AND v.name <> 'this' AND v.file IS NOT NULL AND v.file <> '' AND v.method IS NOT NULL AND v.method <> ''
+    AND (v:Reference OR v:Argument OR v:CallArg OR v.declKind IN ['Param','Local','FieldIdentifier'])
+  MATCH (c:Call)
+  WHERE c.file = v.file AND c.ownerMethod = v.method AND c.receivers IS NOT NULL AND any(r IN c.receivers WHERE r = v.name OR r ENDS WITH '.' + v.name)
+  MERGE (v)-[:REF]->(c)
 } IN TRANSACTIONS OF 10000 ROWS;
 
 CALL () {
   MATCH (s:Var:SourceEntryArg)
   REMOVE s:SourceEntryArg
 } IN TRANSACTIONS OF 10000 ROWS;
+
 
 CALL () {
   MATCH ()-[r:METHOD_ARG]->()

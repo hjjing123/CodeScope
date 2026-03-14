@@ -7,6 +7,11 @@ from typing import Any, Callable
 
 from app.core.errors import AppError
 
+from .path_result_postprocess import (
+    load_path_postprocess_config,
+    postprocess_result_records,
+)
+
 
 @dataclass(slots=True)
 class CypherExecutionSummary:
@@ -85,6 +90,7 @@ def execute_cypher_file_stream(
             retry_errors=(ServiceUnavailable, DatabaseUnavailable),
         )
 
+        path_post_cfg = load_path_postprocess_config()
         row_counts: list[int] = []
         with driver.session(database=database) as session:
             for statement in statements:
@@ -100,8 +106,14 @@ def execute_cypher_file_stream(
                     result.consume()
                     row_counts.append(0)
                     continue
+                raw_records = list(result)
+                records, _stats = postprocess_result_records(
+                    raw_records,
+                    keys,
+                    path_post_cfg,
+                )
                 row_count = 0
-                for record in result:
+                for record in records:
                     row_count += 1
                     if on_record is not None:
                         on_record(_serialize_record(record))
@@ -144,10 +156,26 @@ def _serialize_graph_value(value: Any) -> Any:
         return {str(key): _serialize_graph_value(item) for key, item in value.items()}
     if _looks_like_path(value):
         nodes = [_serialize_graph_node(node) for node in getattr(value, "nodes", [])]
+        relationships = list(getattr(value, "relationships", []) or [])
+        edges: list[dict[str, Any]] = []
+        for index, relationship in enumerate(relationships):
+            source_ref = nodes[index]["node_ref"] if index < len(nodes) else None
+            target_ref = (
+                nodes[index + 1]["node_ref"] if index + 1 < len(nodes) else None
+            )
+            edges.append(
+                _serialize_path_relationship(
+                    relationship,
+                    edge_order=index,
+                    from_node_ref=source_ref,
+                    to_node_ref=target_ref,
+                )
+            )
         return {
             "kind": "path",
-            "length": max(0, len(getattr(value, "relationships", []))),
+            "length": max(0, len(relationships)),
             "nodes": nodes,
+            "edges": edges,
         }
     if _looks_like_node(value):
         return _serialize_graph_node(value)
@@ -158,6 +186,30 @@ def _serialize_graph_value(value: Any) -> Any:
             "props": _serialize_graph_items(value),
         }
     return str(value)
+
+
+def _serialize_path_relationship(
+    relationship: Any,
+    *,
+    edge_order: int,
+    from_node_ref: str | None,
+    to_node_ref: str | None,
+) -> dict[str, Any]:
+    props = _serialize_graph_items(relationship)
+    edge_ref = str(
+        getattr(relationship, "element_id", "")
+        or props.get("id")
+        or f"edge-{edge_order}"
+    )
+    return {
+        "kind": "relationship",
+        "edge_ref": edge_ref,
+        "edge_order": edge_order,
+        "type": str(getattr(relationship, "type", "") or ""),
+        "from_node_ref": str(from_node_ref or ""),
+        "to_node_ref": str(to_node_ref or ""),
+        "props": props,
+    }
 
 
 def _serialize_graph_node(node: Any) -> dict[str, Any]:

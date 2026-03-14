@@ -2,6 +2,16 @@ import axios from 'axios';
 import { message } from 'antd';
 import { clearAuthToken, getAuthToken } from './authToken';
 
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    skipErrorToast?: boolean;
+  }
+
+  interface InternalAxiosRequestConfig {
+    skipErrorToast?: boolean;
+  }
+}
+
 const request = axios.create({
   baseURL: '/api/v1',
   timeout: 10000,
@@ -25,7 +35,8 @@ request.interceptors.response.use(
     return response.data;
   },
   (error) => {
-    const { response } = error;
+    const { response, config } = error;
+    const skipErrorToast = Boolean(config?.skipErrorToast);
     if (response) {
       const { status, data } = response;
       if (status === 401) {
@@ -37,8 +48,10 @@ request.interceptors.response.use(
             window.location.href = '/login';
         }
       }
-      message.error(data?.error?.message || data?.message || 'Request failed');
-    } else {
+      if (!skipErrorToast) {
+        message.error(data?.error?.message || data?.message || 'Request failed');
+      }
+    } else if (!skipErrorToast) {
       message.error('Network error');
     }
     return Promise.reject(error);

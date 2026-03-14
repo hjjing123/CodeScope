@@ -44,7 +44,10 @@ export class FindingService {
     findingId: string,
     params?: { mode?: 'shortest' | 'all'; limit?: number }
   ): Promise<FindingPathListResponse> {
-    const res = await request.get(`/findings/${findingId}/paths`, { params });
+    const res = await request.get(`/findings/${findingId}/paths`, {
+      params,
+      skipErrorToast: true,
+    });
     return res.data;
   }
 

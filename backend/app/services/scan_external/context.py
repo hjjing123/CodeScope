@@ -35,6 +35,7 @@ def build_external_scan_context(
                     "scan_external_stage_joern_command",
                     "scan_external_stage_import_command",
                     "scan_external_stage_post_labels_command",
+                    "scan_external_stage_source_semantic_command",
                     "scan_external_stage_rules_command",
                 ]
             },
@@ -273,6 +274,24 @@ def _build_stage_specs(*, settings: Any) -> list[ExternalStageSpec]:
             timeout_code="SCAN_EXTERNAL_POST_LABELS_TIMEOUT",
         ),
         ExternalStageSpec(
+            key="source_semantic",
+            command=(
+                getattr(settings, "scan_external_stage_source_semantic_command", "")
+                or ""
+            ).strip(),
+            log_stage=JobStage.QUERY.value,
+            timeout_seconds=_safe_timeout_seconds(
+                getattr(
+                    settings,
+                    "scan_external_stage_source_semantic_timeout_seconds",
+                    900,
+                ),
+                default=getattr(settings, "scan_external_timeout_seconds", 3600),
+            ),
+            failure_code="SCAN_EXTERNAL_SOURCE_SEMANTIC_FAILED",
+            timeout_code="SCAN_EXTERNAL_SOURCE_SEMANTIC_TIMEOUT",
+        ),
+        ExternalStageSpec(
             key="rules",
             command=(
                 getattr(settings, "scan_external_stage_rules_command", "") or ""
@@ -307,6 +326,8 @@ def _build_scan_env(
     env["CODESCOPE_SCAN_VERSION_ID"] = str(job.version_id)
     env["CODESCOPE_SCAN_REPORTS_DIR"] = str(reports_dir)
     env["CODESCOPE_SCAN_SOURCE_DIR"] = str(source_dir)
+    env["CODE_ROOT"] = str(source_dir)
+    env["SCAN_ROOT"] = str(source_dir)
     env["CODESCOPE_SCAN_IMPORT_DIR"] = str(import_dir)
     env["CODESCOPE_SCAN_RUNTIME_PROFILE"] = runtime_profile
     env["CODESCOPE_SCAN_CONTAINER_COMPAT_MODE"] = (

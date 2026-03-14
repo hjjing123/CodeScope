@@ -14,6 +14,12 @@ from urllib.parse import urlparse
 from app.config import get_settings
 from app.core.errors import AppError
 from app.models import Job
+from app.services.path_graph_service import (
+    build_linear_path_edges,
+    build_path_edge_payload,
+    build_path_node_payload as build_trace_node_payload,
+    build_path_step_payload,
+)
 from app.services.rule_file_service import (
     list_runtime_rule_files,
     resolve_runtime_rule_files,
@@ -26,6 +32,7 @@ from .neo4j_runner import (
     verify_neo4j_connectivity,
 )
 from .runtime_metadata import write_runtime_metadata
+from .source_semantic_enhance import run_source_semantic_enhance
 
 
 NODE_HEADER_RE = re.compile(r"^nodes_(.+)_header\.csv$", re.IGNORECASE)
@@ -49,6 +56,166 @@ REQUIRED_JOERN_EXPORT_FILES = (
 WSL_RUNTIME_PROFILE = "wsl"
 CONTAINER_COMPAT_RUNTIME_PROFILE = "container_compat"
 DOCKER_EPHEMERAL_RUNTIME_MODE = "docker_ephemeral"
+MYBATIS_UNSAFE_ARG_LABELS = {"MybatisXmlUnsafeArg", "MybatisAnnotationUnsafeArg"}
+
+
+def _normalize_case_file_path(value: object) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return ""
+    marker = "/source/"
+    if marker in text:
+        return text.split(marker, 1)[1]
+    return text
+
+
+def _finding_case_node_name(node: dict[str, object]) -> str:
+    raw_props = node.get("raw_props") if isinstance(node.get("raw_props"), dict) else {}
+    for candidate in (
+        raw_props.get("name"),
+        node.get("symbol_name"),
+        node.get("display_name"),
+        node.get("func_name"),
+        raw_props.get("method"),
+        raw_props.get("methodFullName"),
+        raw_props.get("fullName"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _finding_case_node_fingerprint_part(node: dict[str, object]) -> str:
+    labels = (
+        ":".join(
+            sorted(
+                str(item).strip()
+                for item in node.get("labels") or []
+                if str(item).strip()
+            )
+        )
+        or "Node"
+    )
+    raw_props = node.get("raw_props") if isinstance(node.get("raw_props"), dict) else {}
+    name = _finding_case_node_name(node)
+    node_type = str(
+        node.get("type_name")
+        or raw_props.get("type")
+        or raw_props.get("receiverType")
+        or ""
+    ).strip()
+    file_path = _normalize_case_file_path(node.get("file") or raw_props.get("file"))
+    line = _safe_int(node.get("line"))
+    return (
+        f"{labels}({name}|{node_type}|{file_path}:{line if line is not None else -1})"
+    )
+
+
+def _finding_case_edge_fingerprint_part(edge: dict[str, object]) -> str:
+    props = edge.get("props_json") if isinstance(edge.get("props_json"), dict) else {}
+    arg_index = props.get("argIndex")
+    if arg_index in (None, ""):
+        arg_index = props.get("argPosition")
+    edge_type = str(edge.get("edge_type") or "EDGE").strip() or "EDGE"
+    label = str(edge.get("label") or "").strip()
+    return f"{edge_type}({label}|{arg_index if arg_index not in (None, '') else ''})"
+
+
+def _finding_case_path_fingerprint(path: dict[str, object]) -> str:
+    raw_nodes = path.get("nodes") if isinstance(path.get("nodes"), list) else []
+    if not raw_nodes and isinstance(path.get("steps"), list):
+        raw_nodes = [item for item in path.get("steps") or [] if isinstance(item, dict)]
+    raw_edges = path.get("edges") if isinstance(path.get("edges"), list) else []
+    node_parts = ",".join(
+        _finding_case_node_fingerprint_part(node)
+        for node in raw_nodes
+        if isinstance(node, dict)
+    )
+    edge_parts = ",".join(
+        _finding_case_edge_fingerprint_part(edge)
+        for edge in raw_edges
+        if isinstance(edge, dict)
+    )
+    return f"N[{node_parts}]|E[{edge_parts}]"
+
+
+def _finding_hit_fingerprint(rule_key: str, finding_hit: dict[str, object]) -> str:
+    paths = (
+        finding_hit.get("paths") if isinstance(finding_hit.get("paths"), list) else []
+    )
+    path_fingerprints = [
+        _finding_case_path_fingerprint(path) for path in paths if isinstance(path, dict)
+    ]
+    if path_fingerprints:
+        return f"path|{rule_key}|{'||'.join(path_fingerprints)}"
+
+    evidence = (
+        finding_hit.get("evidence")
+        if isinstance(finding_hit.get("evidence"), dict)
+        else {}
+    )
+    labels = ",".join(
+        sorted(
+            str(item).strip()
+            for item in evidence.get("labels") or []
+            if str(item).strip()
+        )
+    )
+    file_path = _normalize_case_file_path(
+        finding_hit.get("file_path") or finding_hit.get("sink_file")
+    )
+    line = _safe_int(finding_hit.get("line_start") or finding_hit.get("sink_line"))
+    node_ref = str(evidence.get("node_ref") or "").strip()
+    return f"node|{rule_key}|{file_path}:{line if line is not None else -1}|{labels}|{node_ref}"
+
+
+def _allow_mybatis_finding_hit(finding_hit: dict[str, object]) -> bool:
+    paths = (
+        finding_hit.get("paths") if isinstance(finding_hit.get("paths"), list) else []
+    )
+    if not paths or not isinstance(paths[0], dict):
+        return True
+    nodes = paths[0].get("nodes") if isinstance(paths[0].get("nodes"), list) else []
+    if not nodes or not isinstance(nodes[0], dict):
+        return True
+
+    source_name = _finding_case_node_name(nodes[0])
+    if not source_name:
+        return False
+    sink_root_name = (
+        _finding_case_node_name(nodes[-1]) if isinstance(nodes[-1], dict) else ""
+    )
+    sink_args: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        labels = {
+            str(item).strip() for item in node.get("labels") or [] if str(item).strip()
+        }
+        raw_props = (
+            node.get("raw_props") if isinstance(node.get("raw_props"), dict) else {}
+        )
+        node_name = str(raw_props.get("name") or "").strip()
+        is_mybatis_sink = bool(labels & MYBATIS_UNSAFE_ARG_LABELS)
+        is_sink_family = bool(sink_root_name and node_name == sink_root_name)
+        if not is_mybatis_sink and not is_sink_family:
+            continue
+        flat_args = raw_props.get("flatArgs") or []
+        if isinstance(flat_args, list):
+            sink_args.update(
+                str(item).strip() for item in flat_args if str(item).strip()
+            )
+    if not sink_args:
+        return True
+    return source_name in sink_args
+
+
+def _allow_finding_hit_for_rule(rule_key: str, finding_hit: dict[str, object]) -> bool:
+    lower = rule_key.lower()
+    if "mybatis" in lower and "sqli" in lower:
+        return _allow_mybatis_finding_hit(finding_hit)
+    return True
 
 
 def run_builtin_stage(
@@ -83,6 +250,12 @@ def run_builtin_stage(
             context=context,
             append_log=append_log,
         )
+    if builtin_key == "source_semantic":
+        return run_source_semantic_enhance(
+            settings=settings,
+            context=context,
+            append_log=append_log,
+        )
     if builtin_key == "rules":
         return _run_builtin_rules(
             job=job,
@@ -107,6 +280,7 @@ def _run_builtin_joern(
     append_log: Callable[[str, str], None],
     deadline: float,
 ) -> tuple[str, str]:
+    settings = get_settings()
     joern_bin = Path(context.base_env.get("CODESCOPE_SCAN_JOERN_BIN") or "")
     joern_home = Path(context.base_env.get("CODESCOPE_SCAN_JOERN_HOME") or "")
     export_script = Path(
@@ -212,17 +386,35 @@ def _run_builtin_joern(
     export_env = dict(context.base_env)
     patch = job.payload.get("joern_patch")
     patch_map = patch if isinstance(patch, dict) else {}
-    enable_calls = bool(patch_map.get("ENABLE_CALLS", False))
-    enable_ref = bool(patch_map.get("ENABLE_REF", False))
+    enable_calls = _to_bool_flag(
+        patch_map.get("ENABLE_CALLS"),
+        default=bool(
+            getattr(settings, "scan_external_joern_enable_calls_default", True)
+        ),
+    )
+    enable_ref = _to_bool_flag(
+        patch_map.get("ENABLE_REF"),
+        default=bool(getattr(settings, "scan_external_joern_enable_ref_default", True)),
+    )
     ast_mode = str(patch_map.get("AST_MODE", "local") or "local").lower()
     if ast_mode not in {"none", "local", "wide"}:
         ast_mode = "local"
 
     export_env["cpgFile"] = str(context.cpg_file)
     export_env["outDir"] = str(context.import_dir)
+    export_env.setdefault("CODE_ROOT", str(context.source_dir))
+    export_env.setdefault("SCAN_ROOT", str(context.source_dir))
     export_env["ENABLE_CALLS"] = "true" if enable_calls else "false"
     export_env["ENABLE_REF"] = "true" if enable_ref else "false"
     export_env["AST_MODE"] = ast_mode
+    raw_array_delim = str(
+        getattr(settings, "scan_external_import_array_delimiter", "\\001") or "\\001"
+    )
+    export_env["ARRAY_DELIM"] = (
+        "001"
+        if raw_array_delim in {"\\001", "\\u0001", "U+0001", "\u0001"}
+        else raw_array_delim
+    )
 
     export_cmd = [
         str(joern_bin),
@@ -238,6 +430,8 @@ def _run_builtin_joern(
         f"ENABLE_REF={export_env['ENABLE_REF']}",
         "--param",
         f"AST_MODE={export_env['AST_MODE']}",
+        "--param",
+        f"ARRAY_DELIM={export_env['ARRAY_DELIM']}",
     ]
     export_command_text = _command_to_text(export_cmd)
     append_log(
@@ -993,6 +1187,7 @@ def _run_builtin_rules(
     emitted_finding_count = 0
     for index, rule_file in enumerate(rule_files, start=1):
         rule_key = _rule_key_from_file(rule_file)
+        seen_case_fingerprints: set[str] = set()
         append_log(
             "QUERY",
             f"[rules] 开始执行规则 {index}/{total_rule_count}: {rule_key}",
@@ -1008,6 +1203,12 @@ def _run_builtin_rules(
                 )
                 if finding_hit is None:
                     return
+                if not _allow_finding_hit_for_rule(rule_key, finding_hit):
+                    return
+                fingerprint = _finding_hit_fingerprint(rule_key, finding_hit)
+                if fingerprint in seen_case_fingerprints:
+                    return
+                seen_case_fingerprints.add(fingerprint)
                 emitted_finding_count += 1
                 if on_rule_finding is not None:
                     on_rule_finding(finding_hit)
@@ -1099,11 +1300,25 @@ def _run_builtin_rules(
                     "message": exc.message,
                 }
             )
+            detail_text = ""
+            if isinstance(exc.detail, dict):
+                error_text = str(exc.detail.get("error") or "").strip()
+                cypher_file_text = str(exc.detail.get("cypher_file") or "").strip()
+                detail_parts = [
+                    part
+                    for part in [
+                        f"error={error_text}" if error_text else "",
+                        f"cypher_file={cypher_file_text}" if cypher_file_text else "",
+                    ]
+                    if part
+                ]
+                if detail_parts:
+                    detail_text = ", " + ", ".join(detail_parts)
             append_log(
                 "QUERY",
                 (
                     f"[rules] 规则执行失败 {index}/{total_rule_count}: {rule_key}, "
-                    f"error_code={exc.code}, duration_ms={duration_ms}"
+                    f"error_code={exc.code}, duration_ms={duration_ms}{detail_text}"
                 ),
             )
 
@@ -1212,11 +1427,20 @@ def _build_path_finding(
     nodes = path_payload.get("nodes")
     if not isinstance(nodes, list) or not nodes:
         return None
-    steps = [
-        _build_path_step_payload(node_payload=item, index=index)
+    node_items = [
+        _build_path_node_payload(node_payload=item, index=index)
         for index, item in enumerate(nodes)
         if isinstance(item, dict)
     ]
+    if not node_items:
+        return None
+    steps = [build_path_step_payload(node) for node in node_items]
+    edges = _build_path_edge_payloads(
+        edge_payloads=path_payload.get("edges"),
+        nodes=node_items,
+    )
+    if not edges:
+        edges = build_linear_path_edges(node_items)
     if not steps:
         return None
     source = steps[0]
@@ -1237,18 +1461,28 @@ def _build_path_finding(
         "sink_file": sink_file,
         "sink_line": sink_line,
         "has_path": True,
-        "path_length": max(0, len(steps) - 1),
+        "path_length": max(0, len(edges) or (len(steps) - 1)),
         "evidence": {
             "match_kind": "path",
             "path_nodes": len(steps),
+            "path_edges": len(edges),
+            "edge_types": list(
+                dict.fromkeys(
+                    str(edge.get("edge_type") or "")
+                    for edge in edges
+                    if edge.get("edge_type")
+                )
+            ),
             "labels": list(
                 dict.fromkeys(label for step in steps for label in step["labels"])
             ),
         },
         "paths": [
             {
-                "path_length": max(0, len(steps) - 1),
+                "path_length": max(0, len(edges) or (len(steps) - 1)),
                 "steps": steps,
+                "nodes": node_items,
+                "edges": edges,
             }
         ],
     }
@@ -1282,25 +1516,52 @@ def _build_node_finding(
     }
 
 
-def _build_path_step_payload(
+def _build_path_node_payload(
     *, node_payload: dict[str, object], index: int
 ) -> dict[str, object]:
     props = (
         node_payload.get("props") if isinstance(node_payload.get("props"), dict) else {}
     )
-    code_snippet = str(props.get("code") or "").strip() or None
-    if code_snippet and len(code_snippet) > 240:
-        code_snippet = f"{code_snippet[:240]}..."
-    return {
-        "step_id": index,
-        "labels": [str(item) for item in node_payload.get("labels") or [] if str(item)],
-        "file": str(props.get("file") or "").strip() or None,
-        "line": _safe_int(props.get("line")),
-        "func_name": str(props.get("method") or props.get("name") or "").strip()
-        or None,
-        "code_snippet": code_snippet,
-        "node_ref": str(node_payload.get("node_ref") or f"step-{index}"),
+    labels = [str(item) for item in node_payload.get("labels") or [] if str(item)]
+    node_ref = str(node_payload.get("node_ref") or f"node-{index}")
+    return build_trace_node_payload(
+        index=index,
+        labels=labels,
+        props=props,
+        node_ref=node_ref,
+    )
+
+
+def _build_path_edge_payloads(
+    *, edge_payloads: object, nodes: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    if not isinstance(edge_payloads, list):
+        return []
+    node_index_by_ref = {
+        str(node.get("node_ref") or ""): int(node.get("node_id") or 0)
+        for node in nodes
+        if str(node.get("node_ref") or "")
     }
+    edges: list[dict[str, object]] = []
+    for index, item in enumerate(edge_payloads):
+        if not isinstance(item, dict):
+            continue
+        props = item.get("props") if isinstance(item.get("props"), dict) else {}
+        from_node_ref = str(item.get("from_node_ref") or "").strip() or None
+        to_node_ref = str(item.get("to_node_ref") or "").strip() or None
+        edges.append(
+            build_path_edge_payload(
+                index=index,
+                edge_type=str(item.get("type") or "").strip() or None,
+                from_node_id=node_index_by_ref.get(from_node_ref or ""),
+                to_node_id=node_index_by_ref.get(to_node_ref or ""),
+                from_node_ref=from_node_ref,
+                to_node_ref=to_node_ref,
+                props=props,
+                edge_ref=str(item.get("edge_ref") or "").strip() or None,
+            )
+        )
+    return edges
 
 
 def _safe_int(value: object) -> int | None:
@@ -1308,6 +1569,21 @@ def _safe_int(value: object) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _to_bool_flag(value: object, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _run_command_with_deadline(

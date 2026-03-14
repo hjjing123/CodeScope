@@ -8,7 +8,13 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.core.errors import AppError
-from app.models import Finding, FindingPath, FindingPathStep, Job
+from app.models import Finding, FindingPath, FindingPathEdge, FindingPathStep, Job
+from app.services.path_graph_service import (
+    build_linear_path_edges,
+    build_path_edge_payload,
+    build_path_node_payload,
+    build_path_step_payload,
+)
 from app.services.source_location_service import normalize_graph_location
 from app.services.snapshot_storage_service import read_snapshot_file_context
 
@@ -22,6 +28,59 @@ MATCH p = shortestPath((src)-[*..30]->(sink))
 RETURN p
 LIMIT 1
 """.strip()
+
+
+_QUERY_SEMANTIC_SHORTEST = """
+MATCH (src)
+WHERE src.file = $source_file AND toInteger(src.line) = $source_line
+MATCH (sink)
+WHERE sink.file = $sink_file AND toInteger(sink.line) = $sink_line
+MATCH p = shortestPath((src)-[:REF|ARG|PARAM_PASS|SRC_FLOW*..20]->(sink))
+WHERE NONE(n IN nodes(p)[1..-1] WHERE n:Method)
+RETURN p
+LIMIT 1
+""".strip()
+
+
+_QUERY_SEMANTIC_BY_ID_SHORTEST = """
+MATCH (src)
+WHERE src.id = $source_node_ref
+MATCH (sink)
+WHERE sink.id = $sink_node_ref
+MATCH p = shortestPath((src)-[:REF|ARG|PARAM_PASS|SRC_FLOW*..20]->(sink))
+WHERE NONE(n IN nodes(p)[1..-1] WHERE n:Method)
+RETURN p
+LIMIT 1
+""".strip()
+
+
+_QUERY_SEMANTIC_BY_ID_ALL = """
+MATCH (src)
+WHERE src.id = $source_node_ref
+MATCH (sink)
+WHERE sink.id = $sink_node_ref
+MATCH p = (src)-[:REF|ARG|PARAM_PASS|SRC_FLOW*..20]->(sink)
+WHERE NONE(n IN nodes(p)[1..-1] WHERE n:Method)
+RETURN p
+ORDER BY length(p) ASC
+LIMIT $limit
+""".strip()
+
+
+_QUERY_SEMANTIC_ALL = """
+MATCH (src)
+WHERE src.file = $source_file AND toInteger(src.line) = $source_line
+MATCH (sink)
+WHERE sink.file = $sink_file AND toInteger(sink.line) = $sink_line
+MATCH p = (src)-[:REF|ARG|PARAM_PASS|SRC_FLOW*..20]->(sink)
+WHERE NONE(n IN nodes(p)[1..-1] WHERE n:Method)
+RETURN p
+ORDER BY length(p) ASC
+LIMIT $limit
+""".strip()
+
+
+_RUNTIME_SEMANTIC_SIGNAL_EDGE_TYPES = frozenset({"REF", "PARAM_PASS", "SRC_FLOW"})
 
 
 _QUERY_ALL = """
@@ -49,6 +108,19 @@ def query_finding_paths(
         mode=normalized_mode,
         limit=safe_limit,
     )
+    seed_refs = _extract_runtime_seed_node_refs(persisted_paths)
+
+    semantic_paths = _query_runtime_semantic_paths(
+        db=db,
+        finding=finding,
+        mode=normalized_mode,
+        limit=safe_limit,
+        source_node_ref=seed_refs[0] if seed_refs else None,
+        sink_node_ref=seed_refs[1] if seed_refs else None,
+    )
+    if semantic_paths:
+        return semantic_paths
+
     if persisted_paths:
         return persisted_paths
 
@@ -115,23 +187,7 @@ def query_finding_paths(
         )
         with driver.session(database=str(neo4j_target["database"])) as session:
             rows = list(session.run(query, params))
-
-        results: list[dict[str, object]] = []
-        for path_id, row in enumerate(rows):
-            path = row.get("p")
-            if path is None:
-                continue
-            steps = [
-                _normalize_runtime_path_step(version_id=finding.version_id, step=step)
-                for step in _path_steps(path)
-            ]
-            results.append(
-                {
-                    "path_id": path_id,
-                    "path_length": max(0, len(steps) - 1),
-                    "steps": steps,
-                }
-            )
+        results = _serialize_runtime_rows(version_id=finding.version_id, rows=rows)
 
         if not results:
             raise AppError(
@@ -173,38 +229,317 @@ def _query_persisted_finding_paths(
 
     results: list[dict[str, object]] = []
     for path_index, row in enumerate(rows):
-        steps = db.scalars(
+        step_rows = db.scalars(
             select(FindingPathStep)
             .where(FindingPathStep.finding_path_id == row.id)
             .order_by(FindingPathStep.step_order.asc())
         ).all()
+        nodes = [
+            _serialize_persisted_path_node(version_id=version_id, step=step)
+            for step in step_rows
+        ]
+        steps = [build_path_step_payload(node) for node in nodes]
+        node_ref_by_id = {
+            int(node.get("node_id") or 0): str(node.get("node_ref") or "")
+            for node in nodes
+            if str(node.get("node_ref") or "")
+        }
+        edge_rows = db.scalars(
+            select(FindingPathEdge)
+            .where(FindingPathEdge.finding_path_id == row.id)
+            .order_by(FindingPathEdge.edge_order.asc())
+        ).all()
+        edges = [
+            _serialize_persisted_path_edge(edge=edge, node_ref_by_id=node_ref_by_id)
+            for edge in edge_rows
+        ]
+        if not edges:
+            edges = build_linear_path_edges(nodes)
         results.append(
             {
                 "path_id": path_index,
-                "path_length": int(row.path_length or 0),
-                "steps": [
-                    _serialize_persisted_path_step(version_id=version_id, step=step)
-                    for step in steps
-                ],
+                "path_length": max(0, int(row.path_length or len(edges) or 0)),
+                "steps": steps,
+                "nodes": nodes,
+                "edges": edges,
             }
         )
     return results
 
 
-def _serialize_persisted_path_step(
+def _query_runtime_semantic_paths(
+    *,
+    db: Session,
+    finding: Finding,
+    mode: str,
+    limit: int,
+    source_node_ref: str | None = None,
+    sink_node_ref: str | None = None,
+) -> list[dict[str, object]]:
+    neo4j_target = _resolve_finding_runtime_neo4j_target(db=db, finding=finding)
+    if neo4j_target is None:
+        return []
+
+    uri = str(neo4j_target.get("uri") or "").strip()
+    database = str(neo4j_target.get("database") or "").strip()
+    if not uri or not database:
+        return []
+
+    settings = get_settings()
+    try:
+        from neo4j import GraphDatabase
+        from neo4j.exceptions import DatabaseUnavailable, ServiceUnavailable
+    except Exception:
+        return []
+
+    driver = GraphDatabase.driver(
+        uri,
+        auth=(settings.scan_external_neo4j_user, settings.scan_external_neo4j_password),
+        connection_timeout=5,
+    )
+    params, query = _build_runtime_semantic_query(
+        finding=finding,
+        mode=mode,
+        limit=limit,
+        source_node_ref=source_node_ref,
+        sink_node_ref=sink_node_ref,
+    )
+    if not params or not query:
+        return []
+    try:
+        _verify_connectivity(
+            driver=driver,
+            retry=max(1, int(settings.scan_external_neo4j_connect_retry)),
+            wait_seconds=max(1, int(settings.scan_external_neo4j_connect_wait_seconds)),
+            retry_errors=(ServiceUnavailable, DatabaseUnavailable),
+        )
+        with driver.session(database=database) as session:
+            rows = list(session.run(query, params))
+        return _filter_runtime_semantic_paths(
+            _serialize_runtime_rows(version_id=finding.version_id, rows=rows)
+        )
+    except Exception:
+        return []
+    finally:
+        driver.close()
+
+
+def query_runtime_semantic_paths_by_node_refs(
+    *,
+    uri: str,
+    database: str,
+    version_id,
+    source_node_ref: str,
+    sink_node_ref: str,
+    mode: str = "shortest",
+    limit: int = 1,
+) -> list[dict[str, object]]:
+    normalized_uri = str(uri or "").strip()
+    normalized_database = str(database or "").strip() or "neo4j"
+    normalized_source = str(source_node_ref or "").strip()
+    normalized_sink = str(sink_node_ref or "").strip()
+    if not normalized_uri or not normalized_source or not normalized_sink:
+        return []
+
+    settings = get_settings()
+    try:
+        from neo4j import GraphDatabase
+        from neo4j.exceptions import DatabaseUnavailable, ServiceUnavailable
+    except Exception:
+        return []
+
+    query = (
+        _QUERY_SEMANTIC_BY_ID_SHORTEST
+        if mode == "shortest"
+        else _QUERY_SEMANTIC_BY_ID_ALL
+    )
+    params: dict[str, object] = {
+        "source_node_ref": normalized_source,
+        "sink_node_ref": normalized_sink,
+        "limit": min(max(1, int(limit)), 20),
+    }
+    driver = GraphDatabase.driver(
+        normalized_uri,
+        auth=(settings.scan_external_neo4j_user, settings.scan_external_neo4j_password),
+        connection_timeout=5,
+    )
+    try:
+        _verify_connectivity(
+            driver=driver,
+            retry=max(1, int(settings.scan_external_neo4j_connect_retry)),
+            wait_seconds=max(1, int(settings.scan_external_neo4j_connect_wait_seconds)),
+            retry_errors=(ServiceUnavailable, DatabaseUnavailable),
+        )
+        with driver.session(database=normalized_database) as session:
+            rows = list(session.run(query, params))
+        return _filter_runtime_semantic_paths(
+            _serialize_runtime_rows(version_id=version_id, rows=rows)
+        )
+    except Exception:
+        return []
+    finally:
+        driver.close()
+
+
+def _build_runtime_semantic_query(
+    *,
+    finding: Finding,
+    mode: str,
+    limit: int,
+    source_node_ref: str | None,
+    sink_node_ref: str | None,
+) -> tuple[dict[str, object] | None, str | None]:
+    normalized_source = str(source_node_ref or "").strip()
+    normalized_sink = str(sink_node_ref or "").strip()
+    if normalized_source and normalized_sink:
+        return {
+            "source_node_ref": normalized_source,
+            "sink_node_ref": normalized_sink,
+            "limit": limit,
+        }, (
+            _QUERY_SEMANTIC_BY_ID_SHORTEST
+            if mode == "shortest"
+            else _QUERY_SEMANTIC_BY_ID_ALL
+        )
+
+    source_file = (finding.source_file or "").strip()
+    sink_file = (finding.sink_file or "").strip()
+    source_line = _to_int(finding.source_line)
+    sink_line = _to_int(finding.sink_line)
+    if not source_file or not sink_file or source_line is None or sink_line is None:
+        return None, None
+    return {
+        "source_file": source_file,
+        "source_line": source_line,
+        "sink_file": sink_file,
+        "sink_line": sink_line,
+        "limit": limit,
+    }, (_QUERY_SEMANTIC_SHORTEST if mode == "shortest" else _QUERY_SEMANTIC_ALL)
+
+
+def _extract_runtime_seed_node_refs(
+    paths: list[dict[str, object]],
+) -> tuple[str, str] | None:
+    for path in paths:
+        nodes = path.get("nodes") if isinstance(path.get("nodes"), list) else []
+        if not nodes:
+            continue
+        first = nodes[0] if isinstance(nodes[0], dict) else None
+        last = nodes[-1] if isinstance(nodes[-1], dict) else None
+        if first is None or last is None:
+            continue
+        source_ref = _extract_runtime_node_ref(first)
+        sink_ref = _extract_runtime_node_ref(last)
+        if source_ref and sink_ref:
+            return source_ref, sink_ref
+    return None
+
+
+def _filter_runtime_semantic_paths(
+    paths: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    filtered: list[dict[str, object]] = []
+    for path in paths:
+        if _path_has_runtime_semantic_signal(path):
+            filtered.append(path)
+    return filtered
+
+
+def _path_has_runtime_semantic_signal(path: dict[str, object]) -> bool:
+    edges = path.get("edges") if isinstance(path.get("edges"), list) else []
+    edge_types = {
+        str(edge.get("edge_type") or "")
+        for edge in edges
+        if isinstance(edge, dict) and str(edge.get("edge_type") or "")
+    }
+    return bool(edge_types & _RUNTIME_SEMANTIC_SIGNAL_EDGE_TYPES)
+
+
+def _extract_runtime_node_ref(node: dict[str, object]) -> str | None:
+    raw_props = node.get("raw_props") if isinstance(node.get("raw_props"), dict) else {}
+    candidates = [
+        raw_props.get("id"),
+        node.get("node_ref"),
+    ]
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _resolve_finding_runtime_neo4j_target(
+    *, db: Session, finding: Finding
+) -> dict[str, str] | None:
+    job = db.get(Job, finding.job_id)
+    if job is None or not isinstance(job.result_summary, dict):
+        return None
+    runtime = job.result_summary.get("neo4j_runtime")
+    if not isinstance(runtime, dict):
+        return None
+
+    uri = str(runtime.get("uri") or "").strip()
+    database = str(runtime.get("database") or "neo4j").strip() or "neo4j"
+    if not uri:
+        return None
+    return {"uri": uri, "database": database}
+
+
+def _serialize_runtime_rows(
+    *, version_id, rows: list[object]
+) -> list[dict[str, object]]:
+    results: list[dict[str, object]] = []
+    for path_id, row in enumerate(rows):
+        path = row.get("p") if hasattr(row, "get") else None
+        if path is None:
+            continue
+        nodes = _normalize_runtime_path_nodes(
+            version_id=version_id,
+            nodes=_path_nodes(path),
+        )
+        if not nodes:
+            continue
+        steps = [build_path_step_payload(node) for node in nodes]
+        edges = _path_edges(path=path, nodes=nodes)
+        if not edges:
+            edges = build_linear_path_edges(nodes)
+        results.append(
+            {
+                "path_id": path_id,
+                "path_length": max(0, len(edges) or (len(steps) - 1)),
+                "steps": steps,
+                "nodes": nodes,
+                "edges": edges,
+            }
+        )
+    return results
+
+
+def _serialize_persisted_path_node(
     *, version_id, step: FindingPathStep
 ) -> dict[str, object]:
+    raw_props = dict(step.raw_props_json or {})
+    normalized_input_line = step.line_no
+    raw_file = str(raw_props.get("file") or "").strip()
+    raw_decl_kind = str(raw_props.get("declKind") or "").strip()
+    if (
+        step.node_kind == "Var"
+        and raw_file
+        and "/tmp/jimple2cpg-" in raw_file
+        and raw_decl_kind in {"Identifier", "Local", "FieldIdentifier", "Expr"}
+    ):
+        normalized_input_line = None
     normalized_file, normalized_line = normalize_graph_location(
         version_id=version_id,
         file_path=step.file_path,
-        line=step.line_no,
+        line=normalized_input_line,
         func_name=step.func_name,
         code_snippet=step.code_snippet,
         node_ref=step.node_ref,
         labels=[str(item) for item in step.labels_json or [] if isinstance(item, str)],
     )
     return {
-        "step_id": int(step.step_order),
+        "node_id": int(step.step_order),
         "labels": [
             str(item)
             for item in step.labels_json or []
@@ -212,10 +547,33 @@ def _serialize_persisted_path_step(
         ],
         "file": normalized_file,
         "line": normalized_line,
+        "column": step.column_no,
         "func_name": step.func_name,
+        "display_name": step.display_name,
+        "symbol_name": step.symbol_name,
+        "owner_method": step.owner_method,
+        "type_name": step.type_name,
+        "node_kind": step.node_kind,
         "code_snippet": step.code_snippet,
         "node_ref": step.node_ref,
+        "raw_props": raw_props,
     }
+
+
+def _serialize_persisted_path_edge(
+    *, edge: FindingPathEdge, node_ref_by_id: dict[int, str]
+) -> dict[str, object]:
+    return build_path_edge_payload(
+        index=int(edge.edge_order),
+        edge_type=edge.edge_type,
+        from_node_id=edge.from_step_order,
+        to_node_id=edge.to_step_order,
+        from_node_ref=node_ref_by_id.get(int(edge.from_step_order or -1)),
+        to_node_ref=node_ref_by_id.get(int(edge.to_step_order or -1)),
+        props=dict(edge.props_json or {}),
+        label=edge.label,
+        is_hidden=edge.is_hidden,
+    )
 
 
 def load_finding_path_context(
@@ -313,7 +671,7 @@ def _normalize_mode(mode: str) -> str:
     return normalized
 
 
-def _path_steps(path: Any) -> list[dict[str, object]]:
+def _path_nodes(path: Any) -> list[dict[str, object]]:
     out: list[dict[str, object]] = []
     nodes = getattr(path, "nodes", None)
     if nodes is None:
@@ -324,26 +682,71 @@ def _path_steps(path: Any) -> list[dict[str, object]]:
         labels = sorted(
             str(item) for item in getattr(node, "labels", []) if str(item).strip()
         )
-        file_path = _to_str(props.get("file"))
-        line = _to_int(props.get("line"))
-        func_name = _to_str(props.get("method")) or _to_str(props.get("name"))
-        code = _to_str(props.get("code"))
-        if code is not None and len(code) > 240:
-            code = f"{code[:240]}..."
-
-        node_ref = _to_str(props.get("id")) or f"step-{idx}"
+        node_ref = _to_str(props.get("id")) or _to_str(
+            getattr(node, "element_id", None)
+        )
         out.append(
-            {
-                "step_id": idx,
-                "labels": labels,
-                "file": file_path,
-                "line": line,
-                "func_name": func_name,
-                "code_snippet": code,
-                "node_ref": node_ref,
-            }
+            build_path_node_payload(
+                index=idx,
+                labels=labels,
+                props=props,
+                node_ref=node_ref,
+            )
         )
     return out
+
+
+def _normalize_runtime_path_nodes(
+    *, version_id, nodes: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    normalized_nodes: list[dict[str, object]] = []
+    for node in nodes:
+        normalized_file, normalized_line = normalize_graph_location(
+            version_id=version_id,
+            file_path=str(node.get("file") or "").strip() or None,
+            line=node.get("line"),
+            func_name=str(node.get("func_name") or "").strip() or None,
+            code_snippet=str(node.get("code_snippet") or "").strip() or None,
+            node_ref=str(node.get("node_ref") or "").strip() or None,
+            labels=[
+                str(item)
+                for item in node.get("labels") or []
+                if isinstance(item, str) and item.strip()
+            ],
+        )
+        normalized_nodes.append(
+            {
+                **node,
+                "file": normalized_file,
+                "line": normalized_line,
+            }
+        )
+    return normalized_nodes
+
+
+def _path_edges(
+    *, path: Any, nodes: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    relationships = list(getattr(path, "relationships", []) or [])
+    edges: list[dict[str, object]] = []
+    for index, relationship in enumerate(relationships):
+        from_node = nodes[index] if index < len(nodes) else None
+        to_node = nodes[index + 1] if index + 1 < len(nodes) else None
+        props = dict(relationship.items()) if hasattr(relationship, "items") else {}
+        edges.append(
+            build_path_edge_payload(
+                index=index,
+                edge_type=_to_str(getattr(relationship, "type", None)),
+                from_node_id=_to_int(from_node.get("node_id")) if from_node else None,
+                to_node_id=_to_int(to_node.get("node_id")) if to_node else None,
+                from_node_ref=_to_str(from_node.get("node_ref")) if from_node else None,
+                to_node_ref=_to_str(to_node.get("node_ref")) if to_node else None,
+                props=props,
+                edge_ref=_to_str(getattr(relationship, "element_id", None))
+                or _to_str(props.get("id")),
+            )
+        )
+    return edges
 
 
 def _normalize_runtime_path_step(

@@ -8,6 +8,7 @@ from app.api.v1.findings import _finding_payload
 from app.models import (
     Finding,
     FindingPath,
+    FindingPathEdge,
     FindingPathStep,
     Job,
     JobStage,
@@ -172,6 +173,10 @@ def test_query_finding_paths_prefers_persisted_path_rows(db_session) -> None:
                 file_path="src/Main.java",
                 line_no=1,
                 func_name="source",
+                display_name="filepath",
+                symbol_name="filepath",
+                owner_method="source",
+                node_kind="Var",
                 code_snippet="request.getParameter('q')",
                 node_ref="source-1",
             ),
@@ -182,8 +187,21 @@ def test_query_finding_paths_prefers_persisted_path_rows(db_session) -> None:
                 file_path="src/Main.java",
                 line_no=2,
                 func_name="sink",
+                display_name="cmdList",
+                symbol_name="cmdList",
+                owner_method="sink",
+                node_kind="Var",
                 code_snippet="writer.println(q)",
                 node_ref="sink-1",
+            ),
+            FindingPathEdge(
+                finding_path_id=path.id,
+                edge_order=0,
+                from_step_order=0,
+                to_step_order=1,
+                edge_type="ARG",
+                label="参数传递",
+                props_json={"argIndex": 0},
             ),
         ]
     )
@@ -197,6 +215,116 @@ def test_query_finding_paths_prefers_persisted_path_rows(db_session) -> None:
     assert results[0]["path_length"] == 1
     assert results[0]["steps"][0]["node_ref"] == "source-1"
     assert results[0]["steps"][1]["node_ref"] == "sink-1"
+    assert results[0]["nodes"][0]["display_name"] == "filepath"
+    assert results[0]["edges"][0]["edge_type"] == "ARG"
+    assert results[0]["edges"][0]["from_step_id"] == 0
+    assert results[0]["edges"][0]["to_step_id"] == 1
+
+
+def test_query_finding_paths_reinfers_identifier_line_from_raw_props(
+    db_session,
+) -> None:
+    settings = get_settings()
+    old_snapshot_root = settings.snapshot_storage_root
+    project, version = _seed_finding_scope(db_session)
+    backend_root = Path(__file__).resolve().parents[1]
+    relative_root = f"storage/test-finding-path-{uuid.uuid4().hex}"
+    source_root = backend_root / relative_root / str(version.id) / "source" / "src"
+    source_root.mkdir(parents=True, exist_ok=True)
+    (source_root / "Main.java").write_text(
+        "class Main {\n"
+        "  String run(String username) {\n"
+        "    String templateString = username.trim();\n"
+        "    return templateString;\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    settings.snapshot_storage_root = f"./{relative_root}"
+    try:
+        job = Job(
+            project_id=project.id,
+            version_id=version.id,
+            job_type=JobType.SCAN.value,
+            status=JobStatus.SUCCEEDED.value,
+            stage=JobStage.CLEANUP.value,
+            payload={},
+            result_summary={},
+        )
+        db_session.add(job)
+        db_session.flush()
+
+        finding = Finding(
+            project_id=project.id,
+            version_id=version.id,
+            job_id=job.id,
+            rule_key="any_any_xss",
+            severity="HIGH",
+            status="OPEN",
+            has_path=True,
+            path_length=1,
+            source_file="src/Main.java",
+            source_line=2,
+            sink_file="src/Main.java",
+            sink_line=3,
+            evidence_json={},
+        )
+        db_session.add(finding)
+        db_session.flush()
+
+        path = FindingPath(finding_id=finding.id, path_order=0, path_length=1)
+        db_session.add(path)
+        db_session.flush()
+        db_session.add_all(
+            [
+                FindingPathStep(
+                    finding_path_id=path.id,
+                    step_order=0,
+                    labels_json=["Var", "Reference"],
+                    file_path="src/Main.java",
+                    line_no=2,
+                    func_name="run",
+                    display_name="templateString",
+                    symbol_name="templateString",
+                    owner_method="run",
+                    node_kind="Var",
+                    code_snippet="",
+                    node_ref="Var|/tmp/jimple2cpg-1/com/example/Main.class|-1|-1|id|templateString|com.example.Main.run:java.lang.String(java.lang.String)",
+                    raw_props_json={
+                        "file": "/tmp/jimple2cpg-1/com/example/Main.class",
+                        "declKind": "Identifier",
+                        "id": "Var|/tmp/jimple2cpg-1/com/example/Main.class|-1|-1|id|templateString|com.example.Main.run:java.lang.String(java.lang.String)",
+                    },
+                ),
+                FindingPathStep(
+                    finding_path_id=path.id,
+                    step_order=1,
+                    labels_json=["Call"],
+                    file_path="src/Main.java",
+                    line_no=4,
+                    func_name="run",
+                    display_name="trim",
+                    symbol_name="trim",
+                    owner_method="run",
+                    node_kind="Call",
+                    code_snippet="templateString.trim()",
+                    node_ref="sink-1",
+                    raw_props_json={},
+                ),
+            ]
+        )
+        db_session.commit()
+
+        results = query_finding_paths(
+            db=db_session, finding=finding, mode="shortest", limit=5
+        )
+    finally:
+        settings.snapshot_storage_root = old_snapshot_root
+        import shutil
+
+        shutil.rmtree(backend_root / relative_root, ignore_errors=True)
+
+    assert results[0]["steps"][0]["line"] == 3
 
 
 def test_query_finding_paths_normalizes_compiled_paths_and_infers_lines(

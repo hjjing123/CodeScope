@@ -23,62 +23,75 @@ sourceNode:SolonControllerArg OR
     NOT sourceNode.type  IN ['Long', 'Integer', 'HttpServletResponse']
 
 
-MATCH
-  (sinkNode)
+CALL {
+  WITH sourceNode
+  CALL {
+    WITH sourceNode
+    MATCH
+      p = (sourceNode)-[:REF|PARAM_PASS|SRC_FLOW*0..10]->(argCarrier)-[:ARG]->(sinkNode)
+    RETURN
+      p,
+      sinkNode
+
+    UNION
+
+    WITH sourceNode
+    MATCH
+      p = (sourceNode)-[:ARG]->(methodNode:Method)-[:HAS_CALL]->(sinkNode)
+    WHERE
+      NOT EXISTS {
+        MATCH
+          p2 = (sourceNode)-[:REF|PARAM_PASS|SRC_FLOW*0..10]->(argCarrier2)-[:ARG]->(sinkNode)
+      }
+    RETURN
+      p,
+      sinkNode
+  }
+  WITH
+    p,
+    sinkNode
   WHERE
-  // -------------- 基础文件输入流（直接读取文件）--------------
-  sinkNode.AllocationClassName = 'FileInputStream' OR  // 构造函数接收文件路径
-  sinkNode.AllocationClassName = 'FileReader' OR  // 字符流读取文件
-  sinkNode.AllocationClassName = 'RandomAccessFile' OR  // 随机访问文件（可读写）
-  sinkNode.AllocationClassName = 'Scanner' AND ('File' IN sinkNode.receiverTypes OR 'String' IN sinkNode.receiverTypes) OR  // Scanner读取文件（路径参数）
-  ('openStream' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR  // File.openStream()获取输入流
-  ('newInputStream' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR  // File.newInputStream()（NIO）
-
-  // -------------- Java NIO文件读取（现代API）--------------
-  ('toByteArray' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // Files.toByteArray(Path) 路径为第一个参数
-  ('readAllLines' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 读取所有行（路径参数）
-  ('readAllBytes' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 读取所有字节
-  ('readString' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 读取字符串（Java 11+）
-  ('newInputStream' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 打开文件输入流
-  ('walk' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // Files.walk(Path) 遍历目录
-  ('list' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 列出目录内容（遍历风险）
-
-  // -------------- Apache Commons IO工具类--------------
-  ('readToString' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 读取文件为字符串（文件路径参数）
-  ('readLines' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 按行读取
-  ('readFileToByteArray' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 文件转字节数组
-  ('contentEquals' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 比较文件内容（需读取文件）
-  ('listFiles' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 列出目录文件（遍历风险）
-
-  // -------------- IOUtils等流操作工具类--------------
-  ('toString' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // IOUtils.toString(InputStream) 流可能来自文件
-  ('toByteArray' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 输入流转字节数组
-  ('readLines' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 读取流的行
-  ('copy' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 复制流（源为文件输入流）
-
-  // -------------- Web框架文件下载（直接向响应输出文件）--------------
-  ('write' IN sinkNode.selectors AND 'HttpServletResponse' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 向响应写入文件内容
-  ('getOutputStream' IN sinkNode.selectors AND 'HttpServletResponse' IN sinkNode.receiverTypes) OR  // 获取响应输出流（用于写入文件）
-//  ('sendRedirect' IN sinkNode.selectors AND 'HttpServletResponse' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // 重定向到文件路径（可能遍历）
-  ('download' IN sinkNode.selectors AND 'WebUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // Spring WebUtils下载文件
-
-  // -------------- 框架特定文件读取--------------
-  ('getResourceAsStream' IN sinkNode.selectors AND 'ResourceLoader' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR  // Spring资源加载（可能读取任意文件）
-  ('getFile' IN sinkNode.selectors AND 'Resource' IN sinkNode.receiverTypes) OR  // Spring Resource获取文件
-  ('read' IN sinkNode.selectors AND 'FileSystemResource' IN sinkNode.receiverTypes) OR  // 文件系统资源读取
-
-  // -------------- 其他文件读取/遍历场景--------------
-  ('exists' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR  // 判断文件是否存在（路径探测）
-  ('isFile' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR  // 判断是否为文件（辅助遍历）
-  ('isDirectory' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR  // 判断是否为目录（辅助遍历）
-  ('listFiles' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR  // File.listFiles() 目录遍历
-  ('length' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR  // 获取文件大小（需访问文件）
-  ('getCanonicalPath' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes)  // 获取规范路径（可能泄露路径信息）
-
-MATCH
-  p = shortestPath((sourceNode)-[*..30]->(sinkNode))
-  WHERE none(n IN nodes(p)
-    WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer', 'int', 'long'])
+    (
+      sinkNode.AllocationClassName = 'FileInputStream' OR
+      sinkNode.AllocationClassName = 'FileReader' OR
+      sinkNode.AllocationClassName = 'RandomAccessFile' OR
+      (sinkNode.AllocationClassName = 'Scanner' AND ('File' IN sinkNode.receiverTypes OR 'String' IN sinkNode.receiverTypes)) OR
+      ('openStream' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+      ('newInputStream' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+      ('toByteArray' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('readAllLines' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('readAllBytes' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('readString' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('newInputStream' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('walk' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('list' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('readToString' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('readLines' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('readFileToByteArray' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('contentEquals' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('listFiles' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('toString' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('toByteArray' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('readLines' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('copy' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('write' IN sinkNode.selectors AND 'HttpServletResponse' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('getOutputStream' IN sinkNode.selectors AND 'HttpServletResponse' IN sinkNode.receiverTypes) OR
+      ('download' IN sinkNode.selectors AND 'WebUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('getResourceAsStream' IN sinkNode.selectors AND 'ResourceLoader' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+      ('getFile' IN sinkNode.selectors AND 'Resource' IN sinkNode.receiverTypes) OR
+      ('read' IN sinkNode.selectors AND 'FileSystemResource' IN sinkNode.receiverTypes) OR
+      ('exists' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+      ('isFile' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+      ('isDirectory' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+      ('listFiles' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+      ('length' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+      ('getCanonicalPath' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes)
+    ) AND
+    none(n IN nodes(p)
+      WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer', 'int', 'long'])
+  RETURN
+    p
+}
 RETURN
   p AS path
 

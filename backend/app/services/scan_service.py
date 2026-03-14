@@ -22,6 +22,7 @@ from app.db.session import SessionLocal
 from app.models import (
     Finding,
     FindingPath,
+    FindingPathEdge,
     FindingPathStep,
     FindingSeverity,
     FindingStatus,
@@ -38,8 +39,14 @@ from app.models import (
     VersionStatus,
     utc_now,
 )
+from app.services.path_graph_service import (
+    build_linear_path_edges,
+    build_path_edge_payload,
+    build_path_step_payload,
+)
 from app.services.audit_service import append_audit_log
 from app.services.artifact_service import delete_scan_job_artifacts
+from app.services.finding_path_service import query_runtime_semantic_paths_by_node_refs
 from app.services.job_stream_service import append_job_stream_event
 from app.services.rule_file_service import get_rules_by_keys, normalize_rule_selector
 from app.services.scan_runtime_service import (
@@ -88,6 +95,8 @@ SCAN_FAILURE_HINTS: dict[str, str] = {
     "SCAN_EXTERNAL_IMPORT_TIMEOUT": "Neo4j 导入阶段超时，请检查导入规模与超时配置。",
     "SCAN_EXTERNAL_POST_LABELS_FAILED": "语义增强阶段失败，请检查 post_labels 脚本。",
     "SCAN_EXTERNAL_POST_LABELS_TIMEOUT": "语义增强阶段超时，请检查脚本复杂度与超时配置。",
+    "SCAN_EXTERNAL_SOURCE_SEMANTIC_FAILED": "源码语义增强阶段失败，请检查语义增强脚本与图数据。",
+    "SCAN_EXTERNAL_SOURCE_SEMANTIC_TIMEOUT": "源码语义增强阶段超时，请检查语义增强复杂度与超时配置。",
     "SCAN_EXTERNAL_RULES_FAILED": "规则执行阶段失败，请检查规则脚本与查询环境。",
     "SCAN_EXTERNAL_RULES_TIMEOUT": "规则执行阶段超时，请检查规则复杂度与超时配置。",
     "SCAN_EXTERNAL_RESULT_MISSING": "外部扫描未产出结果文件，请检查 pipeline 输出目录。",
@@ -111,6 +120,7 @@ SCAN_STEP_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("joern", "Joern 解析与导图"),
     ("neo4j_import", "导入 Neo4j"),
     ("post_labels", "图增强"),
+    ("source_semantic", "源码语义增强"),
     ("rules", "规则扫描"),
     ("aggregate", "结果聚合与落库"),
     ("ai", "结果标准化与 AI 摘要"),
@@ -144,7 +154,7 @@ TERMINAL_STEP_STATUSES = {
 STAGE_STEP_KEYS: dict[str, tuple[str, ...]] = {
     JobStage.PREPARE.value: ("prepare",),
     JobStage.ANALYZE.value: ("joern", "neo4j_import"),
-    JobStage.QUERY.value: ("post_labels", "rules"),
+    JobStage.QUERY.value: ("post_labels", "source_semantic", "rules"),
     JobStage.AGGREGATE.value: ("aggregate",),
     JobStage.AI.value: ("ai",),
     JobStage.CLEANUP.value: ("archive", "cleanup"),
@@ -158,6 +168,8 @@ FAILURE_STEP_BY_CODE: dict[str, str] = {
     "SCAN_EXTERNAL_IMPORT_TIMEOUT": "neo4j_import",
     "SCAN_EXTERNAL_POST_LABELS_FAILED": "post_labels",
     "SCAN_EXTERNAL_POST_LABELS_TIMEOUT": "post_labels",
+    "SCAN_EXTERNAL_SOURCE_SEMANTIC_FAILED": "source_semantic",
+    "SCAN_EXTERNAL_SOURCE_SEMANTIC_TIMEOUT": "source_semantic",
     "SCAN_EXTERNAL_RULES_FAILED": "rules",
     "SCAN_EXTERNAL_RULES_TIMEOUT": "rules",
     "SCAN_EXTERNAL_RESULT_MISSING": "aggregate",
@@ -175,6 +187,8 @@ FAILURE_CATEGORY_BY_CODE: dict[str, str] = {
     "SCAN_EXTERNAL_IMPORT_TIMEOUT": JobFailureCategory.RESOURCE.value,
     "SCAN_EXTERNAL_POST_LABELS_FAILED": JobFailureCategory.RULE.value,
     "SCAN_EXTERNAL_POST_LABELS_TIMEOUT": JobFailureCategory.RESOURCE.value,
+    "SCAN_EXTERNAL_SOURCE_SEMANTIC_FAILED": JobFailureCategory.RULE.value,
+    "SCAN_EXTERNAL_SOURCE_SEMANTIC_TIMEOUT": JobFailureCategory.RESOURCE.value,
     "SCAN_EXTERNAL_RULES_FAILED": JobFailureCategory.RULE.value,
     "SCAN_EXTERNAL_RULES_TIMEOUT": JobFailureCategory.RESOURCE.value,
     "SCAN_EXTERNAL_RESULT_MISSING": JobFailureCategory.STORAGE.value,
@@ -442,7 +456,7 @@ def _persist_dispatch_info(
 
 
 def _job_log_dir(*, job_id: uuid.UUID) -> Path:
-    path = Path(get_settings().scan_log_root) / str(job_id)
+    path = _absolute_settings_path(get_settings().scan_log_root) / str(job_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -557,7 +571,7 @@ def _serialize_finding_record(finding: Finding) -> dict[str, object]:
 
 def _scan_external_workspace_dir(*, job: Job) -> Path:
     return (
-        Path(get_settings().scan_workspace_root)
+        _absolute_settings_path(get_settings().scan_workspace_root)
         / str(job.project_id)
         / str(job.id)
         / "external"
@@ -565,7 +579,15 @@ def _scan_external_workspace_dir(*, job: Job) -> Path:
 
 
 def _absolute_path_without_resolve(path: Path | str) -> Path:
-    return Path(os.path.abspath(os.path.normpath(str(path))))
+    normalized = Path(os.path.normpath(str(path)))
+    if normalized.is_absolute():
+        return normalized
+    backend_root = Path(__file__).resolve().parents[2]
+    return Path(os.path.normpath(str(backend_root / normalized)))
+
+
+def _absolute_settings_path(path: Path | str) -> Path:
+    return _absolute_path_without_resolve(path)
 
 
 def _path_is_within_root(*, target: Path, root: Path) -> bool:
@@ -1558,6 +1580,12 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
             _set_scan_step_status(
                 session,
                 job_id=job.id,
+                step_key="source_semantic",
+                status=JobStepStatus.SUCCEEDED.value,
+            )
+            _set_scan_step_status(
+                session,
+                job_id=job.id,
                 step_key="rules",
                 status=JobStepStatus.RUNNING.value,
                 commit=True,
@@ -2072,6 +2100,7 @@ def _run_external_scan(*, job: Job, db: Session) -> ScanExecutionResult:
         "joern": JobStage.ANALYZE.value,
         "neo4j_import": JobStage.ANALYZE.value,
         "post_labels": JobStage.QUERY.value,
+        "source_semantic": JobStage.QUERY.value,
         "rules": JobStage.QUERY.value,
     }
 
@@ -2242,12 +2271,181 @@ def _normalize_finding_path_steps(
         normalized_steps.append(
             {
                 **item,
-                "step_id": _to_int(item.get("step_id"), default=index) or index,
+                "step_id": index,
+                "column": _to_int(item.get("column")),
+                "display_name": str(item.get("display_name") or "").strip() or None,
+                "symbol_name": str(item.get("symbol_name") or "").strip() or None,
+                "owner_method": str(item.get("owner_method") or "").strip() or None,
+                "type_name": str(item.get("type_name") or "").strip() or None,
+                "node_kind": str(item.get("node_kind") or "").strip() or None,
                 "file": normalized_file,
                 "line": normalized_line,
             }
         )
     return normalized_steps
+
+
+def _normalize_finding_path_nodes(
+    *, version_id: uuid.UUID, nodes: object
+) -> list[dict[str, object]]:
+    if not isinstance(nodes, list):
+        return []
+    normalized_nodes: list[dict[str, object]] = []
+    for index, item in enumerate(nodes):
+        if not isinstance(item, dict):
+            continue
+        normalized_file, normalized_line = normalize_graph_location(
+            version_id=version_id,
+            file_path=str(item.get("file") or "").strip() or None,
+            line=item.get("line"),
+            func_name=str(item.get("func_name") or "").strip() or None,
+            code_snippet=str(item.get("code_snippet") or "").strip() or None,
+            node_ref=str(item.get("node_ref") or "").strip() or None,
+            labels=[
+                str(label)
+                for label in item.get("labels") or []
+                if isinstance(label, str) and label.strip()
+            ],
+        )
+        raw_props = (
+            item.get("raw_props") if isinstance(item.get("raw_props"), dict) else {}
+        )
+        normalized_nodes.append(
+            {
+                **item,
+                "node_id": index,
+                "file": normalized_file,
+                "line": normalized_line,
+                "column": _to_int(item.get("column")),
+                "display_name": str(item.get("display_name") or "").strip() or None,
+                "symbol_name": str(item.get("symbol_name") or "").strip() or None,
+                "owner_method": str(item.get("owner_method") or "").strip() or None,
+                "type_name": str(item.get("type_name") or "").strip() or None,
+                "node_kind": str(item.get("node_kind") or "").strip() or None,
+                "node_ref": str(item.get("node_ref") or f"node-{index}")
+                or f"node-{index}",
+                "raw_props": raw_props,
+            }
+        )
+    return normalized_nodes
+
+
+def _derive_finding_path_nodes_from_steps(
+    steps: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    nodes: list[dict[str, object]] = []
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        nodes.append(
+            {
+                "node_id": index,
+                "labels": [
+                    str(item)
+                    for item in step.get("labels") or []
+                    if isinstance(item, str) and item.strip()
+                ],
+                "file": str(step.get("file") or "").strip() or None,
+                "line": _to_int(step.get("line")),
+                "column": _to_int(step.get("column")),
+                "func_name": str(step.get("func_name") or "").strip() or None,
+                "display_name": str(step.get("display_name") or "").strip() or None,
+                "symbol_name": str(step.get("symbol_name") or "").strip() or None,
+                "owner_method": str(step.get("owner_method") or "").strip() or None,
+                "type_name": str(step.get("type_name") or "").strip() or None,
+                "node_kind": str(step.get("node_kind") or "").strip() or None,
+                "code_snippet": str(step.get("code_snippet") or "").strip() or None,
+                "node_ref": str(step.get("node_ref") or f"node-{index}"),
+                "raw_props": {},
+            }
+        )
+    return nodes
+
+
+def _normalize_finding_path_edges(
+    *, edges: object, nodes: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    if not isinstance(edges, list):
+        return []
+    node_index_by_ref = {
+        str(node.get("node_ref") or ""): int(node.get("node_id") or 0)
+        for node in nodes
+        if str(node.get("node_ref") or "")
+    }
+    normalized_edges: list[dict[str, object]] = []
+    for index, item in enumerate(edges):
+        if not isinstance(item, dict):
+            continue
+        props = (
+            item.get("props_json")
+            if isinstance(item.get("props_json"), dict)
+            else item.get("props")
+            if isinstance(item.get("props"), dict)
+            else {}
+        )
+        from_node_ref = str(item.get("from_node_ref") or "").strip() or None
+        to_node_ref = str(item.get("to_node_ref") or "").strip() or None
+        from_node_id = node_index_by_ref.get(from_node_ref or "")
+        to_node_id = node_index_by_ref.get(to_node_ref or "")
+        if from_node_id is None:
+            from_node_id = _to_int(
+                item.get("from_node_id"), default=_to_int(item.get("from_step_id"))
+            )
+        if to_node_id is None:
+            to_node_id = _to_int(
+                item.get("to_node_id"), default=_to_int(item.get("to_step_id"))
+            )
+        normalized_edges.append(
+            build_path_edge_payload(
+                index=index,
+                edge_type=str(item.get("edge_type") or item.get("type") or "").strip()
+                or None,
+                from_node_id=from_node_id,
+                to_node_id=to_node_id,
+                from_node_ref=from_node_ref,
+                to_node_ref=to_node_ref,
+                props=props,
+                edge_ref=str(item.get("edge_ref") or "").strip() or None,
+                label=str(item.get("label") or "").strip() or None,
+                is_hidden=item.get("is_hidden")
+                if item.get("is_hidden") is not None
+                else None,
+            )
+        )
+    return normalized_edges
+
+
+def _normalize_finding_path_graph(
+    *, version_id: uuid.UUID, path_item: dict[str, object], path_index: int
+) -> dict[str, object] | None:
+    nodes = _normalize_finding_path_nodes(
+        version_id=version_id,
+        nodes=path_item.get("nodes"),
+    )
+    if nodes:
+        steps = [build_path_step_payload(node) for node in nodes]
+    else:
+        steps = _normalize_finding_path_steps(
+            version_id=version_id,
+            steps=path_item.get("steps"),
+        )
+        nodes = _derive_finding_path_nodes_from_steps(steps)
+    if not steps:
+        return None
+    edges = _normalize_finding_path_edges(edges=path_item.get("edges"), nodes=nodes)
+    if not edges:
+        edges = build_linear_path_edges(nodes)
+    path_length = _to_int(
+        path_item.get("path_length"), default=len(edges) or (len(steps) - 1)
+    )
+    return {
+        **path_item,
+        "path_id": path_index,
+        "path_length": max(0, path_length or 0),
+        "steps": steps,
+        "nodes": nodes,
+        "edges": edges,
+    }
 
 
 def _normalize_external_finding_payload(
@@ -2261,21 +2459,14 @@ def _normalize_external_finding_payload(
     for path_index, path_item in enumerate(raw_paths):
         if not isinstance(path_item, dict):
             continue
-        steps = _normalize_finding_path_steps(
+        normalized_path = _normalize_finding_path_graph(
             version_id=version_id,
-            steps=path_item.get("steps"),
+            path_item=path_item,
+            path_index=path_index,
         )
-        if not steps:
+        if normalized_path is None:
             continue
-        normalized_paths.append(
-            {
-                **path_item,
-                "path_length": max(0, len(steps) - 1),
-                "path_id": _to_int(path_item.get("path_id"), default=path_index)
-                or path_index,
-                "steps": steps,
-            }
-        )
+        normalized_paths.append(normalized_path)
 
     normalized_source_file, normalized_source_line = normalize_graph_location(
         version_id=version_id,
@@ -2330,6 +2521,155 @@ def _normalize_external_finding_payload(
     return normalized
 
 
+def _extract_semantic_seed_node_refs(
+    paths: list[dict[str, object]],
+) -> tuple[str, str] | None:
+    for path in paths:
+        nodes = path.get("nodes") if isinstance(path.get("nodes"), list) else []
+        if not nodes:
+            continue
+        first = nodes[0] if isinstance(nodes[0], dict) else None
+        last = nodes[-1] if isinstance(nodes[-1], dict) else None
+        if first is None or last is None:
+            continue
+        source_ref = _extract_semantic_node_ref(first)
+        sink_ref = _extract_semantic_node_ref(last)
+        if source_ref and sink_ref:
+            return source_ref, sink_ref
+    return None
+
+
+def _extract_semantic_node_ref(node: dict[str, object]) -> str | None:
+    raw_props = node.get("raw_props") if isinstance(node.get("raw_props"), dict) else {}
+    for candidate in (raw_props.get("id"), node.get("node_ref")):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _apply_refined_finding_paths(
+    *,
+    finding_payload: dict[str, object],
+    paths: list[dict[str, object]],
+) -> dict[str, object]:
+    updated = dict(finding_payload)
+    if not paths:
+        return updated
+
+    first_path = paths[0] if isinstance(paths[0], dict) else {}
+    steps = first_path.get("steps") if isinstance(first_path.get("steps"), list) else []
+    if not steps:
+        updated["paths"] = paths
+        return updated
+
+    source = steps[0] if isinstance(steps[0], dict) else {}
+    sink = steps[-1] if isinstance(steps[-1], dict) else {}
+    edge_types = [
+        str(edge.get("edge_type") or "")
+        for path in paths
+        if isinstance(path, dict)
+        for edge in path.get("edges") or []
+        if isinstance(edge, dict) and str(edge.get("edge_type") or "")
+    ]
+    labels = [
+        str(label)
+        for path in paths
+        if isinstance(path, dict)
+        for step in path.get("steps") or []
+        if isinstance(step, dict)
+        for label in step.get("labels") or []
+        if str(label).strip()
+    ]
+    evidence = _normalize_evidence_payload(
+        updated.get("evidence_json") or updated.get("evidence")
+    )
+    evidence.update(
+        {
+            "match_kind": "path",
+            "path_nodes": len(steps),
+            "path_edges": len(first_path.get("edges") or []),
+            "edge_types": list(dict.fromkeys(edge_types)),
+            "labels": list(dict.fromkeys(labels)),
+        }
+    )
+    path_length = _to_int(
+        first_path.get("path_length"), default=len(first_path.get("edges") or [])
+    )
+    source_file = str(source.get("file") or "").strip() or None
+    source_line = _to_int(source.get("line"))
+    sink_file = str(sink.get("file") or "").strip() or None
+    sink_line = _to_int(sink.get("line"))
+    file_path = sink_file or source_file
+    line_start = sink_line if sink_line is not None else source_line
+    updated.update(
+        {
+            "paths": paths,
+            "has_path": True,
+            "path_length": path_length,
+            "source_file": source_file,
+            "source_line": source_line,
+            "sink_file": sink_file,
+            "sink_line": sink_line,
+            "file_path": file_path,
+            "line_start": line_start,
+            "line_end": line_start,
+            "evidence": evidence,
+        }
+    )
+    return updated
+
+
+def _paths_have_runtime_refinement_signal(paths: list[dict[str, object]]) -> bool:
+    semantic_edge_types = {"REF", "PARAM_PASS", "SRC_FLOW"}
+    for path in paths:
+        if not isinstance(path, dict):
+            continue
+        for edge in path.get("edges") or []:
+            if not isinstance(edge, dict):
+                continue
+            edge_type = str(edge.get("edge_type") or "")
+            if edge_type in semantic_edge_types:
+                return True
+    return False
+
+
+def _refine_external_finding_paths_with_runtime(
+    *,
+    job: Job,
+    finding_payload: dict[str, object],
+) -> dict[str, object]:
+    paths = (
+        finding_payload.get("paths")
+        if isinstance(finding_payload.get("paths"), list)
+        else []
+    )
+    seed_refs = _extract_semantic_seed_node_refs(paths)
+    if seed_refs is None:
+        return finding_payload
+
+    runtime_metadata = _load_external_runtime_metadata(job=job)
+    uri = str(runtime_metadata.get("uri") or "").strip()
+    database = str(runtime_metadata.get("database") or "neo4j").strip() or "neo4j"
+    if not uri:
+        return finding_payload
+
+    semantic_paths = query_runtime_semantic_paths_by_node_refs(
+        uri=uri,
+        database=database,
+        version_id=job.version_id,
+        source_node_ref=seed_refs[0],
+        sink_node_ref=seed_refs[1],
+        mode="shortest",
+        limit=1,
+    )
+    if not semantic_paths or not _paths_have_runtime_refinement_signal(semantic_paths):
+        return finding_payload
+    return _apply_refined_finding_paths(
+        finding_payload=finding_payload, paths=semantic_paths
+    )
+
+
 def _persist_finding_paths(
     db: Session,
     *,
@@ -2341,40 +2681,78 @@ def _persist_finding_paths(
     for path_index, path_item in enumerate(paths):
         if not isinstance(path_item, dict):
             continue
-        steps = _normalize_finding_path_steps(
+        normalized_path = _normalize_finding_path_graph(
             version_id=version_id,
-            steps=path_item.get("steps"),
+            path_item=path_item,
+            path_index=path_index,
         )
-        if not isinstance(steps, list) or not steps:
+        if normalized_path is None:
             continue
+        nodes = normalized_path["nodes"]
+        steps = normalized_path["steps"]
+        edges = normalized_path["edges"]
         path_model = FindingPath(
             finding_id=finding.id,
             path_order=path_index,
             path_length=max(
                 0,
-                _to_int(path_item.get("path_length"), default=len(steps) - 1)
-                or len(steps) - 1,
+                _to_int(
+                    normalized_path.get("path_length"),
+                    default=len(edges) or (len(steps) - 1),
+                )
+                or len(edges)
+                or (len(steps) - 1),
             ),
         )
         db.add(path_model)
         db.flush()
-        for step_index, step in enumerate(steps):
-            if not isinstance(step, dict):
+        for node_index, node in enumerate(nodes):
+            if not isinstance(node, dict):
                 continue
             db.add(
                 FindingPathStep(
                     finding_path_id=path_model.id,
-                    step_order=step_index,
+                    step_order=node_index,
                     labels_json=[
                         str(item)
-                        for item in step.get("labels") or []
+                        for item in node.get("labels") or []
                         if isinstance(item, str) and item.strip()
                     ],
-                    file_path=str(step.get("file") or "").strip() or None,
-                    line_no=_to_int(step.get("line")),
-                    func_name=str(step.get("func_name") or "").strip() or None,
-                    code_snippet=(str(step.get("code_snippet") or "").strip() or None),
-                    node_ref=str(step.get("node_ref") or f"step-{step_index}"),
+                    file_path=str(node.get("file") or "").strip() or None,
+                    line_no=_to_int(node.get("line")),
+                    column_no=_to_int(node.get("column")),
+                    func_name=str(node.get("func_name") or "").strip() or None,
+                    display_name=str(node.get("display_name") or "").strip() or None,
+                    symbol_name=str(node.get("symbol_name") or "").strip() or None,
+                    owner_method=str(node.get("owner_method") or "").strip() or None,
+                    type_name=str(node.get("type_name") or "").strip() or None,
+                    node_kind=str(node.get("node_kind") or "").strip() or None,
+                    code_snippet=(str(node.get("code_snippet") or "").strip() or None),
+                    node_ref=str(node.get("node_ref") or f"step-{node_index}"),
+                    raw_props_json=(
+                        dict(node.get("raw_props"))
+                        if isinstance(node.get("raw_props"), dict)
+                        else {}
+                    ),
+                )
+            )
+        for edge_index, edge in enumerate(edges):
+            if not isinstance(edge, dict):
+                continue
+            db.add(
+                FindingPathEdge(
+                    finding_path_id=path_model.id,
+                    edge_order=edge_index,
+                    from_step_order=_to_int(edge.get("from_step_id")),
+                    to_step_order=_to_int(edge.get("to_step_id")),
+                    edge_type=str(edge.get("edge_type") or "STEP_NEXT"),
+                    label=str(edge.get("label") or "").strip() or None,
+                    is_hidden=bool(edge.get("is_hidden", False)),
+                    props_json=(
+                        dict(edge.get("props_json"))
+                        if isinstance(edge.get("props_json"), dict)
+                        else {}
+                    ),
                 )
             )
         saved_count += 1
@@ -2393,6 +2771,10 @@ def _persist_external_finding_live(
     normalized_finding = _normalize_external_finding_payload(
         version_id=job.version_id,
         raw_finding=raw_finding,
+    )
+    normalized_finding = _refine_external_finding_paths_with_runtime(
+        job=job,
+        finding_payload=normalized_finding,
     )
     try:
         normalized_rule_key = normalize_rule_selector(raw_rule_key)
@@ -2675,7 +3057,11 @@ def _read_snapshot_snippet(
 
 
 def _snapshot_source_root(*, version_id: uuid.UUID) -> Path:
-    return Path(get_settings().snapshot_storage_root) / str(version_id) / "source"
+    return (
+        _absolute_settings_path(get_settings().snapshot_storage_root)
+        / str(version_id)
+        / "source"
+    )
 
 
 def _resolve_snapshot_relative_path(

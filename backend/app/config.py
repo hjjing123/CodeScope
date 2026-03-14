@@ -68,15 +68,19 @@ class Settings(BaseSettings):
     scan_external_joern_home: str = "/opt/joern"
     scan_external_joern_bin: str = "/opt/joern/joern"
     scan_external_joern_export_script: str = "./assets/scan/joern/export_java_min.sc"
+    scan_external_joern_enable_calls_default: bool = False
+    scan_external_joern_enable_ref_default: bool = True
 
     scan_external_stage_joern_command: str = "builtin:joern"
     scan_external_stage_import_command: str = "builtin:neo4j_import"
     scan_external_stage_post_labels_command: str = "builtin:post_labels"
+    scan_external_stage_source_semantic_command: str = "builtin:source_semantic"
     scan_external_stage_rules_command: str = "builtin:rules"
 
     scan_external_stage_joern_timeout_seconds: int = 3600
     scan_external_stage_import_timeout_seconds: int = 3600
     scan_external_stage_post_labels_timeout_seconds: int = 1800
+    scan_external_stage_source_semantic_timeout_seconds: int = 900
     scan_external_stage_rules_timeout_seconds: int = 3600
 
     scan_external_post_labels_cypher: str = "./assets/scan/query/post_labels.cypher"
