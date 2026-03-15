@@ -51,6 +51,8 @@ def execute_cypher_file_stream(
     database: str,
     connect_retry: int,
     connect_wait_seconds: int,
+    query_timeout_seconds: int | None = None,
+    query_metadata: dict[str, Any] | None = None,
     on_record: Callable[[dict[str, Any]], None] | None,
 ) -> CypherExecutionSummary:
     if not cypher_file.exists() or not cypher_file.is_file():
@@ -67,7 +69,7 @@ def execute_cypher_file_stream(
         return CypherExecutionSummary(statement_count=0, total_rows=0, row_counts=[])
 
     try:
-        from neo4j import GraphDatabase
+        from neo4j import GraphDatabase, Query
         from neo4j.exceptions import DatabaseUnavailable, ServiceUnavailable
     except Exception as exc:  # pragma: no cover - runtime dependency guard
         raise AppError(
@@ -94,9 +96,16 @@ def execute_cypher_file_stream(
         row_counts: list[int] = []
         with driver.session(database=database) as session:
             for statement in statements:
+                statement_query: str | Query = statement
+                if query_timeout_seconds is not None or query_metadata:
+                    statement_query = Query(
+                        statement,
+                        metadata=query_metadata or None,
+                        timeout=query_timeout_seconds,
+                    )
                 result = _run_with_retry(
                     session=session,
-                    statement=statement,
+                    statement=statement_query,
                     retry=max(1, int(connect_retry)),
                     wait_seconds=max(1, int(connect_wait_seconds)),
                     retry_errors=(ServiceUnavailable, DatabaseUnavailable),
@@ -496,7 +505,7 @@ def _verify_connectivity(
 def _run_with_retry(
     *,
     session,
-    statement: str,
+    statement: Any,
     retry: int,
     wait_seconds: int,
     retry_errors: tuple[type[Exception], ...],

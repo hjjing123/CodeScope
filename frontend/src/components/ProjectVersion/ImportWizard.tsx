@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Modal, Steps, Button, Form, Input, Upload, message, Select, Card, Space, Tag } from 'antd';
+import { Modal, Steps, Button, Form, Input, Upload, message, Select, Card, Space, Tag, Progress } from 'antd';
 import { GithubOutlined, InboxOutlined, LinkOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
 import { testGitImport, triggerGitImport, uploadImportFile } from '../../services/projectVersion';
@@ -25,6 +25,7 @@ const ImportWizard: React.FC<ImportWizardProps> = ({ open, onCancel, onSuccess, 
   const [currentStep, setCurrentStep] = useState(0);
   const [importType, setImportType] = useState<'upload' | 'git'>('upload');
   const [loading, setLoading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [testingGit, setTestingGit] = useState(false);
   const [gitTestResult, setGitTestResult] = useState<string | null>(null);
   const [form] = Form.useForm();
@@ -50,10 +51,20 @@ const ImportWizard: React.FC<ImportWizardProps> = ({ open, onCancel, onSuccess, 
             setLoading(false);
             return;
           }
+          setUploadProgress(0);
           await uploadImportFile(projectId, file, {
             version_name: values.versionName,
             note: values.note,
+          }, {
+            onUploadProgress: (event) => {
+              if (!event.total || event.total <= 0) {
+                return;
+              }
+              const percent = Math.min(100, Math.round((event.loaded / event.total) * 100));
+              setUploadProgress(percent);
+            },
           });
+          setUploadProgress(100);
         } else {
           await triggerGitImport(projectId, {
             repo_url: values.repoUrl,
@@ -68,6 +79,7 @@ const ImportWizard: React.FC<ImportWizardProps> = ({ open, onCancel, onSuccess, 
         onSuccess();
         reset();
       } catch (error) {
+        setUploadProgress(null);
         message.error(`导入失败: ${getErrorMessage(error, '未知错误')}`);
       } finally {
         setLoading(false);
@@ -79,6 +91,7 @@ const ImportWizard: React.FC<ImportWizardProps> = ({ open, onCancel, onSuccess, 
     setCurrentStep(0);
     setImportType('upload');
     setGitTestResult(null);
+    setUploadProgress(null);
     setFileList([]);
     form.resetFields();
     onCancel();
@@ -158,7 +171,10 @@ const ImportWizard: React.FC<ImportWizardProps> = ({ open, onCancel, onSuccess, 
                   return false;
                 }}
                 onChange={({ fileList: nextFileList }) => setFileList(nextFileList.slice(-1))}
-                onRemove={() => setFileList([])}
+                onRemove={() => {
+                  setFileList([]);
+                  setUploadProgress(null);
+                }}
               >
                 <p className="ant-upload-drag-icon">
                   <InboxOutlined />
@@ -166,6 +182,9 @@ const ImportWizard: React.FC<ImportWizardProps> = ({ open, onCancel, onSuccess, 
                 <p className="ant-upload-text">点击或拖拽文件到此区域上传</p>
                 <p className="ant-upload-hint">支持单个文件上传，最大 500MB</p>
               </Dragger>
+              {loading && uploadProgress !== null ? (
+                <Progress percent={uploadProgress} size="small" style={{ marginTop: 12 }} />
+              ) : null}
             </Form.Item>
           ) : (
             <>

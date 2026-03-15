@@ -108,19 +108,6 @@ def query_finding_paths(
         mode=normalized_mode,
         limit=safe_limit,
     )
-    seed_refs = _extract_runtime_seed_node_refs(persisted_paths)
-
-    semantic_paths = _query_runtime_semantic_paths(
-        db=db,
-        finding=finding,
-        mode=normalized_mode,
-        limit=safe_limit,
-        source_node_ref=seed_refs[0] if seed_refs else None,
-        sink_node_ref=seed_refs[1] if seed_refs else None,
-    )
-    if semantic_paths:
-        return semantic_paths
-
     if persisted_paths:
         return persisted_paths
 

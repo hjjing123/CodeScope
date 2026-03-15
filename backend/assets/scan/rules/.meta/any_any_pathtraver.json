@@ -1,0 +1,12 @@
+{
+  "rule_key": "any_any_pathtraver",
+  "name": "any_any_pathtraver",
+  "vuln_type": "PATH_TRAVERSAL",
+  "default_severity": "MED",
+  "language_scope": "java",
+  "description": null,
+  "active_version": 1,
+  "created_at": "2026-03-14T12:36:05.278605+00:00",
+  "enabled": false,
+  "updated_at": "2026-03-14T13:32:55.217043+00:00"
+}

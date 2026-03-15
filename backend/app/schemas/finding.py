@@ -14,11 +14,14 @@ class FindingPayload(BaseModel):
     rule_key: str
     rule_version: int | None = None
     vuln_type: str | None = None
+    vuln_display_name: str | None = None
     severity: str
     status: str
     file_path: str | None = None
     line_start: int | None = None
     line_end: int | None = None
+    entry_display: str | None = None
+    entry_kind: str | None = None
     has_path: bool = False
     path_length: int | None = None
     source_file: str | None = None

@@ -53,6 +53,8 @@ from app.services.task_log_service import (
 
 router = APIRouter(tags=["project-imports"])
 
+UPLOAD_COPY_CHUNK_BYTES = 8 * 1024 * 1024
+
 PUBLIC_IMPORT_PAYLOAD_KEYS = {
     "request_id",
     "original_filename",
@@ -94,7 +96,7 @@ def _save_upload_to_workspace(
     total = 0
     with archive_path.open("wb") as destination:
         while True:
-            chunk = upload.file.read(1024 * 1024)
+            chunk = upload.file.read(UPLOAD_COPY_CHUNK_BYTES)
             if not chunk:
                 break
             total += len(chunk)

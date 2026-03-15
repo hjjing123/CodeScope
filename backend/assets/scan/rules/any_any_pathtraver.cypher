@@ -1,97 +1,64 @@
 MATCH
-  (sourceNode)
-    WHERE
-    (
+  p = (sourceNode)-[:ARG]->(:Method)-[:HAS_CALL]->(sinkNode)
+WHERE
+  (
     sourceNode:DubboServiceArg OR
     sourceNode:JsfXhtmlArg OR
     sourceNode:JaxwsArg OR
     sourceNode:StrutsActionArg OR
     sourceNode:ThriftHandlerArg OR
     sourceNode:NettyHandlerArg OR
-      sourceNode:JfinalControllerArg OR
-  sourceNode:JbootControllerArg OR
+    sourceNode:JfinalControllerArg OR
+    sourceNode:JbootControllerArg OR
     sourceNode:SpringControllerArg OR
-sourceNode:SolonControllerArg OR
-  sourceNode:SpringInterceptorArg OR
+    sourceNode:SolonControllerArg OR
+    sourceNode:SpringInterceptorArg OR
     sourceNode:JspServiceArg OR
     sourceNode:WebServletArg OR
     sourceNode:WebXmlServletArg OR
     sourceNode:WebXmlFilterArg OR
     sourceNode:JaxrsArg OR
     sourceNode:HttpHandlerArg
-    ) AND
-    NOT sourceNode.type  IN ['Long', 'Integer', 'HttpServletResponse']
-
-
-CALL {
-  WITH sourceNode
-  CALL {
-    WITH sourceNode
-    MATCH
-      p = (sourceNode)-[:REF|PARAM_PASS|SRC_FLOW*0..10]->(argCarrier)-[:ARG]->(sinkNode)
-    RETURN
-      p,
-      sinkNode
-
-    UNION
-
-    WITH sourceNode
-    MATCH
-      p = (sourceNode)-[:ARG]->(methodNode:Method)-[:HAS_CALL]->(sinkNode)
-    WHERE
-      NOT EXISTS {
-        MATCH
-          p2 = (sourceNode)-[:REF|PARAM_PASS|SRC_FLOW*0..10]->(argCarrier2)-[:ARG]->(sinkNode)
-      }
-    RETURN
-      p,
-      sinkNode
-  }
-  WITH
-    p,
-    sinkNode
-  WHERE
-    (
-      sinkNode.AllocationClassName = 'FileInputStream' OR
-      sinkNode.AllocationClassName = 'FileReader' OR
-      sinkNode.AllocationClassName = 'RandomAccessFile' OR
-      (sinkNode.AllocationClassName = 'Scanner' AND ('File' IN sinkNode.receiverTypes OR 'String' IN sinkNode.receiverTypes)) OR
-      ('openStream' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
-      ('newInputStream' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
-      ('toByteArray' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('readAllLines' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('readAllBytes' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('readString' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('newInputStream' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('walk' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('list' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('readToString' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('readLines' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('readFileToByteArray' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('contentEquals' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('listFiles' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('toString' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('toByteArray' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('readLines' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('copy' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('write' IN sinkNode.selectors AND 'HttpServletResponse' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('getOutputStream' IN sinkNode.selectors AND 'HttpServletResponse' IN sinkNode.receiverTypes) OR
-      ('download' IN sinkNode.selectors AND 'WebUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('getResourceAsStream' IN sinkNode.selectors AND 'ResourceLoader' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
-      ('getFile' IN sinkNode.selectors AND 'Resource' IN sinkNode.receiverTypes) OR
-      ('read' IN sinkNode.selectors AND 'FileSystemResource' IN sinkNode.receiverTypes) OR
-      ('exists' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
-      ('isFile' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
-      ('isDirectory' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
-      ('listFiles' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
-      ('length' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
-      ('getCanonicalPath' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes)
-    ) AND
-    none(n IN nodes(p)
-      WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer', 'int', 'long'])
-  RETURN
-    p
-}
+  ) AND
+  NOT sourceNode.type IN ['Long', 'Integer', 'HttpServletResponse'] AND
+  (
+    sinkNode.AllocationClassName = 'FileInputStream' OR
+    sinkNode.AllocationClassName = 'FileReader' OR
+    sinkNode.AllocationClassName = 'RandomAccessFile' OR
+    (sinkNode.AllocationClassName = 'Scanner' AND ('File' IN sinkNode.receiverTypes OR 'String' IN sinkNode.receiverTypes)) OR
+    ('openStream' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+    ('newInputStream' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+    ('toByteArray' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('readAllLines' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('readAllBytes' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('readString' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('newInputStream' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('walk' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('list' IN sinkNode.selectors AND 'Files' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('readToString' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('readLines' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('readFileToByteArray' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('contentEquals' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('listFiles' IN sinkNode.selectors AND 'FileUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('toString' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('toByteArray' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('readLines' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('copy' IN sinkNode.selectors AND 'IOUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('write' IN sinkNode.selectors AND 'HttpServletResponse' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('getOutputStream' IN sinkNode.selectors AND 'HttpServletResponse' IN sinkNode.receiverTypes) OR
+    ('download' IN sinkNode.selectors AND 'WebUtils' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('getResourceAsStream' IN sinkNode.selectors AND 'ResourceLoader' IN sinkNode.receiverTypes AND sinkNode.argPosition = 0) OR
+    ('getFile' IN sinkNode.selectors AND 'Resource' IN sinkNode.receiverTypes) OR
+    ('read' IN sinkNode.selectors AND 'FileSystemResource' IN sinkNode.receiverTypes) OR
+    ('exists' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+    ('isFile' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+    ('isDirectory' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+    ('listFiles' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+    ('length' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes) OR
+    ('getCanonicalPath' IN sinkNode.selectors AND 'File' IN sinkNode.receiverTypes)
+  ) AND
+  none(n IN nodes(p)
+    WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer', 'int', 'long'])
 RETURN
   p AS path
 

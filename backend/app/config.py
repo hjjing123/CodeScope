@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     snapshot_storage_root: str = "./storage/snapshots"
     scan_workspace_root: str = "./storage/workspaces/scans"
 
-    import_upload_max_bytes: int = 200 * 1024 * 1024
+    import_upload_max_bytes: int = 500 * 1024 * 1024
     import_archive_max_entries: int = 50_000
     import_archive_max_uncompressed_bytes: int = 2 * 1024 * 1024 * 1024
     import_archive_max_depth: int = 20

@@ -262,6 +262,7 @@ def run_builtin_stage(
             settings=settings,
             context=context,
             append_log=append_log,
+            deadline=deadline,
             on_rule_finding=on_rule_finding,
         )
 
@@ -1119,12 +1120,24 @@ def _run_builtin_post_labels(
     return json.dumps(payload, ensure_ascii=False), ""
 
 
+def _compute_rule_query_timeout_seconds(
+    *, deadline: float | None, remaining_rules: int
+) -> int | None:
+    if deadline is None:
+        return None
+    remaining_seconds = max(1, int(deadline - time.monotonic()))
+    safe_remaining_rules = max(1, int(remaining_rules))
+    per_rule_budget = max(1, remaining_seconds // safe_remaining_rules)
+    return max(5, min(60, per_rule_budget))
+
+
 def _run_builtin_rules(
     *,
     job: Job,
     settings: Any,
     context: ExternalScanContext,
     append_log: Callable[[str, str], None],
+    deadline: float | None = None,
     on_rule_finding: Callable[[dict[str, object]], None] | None = None,
 ) -> tuple[str, str]:
     rules_dir = Path(context.base_env.get("CODESCOPE_SCAN_RULES_DIR") or "")
@@ -1188,9 +1201,20 @@ def _run_builtin_rules(
     for index, rule_file in enumerate(rule_files, start=1):
         rule_key = _rule_key_from_file(rule_file)
         seen_case_fingerprints: set[str] = set()
+        query_timeout_seconds = _compute_rule_query_timeout_seconds(
+            deadline=deadline,
+            remaining_rules=(total_rule_count - index + 1),
+        )
         append_log(
             "QUERY",
-            f"[rules] 开始执行规则 {index}/{total_rule_count}: {rule_key}",
+            (
+                f"[rules] 开始执行规则 {index}/{total_rule_count}: {rule_key}"
+                + (
+                    f", query_timeout_s={query_timeout_seconds}"
+                    if query_timeout_seconds is not None
+                    else ""
+                )
+            ),
         )
         started = time.monotonic()
         try:
@@ -1240,6 +1264,14 @@ def _run_builtin_rules(
                 connect_wait_seconds=int(
                     settings.scan_external_neo4j_connect_wait_seconds
                 ),
+                query_timeout_seconds=query_timeout_seconds,
+                query_metadata={
+                    "codescope_stage": "rules",
+                    "codescope_job_id": str(getattr(job, "id", "") or ""),
+                    "codescope_rule": rule_key,
+                    "codescope_rule_index": index,
+                    "codescope_rule_count": total_rule_count,
+                },
                 on_record=_on_rule_record,
             )
             duration_ms = int((time.monotonic() - started) * 1000)

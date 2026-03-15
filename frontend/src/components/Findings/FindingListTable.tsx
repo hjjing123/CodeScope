@@ -4,6 +4,7 @@ import { EyeOutlined } from '@ant-design/icons';
 import type { TablePaginationConfig } from 'antd/es/table';
 import type { FilterValue, SorterResult } from 'antd/es/table/interface';
 import type { Finding } from '../../types/finding';
+import { formatCompactLocation, formatLocation } from '../../utils/findingLocation';
 
 const { Text } = Typography;
 
@@ -36,11 +37,22 @@ const statusStatusMap: Record<string, "success" | "processing" | "error" | "defa
   fixed: 'success',
 };
 
-const formatLocation = (filePath?: string | null, line?: number | null) => {
-  if (!filePath) {
-    return '-';
+const getVulnDisplayName = (record: Finding) => {
+  return record.vuln_display_name || record.vuln_type || record.rule_key || '-';
+};
+
+const getEntryDisplay = (record: Finding) => {
+  if (record.entry_display) {
+    return record.entry_display;
   }
-  return typeof line === 'number' && line > 0 ? `${filePath}:${line}` : filePath;
+  return formatCompactLocation(record.file_path, record.line_start);
+};
+
+const getEntryTooltip = (record: Finding) => {
+  if (record.entry_display) {
+    return record.entry_display;
+  }
+  return formatLocation(record.file_path, record.line_start);
 };
 
 const FindingListTable: React.FC<FindingListTableProps> = ({
@@ -63,19 +75,19 @@ const FindingListTable: React.FC<FindingListTableProps> = ({
       ),
     },
     {
-      title: 'Rule Key',
-      dataIndex: 'rule_key',
-      key: 'rule_key',
-      render: (text: string) => <Text copyable>{text}</Text>,
+      title: 'Vuln',
+      dataIndex: 'vuln_display_name',
+      key: 'vuln_display_name',
+      render: (_: string, record: Finding) => <Text>{getVulnDisplayName(record)}</Text>,
     },
     {
-      title: 'File Path',
-      dataIndex: 'file_path',
-      key: 'file_path',
-      render: (text: string, record: Finding) => (
-        <Tooltip title={formatLocation(text, record.line_start)}>
+      title: 'Entry',
+      dataIndex: 'entry_display',
+      key: 'entry_display',
+      render: (_: string, record: Finding) => (
+        <Tooltip title={getEntryTooltip(record)}>
           <Text style={{ maxWidth: 300 }} ellipsis>
-            {formatLocation(text, record.line_start)}
+            {getEntryDisplay(record)}
           </Text>
         </Tooltip>
       ),

@@ -8,19 +8,24 @@ import CodeViewer from './CodeViewer';
 import type { Finding, FindingPath, FindingPathStep, FindingLabelRequest } from '../../types/finding';
 import { pickPreferredPathStep } from './findingPathGraph';
 import { buildFallbackFindingPaths } from './findingPathFallback';
+import { formatLocation } from '../../utils/findingLocation';
 import '../ProjectVersion/CodeBrowser.css';
 
 const { Text } = Typography;
 const DEFAULT_EMPTY_PATH_MESSAGE = 'No path available';
 
-const hasValidLine = (value?: number | null) => typeof value === 'number' && value > 0;
+const getVulnDisplayName = (finding?: Finding | null) => {
+  return finding?.vuln_display_name || finding?.vuln_type || finding?.rule_key || '-';
+};
 
-const formatLocation = (filePath?: string | null, line?: number | null) => {
-  if (!filePath) {
+const getEntryDisplay = (finding?: Finding | null) => {
+  if (!finding) {
     return '-';
   }
-  return hasValidLine(line) ? `${filePath}:${line}` : filePath;
+  return finding.entry_display || formatLocation(finding.file_path, finding.line_start);
 };
+
+const hasValidLine = (value?: number | null) => typeof value === 'number' && value > 0;
 
 interface FindingDetailPanelProps {
   visible: boolean;
@@ -237,9 +242,9 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
             <Tag color={finding?.severity === 'HIGH' ? 'red' : finding?.severity === 'MED' ? 'orange' : 'blue'}>
               {finding?.severity}
             </Tag>
-            <span>{finding?.rule_key}</span>
+            <span>{getVulnDisplayName(finding)}</span>
             <Text type="secondary" style={{ fontSize: 13, fontWeight: 'normal' }}>
-              {formatLocation(finding?.file_path, finding?.line_start)}
+              {getEntryDisplay(finding)}
             </Text>
           </div>
           <div style={{ marginRight: 32 }}>

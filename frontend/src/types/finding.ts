@@ -6,11 +6,14 @@ export interface Finding {
   rule_key: string;
   rule_version?: number | null;
   vuln_type?: string | null;
+  vuln_display_name?: string | null;
   severity: string;
   status: string;
   file_path?: string | null;
   line_start?: number | null;
   line_end?: number | null;
+  entry_display?: string | null;
+  entry_kind?: string | null;
   has_path: boolean;
   path_length?: number | null;
   source_file?: string | null;

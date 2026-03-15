@@ -1265,6 +1265,57 @@ def test_run_builtin_rules_dedupes_duplicate_path_findings(
     assert payload["rule_results"][0]["rows"] == 2
 
 
+def test_run_builtin_rules_passes_query_timeout_and_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    job, context, _logs = _build_builtin_context(tmp_path)
+    job.id = uuid.uuid4()
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    context.base_env["CODESCOPE_SCAN_RULES_DIR"] = str(rules_dir)
+    (rules_dir / "one_rule.cypher").write_text("RETURN 1;\n", encoding="utf-8")
+
+    settings = SimpleNamespace(
+        scan_external_neo4j_uri="bolt://127.0.0.1:7687",
+        scan_external_neo4j_user="neo4j",
+        scan_external_neo4j_password="",
+        scan_external_neo4j_database="neo4j",
+        scan_external_neo4j_connect_retry=1,
+        scan_external_neo4j_connect_wait_seconds=1,
+        scan_external_rules_max_count=0,
+        scan_external_rules_failure_mode="permissive",
+    )
+    job.payload["resolved_rule_keys"] = ["one_rule"]
+
+    captured: dict[str, object] = {}
+
+    def _fake_execute(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(total_rows=0)
+
+    monkeypatch.setattr(builtin_module, "execute_cypher_file_stream", _fake_execute)
+
+    stdout, stderr = builtin_module._run_builtin_rules(
+        job=job,
+        settings=settings,
+        context=context,
+        append_log=lambda *_args: None,
+        deadline=time.monotonic() + 120,
+    )
+
+    payload = json.loads(stdout)
+    assert stderr == ""
+    assert payload["succeeded_rules"] == 1
+    assert captured["query_timeout_seconds"] == 60
+    assert captured["query_metadata"] == {
+        "codescope_stage": "rules",
+        "codescope_job_id": str(job.id),
+        "codescope_rule": "one_rule",
+        "codescope_rule_index": 1,
+        "codescope_rule_count": 1,
+    }
+
+
 def test_run_builtin_rules_filters_irrelevant_mybatis_cases(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -1,3 +1,5 @@
+import type { AxiosProgressEvent } from 'axios';
+
 import request from '../utils/request';
 import type {
   ApiResponse,
@@ -110,7 +112,8 @@ export const triggerGitSync = (projectId: string, params?: { note?: string }) =>
 export const uploadImportFile = (
   projectId: string,
   file: File,
-  params: { version_name?: string; note?: string }
+  params: { version_name?: string; note?: string },
+  options?: { onUploadProgress?: (event: AxiosProgressEvent) => void }
 ) => {
   const formData = new FormData();
   formData.append('file', file);
@@ -124,6 +127,8 @@ export const uploadImportFile = (
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+      timeout: 30 * 60 * 1000,
+      onUploadProgress: options?.onUploadProgress,
     }
   );
 };

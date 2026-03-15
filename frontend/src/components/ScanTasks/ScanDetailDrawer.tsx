@@ -6,6 +6,7 @@ import { ScanService } from '../../services/scan';
 import type { Job, JobLog } from '../../types/scan';
 import dayjs from 'dayjs';
 import { openSseStream } from '../../utils/sse';
+import { formatCompactLocation, formatLocation } from '../../utils/findingLocation';
 
 const { Text, Title } = Typography;
 type StepStatus = NonNullable<StepsProps['items']>[number]['status'];
@@ -18,9 +19,11 @@ interface LiveSummaryState {
 interface LiveFindingItem {
   id: string;
   rule_key: string;
+  vuln_display_name?: string | null;
   severity: string;
   file_path?: string | null;
   line_start?: number | null;
+  entry_display?: string | null;
   path_length?: number | null;
 }
 
@@ -194,9 +197,11 @@ const ScanDetailDrawer: React.FC<ScanDetailDrawerProps> = ({ visible, jobId, onC
         const next: LiveFindingItem = {
           id: String(finding.id || ''),
           rule_key: String(finding.rule_key || ''),
+          vuln_display_name: (finding.vuln_display_name as string | null) ?? null,
           severity: String(finding.severity || ''),
           file_path: (finding.file_path as string | null) ?? null,
           line_start: (finding.line_start as number | null) ?? null,
+          entry_display: (finding.entry_display as string | null) ?? null,
           path_length: (finding.path_length as number | null) ?? null,
         };
         return [next, ...prev.filter((item) => item.id !== next.id)].slice(0, 10);
@@ -434,10 +439,9 @@ const ScanDetailDrawer: React.FC<ScanDetailDrawerProps> = ({ visible, jobId, onC
               }}
             >
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 600 }}>{item.rule_key || '-'}</div>
-                <div style={{ color: '#64748B' }}>
-                  {item.file_path || '-'}
-                  {item.line_start ? `:${item.line_start}` : ''}
+                <div style={{ fontWeight: 600 }}>{item.vuln_display_name || item.rule_key || '-'}</div>
+                <div style={{ color: '#64748B' }} title={item.entry_display || formatLocation(item.file_path, item.line_start)}>
+                  {item.entry_display || formatCompactLocation(item.file_path, item.line_start)}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>

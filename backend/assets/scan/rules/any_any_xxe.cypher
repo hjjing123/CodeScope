@@ -23,37 +23,35 @@ sourceNode:SolonControllerArg OR
     NOT sourceNode.type  IN ['Long', 'Integer', 'HttpServletResponse']
 
 MATCH
-  (sinkNode)
-  WHERE
-  sinkNode.AllocationClassName = 'XSSFWorkbook' OR
-  'setByteStream' IN sinkNode.selectors OR
-  'createXMLStreamReader' IN sinkNode.selectors OR
-  ( 'StreamingReader.builder()' IN sinkNode.receivers AND  'open' IN sinkNode.selectors) OR
-  ( 'read' IN sinkNode.selectors AND  'SAXReader' IN sinkNode.receiverTypes) OR
-  ( 'parse' IN sinkNode.selectors AND  'XMLReader' IN sinkNode.receiverTypes) OR
-  ( 'build' IN sinkNode.selectors AND  'SAXBuilder' IN sinkNode.receiverTypes) OR
-  ( 'parse' IN sinkNode.selectors AND  'SAXParser' IN sinkNode.receiverTypes) OR
-  ( 'parse' IN sinkNode.selectors AND  'DocumentBuilder' IN sinkNode.receiverTypes) OR
-  ( 'parse' IN sinkNode.selectors AND  'Digester' IN sinkNode.receiverTypes) OR
-  ( 'parseText' IN sinkNode.selectors AND  'DocumentHelper' IN sinkNode.receiverTypes) OR
-  ( 'transform' IN sinkNode.selectors AND  'Transformer' IN sinkNode.receiverTypes) OR
-  ( 'read' IN sinkNode.selectors AND  'NodeBuilder' IN sinkNode.receiverTypes) OR
-//  ( 'format' IN sinkNode.selectors AND  'Formatter' IN sinkNode.receiverTypes) OR
-  ( 'newSchema' IN sinkNode.selectors AND  'SchemaFactory' IN sinkNode.receiverTypes) OR
-  ( 'evaluate' IN sinkNode.selectors AND  'XPathExpression' IN sinkNode.receiverTypes) OR
-  ( 'validate' IN sinkNode.selectors AND  'Persister' IN sinkNode.receiverTypes) OR
-  ( 'read' IN sinkNode.selectors AND  'Persister' IN sinkNode.receiverTypes) OR
-  ( 'provide' IN sinkNode.selectors AND  'DocumentProvider' IN sinkNode.receiverTypes) OR
-  ( 'provide' IN sinkNode.selectors AND  'StreamProvider' IN sinkNode.receiverTypes) OR
-  ( 'newTransformer' IN sinkNode.selectors AND  'TransformerFactory' IN sinkNode.receiverTypes) OR
-  ( 'newTransformer' IN sinkNode.selectors AND  'SAXTransformerFactory' IN sinkNode.receiverTypes) OR
-  ( 'newXMLFilter' IN sinkNode.selectors AND  'SAXTransformerFactory' IN sinkNode.receiverTypes) OR
-  // hutool  只在 disallow-doctype-decl 为 false 时 有漏洞
-  ( 'parseXml' IN sinkNode.selectors AND  'XmlUtil' IN sinkNode.receiverTypes) OR
-  ( 'unmarshal' IN sinkNode.selectors AND  'Unmarshaller' IN sinkNode.receiverTypes)
-MATCH
-  p = shortestPath((sourceNode)-[*..30]->(sinkNode))
-    WHERE NONE(n IN nodes(p) WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer','int','long'] )
+  p = (sourceNode)-[:ARG]->(:Method)-[:HAS_CALL]->(sinkNode)
+WHERE
+  (
+    sinkNode.AllocationClassName = 'XSSFWorkbook' OR
+    'setByteStream' IN sinkNode.selectors OR
+    'createXMLStreamReader' IN sinkNode.selectors OR
+    ( 'StreamingReader.builder()' IN sinkNode.receivers AND  'open' IN sinkNode.selectors) OR
+    ( 'read' IN sinkNode.selectors AND  'SAXReader' IN sinkNode.receiverTypes) OR
+    ( 'parse' IN sinkNode.selectors AND  'XMLReader' IN sinkNode.receiverTypes) OR
+    ( 'build' IN sinkNode.selectors AND  'SAXBuilder' IN sinkNode.receiverTypes) OR
+    ( 'parse' IN sinkNode.selectors AND  'SAXParser' IN sinkNode.receiverTypes) OR
+    ( 'parse' IN sinkNode.selectors AND  'DocumentBuilder' IN sinkNode.receiverTypes) OR
+    ( 'parse' IN sinkNode.selectors AND  'Digester' IN sinkNode.receiverTypes) OR
+    ( 'parseText' IN sinkNode.selectors AND  'DocumentHelper' IN sinkNode.receiverTypes) OR
+    ( 'transform' IN sinkNode.selectors AND  'Transformer' IN sinkNode.receiverTypes) OR
+    ( 'read' IN sinkNode.selectors AND  'NodeBuilder' IN sinkNode.receiverTypes) OR
+    ( 'newSchema' IN sinkNode.selectors AND  'SchemaFactory' IN sinkNode.receiverTypes) OR
+    ( 'evaluate' IN sinkNode.selectors AND  'XPathExpression' IN sinkNode.receiverTypes) OR
+    ( 'validate' IN sinkNode.selectors AND  'Persister' IN sinkNode.receiverTypes) OR
+    ( 'read' IN sinkNode.selectors AND  'Persister' IN sinkNode.receiverTypes) OR
+    ( 'provide' IN sinkNode.selectors AND  'DocumentProvider' IN sinkNode.receiverTypes) OR
+    ( 'provide' IN sinkNode.selectors AND  'StreamProvider' IN sinkNode.receiverTypes) OR
+    ( 'newTransformer' IN sinkNode.selectors AND  'TransformerFactory' IN sinkNode.receiverTypes) OR
+    ( 'newTransformer' IN sinkNode.selectors AND  'SAXTransformerFactory' IN sinkNode.receiverTypes) OR
+    ( 'newXMLFilter' IN sinkNode.selectors AND  'SAXTransformerFactory' IN sinkNode.receiverTypes) OR
+    ( 'parseXml' IN sinkNode.selectors AND  'XmlUtil' IN sinkNode.receiverTypes) OR
+    ( 'unmarshal' IN sinkNode.selectors AND  'Unmarshaller' IN sinkNode.receiverTypes)
+  ) AND
+  NONE(n IN nodes(p) WHERE n.type IS NOT NULL AND n.type IN ['Long', 'Integer','int','long'] )
 
 RETURN
   p AS path

@@ -9,7 +9,15 @@ from types import SimpleNamespace
 import pytest
 
 from app.config import get_settings
-from app.models import JobStepStatus
+from app.models import (
+    Job,
+    JobStage,
+    JobStatus,
+    JobStepStatus,
+    JobType,
+    Project,
+    Version,
+)
 from app.services import artifact_service as artifact_service_module
 from app.services import scan_service as scan_service_module
 
@@ -432,89 +440,51 @@ def test_refine_external_finding_paths_with_runtime_replaces_structural_path(
 
     monkeypatch.setattr(
         scan_service_module,
-        "_load_external_runtime_metadata",
-        lambda **kwargs: {"uri": "bolt://127.0.0.1:7687", "database": "neo4j"},
-    )
-    monkeypatch.setattr(
-        scan_service_module,
-        "query_runtime_semantic_paths_by_node_refs",
-        lambda **kwargs: [
-            {
-                "path_id": 0,
-                "path_length": 2,
-                "steps": [
-                    {
-                        "step_id": 0,
-                        "labels": ["Var", "Param"],
-                        "file": "src/Main.java",
-                        "line": 21,
-                        "display_name": "content",
-                        "node_ref": "src-node",
-                    },
-                    {
-                        "step_id": 1,
-                        "labels": ["Var", "Identifier"],
-                        "file": "src/Main.java",
-                        "line": 23,
-                        "display_name": "content",
-                        "node_ref": "id-node",
-                    },
-                    {
-                        "step_id": 2,
-                        "labels": ["Call"],
-                        "file": "src/Main.java",
-                        "line": 23,
-                        "display_name": "fromXML",
-                        "node_ref": "sink-node",
-                    },
-                ],
-                "nodes": [
-                    {
-                        "node_id": 0,
-                        "labels": ["Var", "Param"],
-                        "file": "src/Main.java",
-                        "line": 21,
-                        "display_name": "content",
-                        "node_ref": "src-node",
-                        "raw_props": {"id": "src-node"},
-                    },
-                    {
-                        "node_id": 1,
-                        "labels": ["Var", "Identifier"],
-                        "file": "src/Main.java",
-                        "line": 23,
-                        "display_name": "content",
-                        "node_ref": "id-node",
-                        "raw_props": {"id": "id-node"},
-                    },
-                    {
-                        "node_id": 2,
-                        "labels": ["Call"],
-                        "file": "src/Main.java",
-                        "line": 23,
-                        "display_name": "fromXML",
-                        "node_ref": "sink-node",
-                        "raw_props": {"id": "sink-node"},
-                    },
-                ],
-                "edges": [
-                    {
-                        "edge_id": 0,
-                        "edge_type": "REF",
-                        "from_step_id": 0,
-                        "to_step_id": 1,
-                        "props_json": {},
-                    },
-                    {
-                        "edge_id": 1,
-                        "edge_type": "ARG",
-                        "from_step_id": 1,
-                        "to_step_id": 2,
-                        "props_json": {"argIndex": 0},
-                    },
-                ],
-            }
-        ],
+        "repair_external_finding_candidate",
+        lambda **kwargs: {
+            **finding_payload,
+            "source_line": 21,
+            "sink_line": 23,
+            "path_length": 2,
+            "evidence": {
+                "match_kind": "path",
+                "edge_types": ["REF", "ARG"],
+                "repair_status": "java_repaired",
+            },
+            "paths": [
+                {
+                    **finding_payload["paths"][0],
+                    "steps": [
+                        finding_payload["paths"][0]["steps"][0],
+                        {
+                            "step_id": 1,
+                            "labels": ["Var", "Identifier"],
+                            "file": "src/Main.java",
+                            "line": 23,
+                            "display_name": "content",
+                            "node_ref": "id-node",
+                        },
+                        finding_payload["paths"][0]["steps"][2],
+                    ],
+                    "edges": [
+                        {
+                            "edge_id": 0,
+                            "edge_type": "REF",
+                            "from_step_id": 0,
+                            "to_step_id": 1,
+                            "props_json": {},
+                        },
+                        {
+                            "edge_id": 1,
+                            "edge_type": "ARG",
+                            "from_step_id": 1,
+                            "to_step_id": 2,
+                            "props_json": {"argIndex": 0},
+                        },
+                    ],
+                }
+            ],
+        },
     )
 
     refined = scan_service_module._refine_external_finding_paths_with_runtime(
@@ -627,65 +597,18 @@ def test_refine_external_finding_paths_with_runtime_keeps_raw_path_without_seman
 
     monkeypatch.setattr(
         scan_service_module,
-        "_load_external_runtime_metadata",
-        lambda **kwargs: {"uri": "bolt://127.0.0.1:7687", "database": "neo4j"},
-    )
-    monkeypatch.setattr(
-        scan_service_module,
-        "query_runtime_semantic_paths_by_node_refs",
-        lambda **kwargs: [
-            {
-                "path_id": 0,
-                "path_length": 1,
-                "steps": [
-                    {
-                        "step_id": 0,
-                        "labels": ["Var"],
-                        "file": "src/Main.java",
-                        "line": 21,
-                        "display_name": "content",
-                        "node_ref": "src-node",
-                    },
-                    {
-                        "step_id": 1,
-                        "labels": ["Call"],
-                        "file": "src/Main.java",
-                        "line": 23,
-                        "display_name": "openConnection",
-                        "node_ref": "sink-node",
-                    },
-                ],
-                "nodes": [
-                    {
-                        "node_id": 0,
-                        "labels": ["Var"],
-                        "file": "src/Main.java",
-                        "line": 21,
-                        "display_name": "content",
-                        "node_ref": "src-node",
-                        "raw_props": {"id": "src-node"},
-                    },
-                    {
-                        "node_id": 1,
-                        "labels": ["Call"],
-                        "file": "src/Main.java",
-                        "line": 23,
-                        "display_name": "openConnection",
-                        "node_ref": "sink-node",
-                        "raw_props": {"id": "sink-node"},
-                    },
-                ],
-                "edges": [
-                    {
-                        "edge_id": 0,
-                        "edge_type": "ARG",
-                        "from_step_id": 0,
-                        "to_step_id": 1,
-                        "props_json": {"argIndex": 0},
-                    }
-                ],
-            }
-        ],
+        "repair_external_finding_candidate",
+        lambda **kwargs: {
+            **finding_payload,
+            "paths": [],
+            "has_path": False,
+            "path_length": None,
+            "evidence": {
+                "match_kind": "path",
+                "edge_types": ["ARG", "HAS_CALL"],
+                "repair_status": "downgraded_no_path",
+            },
+        },
     )
 
     refined = scan_service_module._refine_external_finding_paths_with_runtime(
@@ -693,12 +616,331 @@ def test_refine_external_finding_paths_with_runtime_keeps_raw_path_without_seman
         finding_payload=finding_payload,
     )
 
-    assert refined["paths"][0]["steps"][1]["display_name"] == "vul"
-    assert [edge["edge_type"] for edge in refined["paths"][0]["edges"]] == [
-        "ARG",
-        "HAS_CALL",
-    ]
+    assert refined["paths"] == []
+    assert refined["has_path"] is False
     assert refined["evidence"]["edge_types"] == ["ARG", "HAS_CALL"]
+    assert refined["evidence"]["repair_status"] == "downgraded_no_path"
+
+
+def test_persist_external_finding_live_replaces_weaker_duplicate(
+    db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = Project(name="demo")
+    db_session.add(project)
+    db_session.flush()
+    version = Version(project_id=project.id, name="v1", status="READY")
+    db_session.add(version)
+    db_session.flush()
+    job = Job(
+        project_id=project.id,
+        version_id=version.id,
+        job_type=JobType.SCAN.value,
+        status=JobStatus.RUNNING.value,
+        stage=JobStage.QUERY.value,
+        payload={},
+        result_summary={},
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    service_finding = {
+        "rule_key": "any_mybatis_sqli",
+        "severity": "MED",
+        "file_path": "src/service/ProductOrderServiceImpl.java",
+        "line_start": 44,
+        "line_end": 44,
+        "source_file": "src/controller/OrderController.java",
+        "source_line": 144,
+        "sink_file": "src/service/ProductOrderServiceImpl.java",
+        "sink_line": 44,
+        "has_path": True,
+        "path_length": 5,
+        "evidence": {
+            "match_kind": "path",
+            "repair_status": "normalized",
+            "coarse_dedupe_key": "any_mybatis_sqli|src/controller/ordercontroller.java:144|op|select",
+            "dedupe_score": 58,
+            "edge_types": ["SRC_FLOW", "PARAM_PASS", "REF"],
+        },
+        "paths": [
+            {
+                "path_id": 0,
+                "path_length": 5,
+                "steps": [
+                    {
+                        "step_id": 0,
+                        "labels": ["Var", "Argument"],
+                        "file": "src/controller/OrderController.java",
+                        "line": 144,
+                        "display_name": "orderBy",
+                        "symbol_name": "orderBy",
+                        "node_kind": "Var",
+                        "node_ref": "src-order-by",
+                    },
+                    {
+                        "step_id": 1,
+                        "labels": ["Var"],
+                        "file": "src/service/ProductOrderServiceImpl.java",
+                        "line": 44,
+                        "display_name": "orderUtil",
+                        "symbol_name": "orderUtil",
+                        "node_kind": "Var",
+                        "node_ref": "service-order-util",
+                    },
+                ],
+                "nodes": [
+                    {
+                        "node_id": 0,
+                        "labels": ["Var", "Argument"],
+                        "file": "src/controller/OrderController.java",
+                        "line": 144,
+                        "display_name": "orderBy",
+                        "symbol_name": "orderBy",
+                        "node_kind": "Var",
+                        "node_ref": "src-order-by",
+                        "raw_props": {"id": "src-order-by", "name": "orderBy"},
+                    },
+                    {
+                        "node_id": 1,
+                        "labels": ["Var"],
+                        "file": "src/service/ProductOrderServiceImpl.java",
+                        "line": 44,
+                        "display_name": "orderUtil",
+                        "symbol_name": "orderUtil",
+                        "node_kind": "Var",
+                        "node_ref": "service-order-util",
+                        "raw_props": {"id": "service-order-util", "name": "orderUtil"},
+                    },
+                ],
+                "edges": [
+                    {
+                        "edge_id": 0,
+                        "edge_type": "SRC_FLOW",
+                        "from_step_id": 0,
+                        "to_step_id": 1,
+                        "props_json": {"kind": "assign"},
+                    }
+                ],
+            }
+        ],
+    }
+    mapper_finding = {
+        **service_finding,
+        "file_path": "src/dao/ProductOrderMapper.java",
+        "line_start": 19,
+        "line_end": 19,
+        "sink_file": "src/dao/ProductOrderMapper.java",
+        "sink_line": 19,
+        "evidence": {
+            **service_finding["evidence"],
+            "dedupe_score": 72,
+        },
+        "paths": [
+            {
+                **service_finding["paths"][0],
+                "steps": [
+                    service_finding["paths"][0]["steps"][0],
+                    {
+                        "step_id": 1,
+                        "labels": ["Var"],
+                        "file": "src/dao/ProductOrderMapper.java",
+                        "line": 19,
+                        "display_name": "orderUtil",
+                        "symbol_name": "orderUtil",
+                        "node_kind": "Var",
+                        "node_ref": "mapper-order-util",
+                    },
+                ],
+                "nodes": [
+                    service_finding["paths"][0]["nodes"][0],
+                    {
+                        "node_id": 1,
+                        "labels": ["Var"],
+                        "file": "src/dao/ProductOrderMapper.java",
+                        "line": 19,
+                        "display_name": "orderUtil",
+                        "symbol_name": "orderUtil",
+                        "node_kind": "Var",
+                        "node_ref": "mapper-order-util",
+                        "raw_props": {"id": "mapper-order-util", "name": "orderUtil"},
+                    },
+                ],
+            }
+        ],
+    }
+
+    queue = [service_finding, mapper_finding]
+    monkeypatch.setattr(
+        scan_service_module,
+        "process_external_finding_candidate",
+        lambda **kwargs: queue.pop(0),
+    )
+
+    first = scan_service_module._persist_external_finding_live(
+        job=job,
+        db_bind=db_session.get_bind(),
+        raw_finding={"rule_key": "any_mybatis_sqli"},
+        seen_fingerprints=None,
+    )
+    second = scan_service_module._persist_external_finding_live(
+        job=job,
+        db_bind=db_session.get_bind(),
+        raw_finding={"rule_key": "any_mybatis_sqli"},
+        seen_fingerprints=None,
+    )
+
+    stored = (
+        db_session.query(scan_service_module.Finding).filter_by(job_id=job.id).all()
+    )
+
+    assert first is not None
+    assert second is not None
+    assert len(stored) == 1
+    assert stored[0].file_path == "src/dao/ProductOrderMapper.java"
+    assert stored[0].evidence_json["dedupe_score"] == 72
+
+
+def test_persist_external_finding_live_keeps_different_business_entries(
+    db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = Project(name="demo")
+    db_session.add(project)
+    db_session.flush()
+    version = Version(project_id=project.id, name="v1", status="READY")
+    db_session.add(version)
+    db_session.flush()
+    job = Job(
+        project_id=project.id,
+        version_id=version.id,
+        job_type=JobType.SCAN.value,
+        status=JobStatus.RUNNING.value,
+        stage=JobStage.QUERY.value,
+        payload={},
+        result_summary={},
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    first_finding = {
+        "rule_key": "any_mybatis_sqli",
+        "severity": "MED",
+        "file_path": "src/dao/ProductMapper.java",
+        "line_start": 17,
+        "line_end": 17,
+        "source_file": "src/controller/AdminProductController.java",
+        "source_line": 372,
+        "sink_file": "src/dao/ProductMapper.java",
+        "sink_line": 17,
+        "has_path": True,
+        "path_length": 3,
+        "evidence": {
+            "match_kind": "path",
+            "repair_status": "normalized",
+            "coarse_dedupe_key": "any_mybatis_sqli|src/controller/adminproductcontroller.java:372|op|select",
+            "dedupe_score": 82,
+        },
+        "paths": [],
+    }
+    second_finding = {
+        **first_finding,
+        "source_file": "src/controller/ForeProductListController.java",
+        "source_line": 128,
+        "evidence": {
+            "match_kind": "path",
+            "repair_status": "normalized",
+            "coarse_dedupe_key": "any_mybatis_sqli|src/controller/foreproductlistcontroller.java:128|op|select",
+            "dedupe_score": 82,
+        },
+    }
+
+    queue = [first_finding, second_finding]
+    monkeypatch.setattr(
+        scan_service_module,
+        "process_external_finding_candidate",
+        lambda **kwargs: queue.pop(0),
+    )
+
+    scan_service_module._persist_external_finding_live(
+        job=job,
+        db_bind=db_session.get_bind(),
+        raw_finding={"rule_key": "any_mybatis_sqli"},
+        seen_fingerprints=None,
+    )
+    scan_service_module._persist_external_finding_live(
+        job=job,
+        db_bind=db_session.get_bind(),
+        raw_finding={"rule_key": "any_mybatis_sqli"},
+        seen_fingerprints=None,
+    )
+
+    stored = (
+        db_session.query(scan_service_module.Finding)
+        .filter_by(job_id=job.id)
+        .order_by(scan_service_module.Finding.source_line.asc())
+        .all()
+    )
+
+    assert len(stored) == 2
+    assert {item.source_line for item in stored} == {128, 372}
+
+
+def test_persist_external_finding_live_skips_downgraded_broken_path(
+    db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = Project(name="demo")
+    db_session.add(project)
+    db_session.flush()
+    version = Version(project_id=project.id, name="v1", status="READY")
+    db_session.add(version)
+    db_session.flush()
+    job = Job(
+        project_id=project.id,
+        version_id=version.id,
+        job_type=JobType.SCAN.value,
+        status=JobStatus.RUNNING.value,
+        stage=JobStage.QUERY.value,
+        payload={},
+        result_summary={},
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        scan_service_module,
+        "process_external_finding_candidate",
+        lambda **kwargs: {
+            "rule_key": "any_any_upload",
+            "severity": "MED",
+            "file_path": "src/Main.java",
+            "line_start": 10,
+            "line_end": 10,
+            "source_file": "src/Main.java",
+            "source_line": 2,
+            "sink_file": "src/Main.java",
+            "sink_line": 10,
+            "has_path": False,
+            "path_length": None,
+            "paths": [],
+            "evidence": {
+                "repair_status": "downgraded_no_path",
+                "candidate_edge_types": ["ARG", "HAS_CALL"],
+            },
+        },
+    )
+
+    persisted = scan_service_module._persist_external_finding_live(
+        job=job,
+        db_bind=db_session.get_bind(),
+        raw_finding={"rule_key": "any_any_upload", "has_path": True, "paths": [{}]},
+        seen_fingerprints=None,
+    )
+
+    stored = (
+        db_session.query(scan_service_module.Finding).filter_by(job_id=job.id).all()
+    )
+
+    assert persisted is None
+    assert stored == []
 
 
 def test_build_scan_progress_payload_caps_at_99_until_job_terminal() -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
@@ -44,6 +44,7 @@ from app.services.authorization_service import (
     ensure_project_action,
     ensure_resource_action,
 )
+from app.services.finding_presentation_service import build_finding_presentation
 from app.services.finding_path_service import (
     load_finding_path_context,
     query_finding_paths,
@@ -149,6 +150,15 @@ def _finding_payload(item: Finding) -> FindingPayload:
         line=item.sink_line,
         infer_line=False,
     )
+    presentation = build_finding_presentation(
+        version_id=item.version_id,
+        rule_key=item.rule_key,
+        vuln_type=item.vuln_type,
+        source_file=source_file,
+        source_line=source_line,
+        file_path=file_path,
+        line_start=line_start,
+    )
     return FindingPayload(
         id=item.id,
         project_id=item.project_id,
@@ -157,11 +167,14 @@ def _finding_payload(item: Finding) -> FindingPayload:
         rule_key=item.rule_key,
         rule_version=item.rule_version,
         vuln_type=item.vuln_type,
+        vuln_display_name=presentation.get("vuln_display_name"),
         severity=item.severity,
         status=item.status,
         file_path=file_path,
         line_start=line_start,
         line_end=line_start,
+        entry_display=presentation.get("entry_display"),
+        entry_kind=presentation.get("entry_kind"),
         has_path=item.has_path,
         path_length=item.path_length,
         source_file=source_file,
@@ -171,6 +184,76 @@ def _finding_payload(item: Finding) -> FindingPayload:
         evidence_json=item.evidence_json,
         created_at=item.created_at,
     )
+
+
+def _finding_dedupe_key(item: FindingPayload) -> tuple[str, str, str] | None:
+    if item.entry_kind != "route":
+        return None
+    vuln_name = (
+        item.vuln_display_name or item.vuln_type or item.rule_key or ""
+    ).strip()
+    entry_display = (item.entry_display or "").strip()
+    if not vuln_name or not entry_display:
+        return None
+    return (item.rule_key.lower(), vuln_name.lower(), entry_display.lower())
+
+
+def _finding_dedupe_rank(item: FindingPayload) -> tuple[int, int, int, str]:
+    evidence = item.evidence_json if isinstance(item.evidence_json, dict) else {}
+    dedupe_score = int(evidence.get("dedupe_score") or 0)
+    path_length = int(item.path_length or 0)
+    return (
+        dedupe_score,
+        1 if item.has_path else 0,
+        path_length,
+        item.created_at.isoformat(),
+    )
+
+
+def _dedupe_finding_payloads(items: list[FindingPayload]) -> list[FindingPayload]:
+    selected_by_key: dict[tuple[str, str, str], FindingPayload] = {}
+    passthrough: list[FindingPayload] = []
+    for item in items:
+        dedupe_key = _finding_dedupe_key(item)
+        if dedupe_key is None:
+            passthrough.append(item)
+            continue
+        existing = selected_by_key.get(dedupe_key)
+        if existing is None or _finding_dedupe_rank(item) > _finding_dedupe_rank(
+            existing
+        ):
+            selected_by_key[dedupe_key] = item
+    return passthrough + list(selected_by_key.values())
+
+
+def _sort_finding_payloads(
+    items: list[FindingPayload], *, sort_by: str, sort_order: str
+) -> list[FindingPayload]:
+    reverse = sort_order == "desc"
+    if sort_by == "severity":
+        severity_rank = {
+            FindingSeverity.HIGH.value: 3,
+            FindingSeverity.MED.value: 2,
+            FindingSeverity.LOW.value: 1,
+        }
+        return sorted(
+            items,
+            key=lambda item: (
+                severity_rank.get(item.severity, 0),
+                item.created_at.isoformat(),
+            ),
+            reverse=reverse,
+        )
+    if sort_by == "path_length":
+        return sorted(
+            items,
+            key=lambda item: (
+                (item.path_length if item.path_length is not None else -1),
+                item.created_at.isoformat(),
+            ),
+            reverse=reverse,
+        )
+    return sorted(items, key=lambda item: item.created_at.isoformat(), reverse=reverse)
 
 
 def _label_payload(item: FindingLabel) -> FindingLabelPayload:
@@ -222,39 +305,29 @@ def get_project_results_overview(
     if job_id is not None:
         conditions.append(Finding.job_id == job_id)
 
-    total = db.scalar(select(func.count()).select_from(Finding).where(*conditions)) or 0
+    rows = db.scalars(select(Finding).where(*conditions)).all()
+    items = _dedupe_finding_payloads([_finding_payload(item) for item in rows])
+
+    total = len(items)
 
     severity_dist = {
         FindingSeverity.HIGH.value: 0,
         FindingSeverity.MED.value: 0,
         FindingSeverity.LOW.value: 0,
     }
-    severity_rows = db.execute(
-        select(Finding.severity, func.count())
-        .where(*conditions)
-        .group_by(Finding.severity)
-    ).all()
-    for severity, count in severity_rows:
-        if severity in severity_dist:
-            severity_dist[severity] = int(count)
+    for item in items:
+        if item.severity in severity_dist:
+            severity_dist[item.severity] += 1
 
     status_dist = {item.value: 0 for item in FindingStatus}
-    status_rows = db.execute(
-        select(Finding.status, func.count()).where(*conditions).group_by(Finding.status)
-    ).all()
-    for status, count in status_rows:
-        if status in status_dist:
-            status_dist[status] = int(count)
-
-    vuln_rows = db.execute(
-        select(Finding.vuln_type, func.count().label("cnt"))
-        .where(*conditions)
-        .where(Finding.vuln_type.is_not(None))
-        .where(Finding.vuln_type != "")
-        .group_by(Finding.vuln_type)
-        .order_by(func.count().desc(), Finding.vuln_type.asc())
-        .limit(10)
-    ).all()
+    vuln_counts: dict[str, int] = {}
+    for item in items:
+        if item.status in status_dist:
+            status_dist[item.status] += 1
+        vuln_key = (item.vuln_type or "").strip()
+        if vuln_key:
+            vuln_counts[vuln_key] = vuln_counts.get(vuln_key, 0) + 1
+    vuln_rows = sorted(vuln_counts.items(), key=lambda pair: (-pair[1], pair[0]))[:10]
     top_vuln_types = [
         {"vuln_type": vuln_type, "count": int(count)} for vuln_type, count in vuln_rows
     ]
@@ -366,48 +439,20 @@ def list_findings(
             )
         )
 
-    total_stmt = select(func.count()).select_from(Finding)
-    if conditions:
-        total_stmt = total_stmt.where(*conditions)
-    total = db.scalar(total_stmt) or 0
-
     rows_stmt = select(Finding)
     if conditions:
         rows_stmt = rows_stmt.where(*conditions)
-
-    if normalized_sort_by == "severity":
-        severity_rank = case(
-            (Finding.severity == FindingSeverity.HIGH.value, 3),
-            (Finding.severity == FindingSeverity.MED.value, 2),
-            (Finding.severity == FindingSeverity.LOW.value, 1),
-            else_=0,
-        )
-        order_expr = (
-            severity_rank.asc()
-            if normalized_sort_order == "asc"
-            else severity_rank.desc()
-        )
-        rows_stmt = rows_stmt.order_by(order_expr, Finding.created_at.desc())
-    elif normalized_sort_by == "path_length":
-        order_expr = (
-            func.coalesce(Finding.path_length, -1).asc()
-            if normalized_sort_order == "asc"
-            else func.coalesce(Finding.path_length, -1).desc()
-        )
-        rows_stmt = rows_stmt.order_by(order_expr, Finding.created_at.desc())
-    else:
-        order_expr = (
-            Finding.created_at.asc()
-            if normalized_sort_order == "asc"
-            else Finding.created_at.desc()
-        )
-        rows_stmt = rows_stmt.order_by(order_expr)
-
-    rows = db.scalars(rows_stmt.offset((page - 1) * page_size).limit(page_size)).all()
-
-    payload = FindingListPayload(
-        items=[_finding_payload(item) for item in rows], total=total
+    rows = db.scalars(rows_stmt).all()
+    items = _dedupe_finding_payloads([_finding_payload(item) for item in rows])
+    sorted_items = _sort_finding_payloads(
+        items,
+        sort_by=normalized_sort_by,
+        sort_order=normalized_sort_order,
     )
+    total = len(sorted_items)
+    paged_items = sorted_items[(page - 1) * page_size : page * page_size]
+
+    payload = FindingListPayload(items=paged_items, total=total)
     return success_response(request, data=payload.model_dump())
 
 

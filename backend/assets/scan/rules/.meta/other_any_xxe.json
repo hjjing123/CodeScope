@@ -1,0 +1,12 @@
+{
+  "rule_key": "other_any_xxe",
+  "name": "other_any_xxe",
+  "vuln_type": "XXE",
+  "default_severity": "HIGH",
+  "language_scope": "java",
+  "description": null,
+  "active_version": 1,
+  "created_at": "2025-11-02T09:05:28+00:00",
+  "enabled": false,
+  "updated_at": "2026-03-14T13:33:20.926895+00:00"
+}

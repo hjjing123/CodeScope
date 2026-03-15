@@ -20,6 +20,8 @@ dependencies = [
   "redis>=5.2.0,<6.0.0",
   "neo4j>=5.26.0,<6.0.0",
   "minio>=7.2.8,<8.0.0",
+  "tree-sitter>=0.25.0,<0.26.0",
+  "tree-sitter-java>=0.23.0,<0.24.0",
 ]
 
 [project.optional-dependencies]
