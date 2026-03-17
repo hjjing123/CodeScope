@@ -148,6 +148,7 @@ const mergeLocation = (
 
 export const buildFallbackFindingPaths = (finding: Finding): FindingPath[] => {
   const evidence = toRecord(finding.evidence_json);
+  const matchKind = toText(evidence.match_kind);
   const codeContext = toRecord(evidence.code_context);
   const focusContext = toRecord(codeContext.focus);
   const evidenceLabels = toStringArray(evidence.labels);
@@ -201,7 +202,7 @@ export const buildFallbackFindingPaths = (finding: Finding): FindingPath[] => {
 
   const focus = focusFilePath
     ? {
-        displayName: 'Matched Location',
+        displayName: matchKind === 'node' ? 'Match' : 'Matched Location',
         file: focusFilePath,
         line: focusLineNumber,
         labels: dedupeStrings(['Match', ...evidenceLabels]),
@@ -228,6 +229,6 @@ export const buildFallbackFindingPaths = (finding: Finding): FindingPath[] => {
     return [buildFallbackPath([source, focus])];
   }
 
-  const single = sink ?? focus ?? source;
+  const single = matchKind === 'node' ? (focus ?? sink ?? source) : (sink ?? focus ?? source);
   return single ? [buildFallbackPath([single])] : [];
 };

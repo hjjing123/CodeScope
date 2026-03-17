@@ -255,7 +255,9 @@ def list_snapshot_tree(
     return items
 
 
-def read_snapshot_file(*, version_id: uuid.UUID, path: str) -> tuple[str, bool, int]:
+def read_snapshot_file(
+    *, version_id: uuid.UUID, path: str, full: bool = False
+) -> tuple[str, bool, int]:
     target = _resolve_version_path(version_id, path)
     if not target.exists():
         raise AppError(code="PATH_NOT_FOUND", status_code=404, message="文件不存在")
@@ -282,6 +284,8 @@ def read_snapshot_file(*, version_id: uuid.UUID, path: str) -> tuple[str, bool, 
     content_text = content_bytes.decode("utf-8", errors="replace")
     lines = content_text.splitlines()
     total_lines = len(lines)
+    if full:
+        return content_text, False, total_lines
     limit = settings.version_file_preview_max_lines
     truncated = total_lines > limit
     preview = "\n".join(lines[:limit])

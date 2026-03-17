@@ -2,7 +2,9 @@ import React, { useEffect, useState, useRef } from 'react';
 import { Drawer, Steps, Typography, Spin, Tag, Descriptions, Empty, Button } from 'antd';
 import type { StepsProps } from 'antd';
 import { LoadingOutlined, ReloadOutlined } from '@ant-design/icons';
+import { getScanAIEnrichment } from '../../services/ai';
 import { ScanService } from '../../services/scan';
+import type { AIEnrichmentJobPayload } from '../../types/ai';
 import type { Job, JobLog } from '../../types/scan';
 import dayjs from 'dayjs';
 import { openSseStream } from '../../utils/sse';
@@ -72,6 +74,7 @@ const ScanDetailDrawer: React.FC<ScanDetailDrawerProps> = ({ visible, jobId, onC
   const [logs, setLogs] = useState<JobLog | null>(null);
   const [liveSummary, setLiveSummary] = useState<LiveSummaryState | null>(null);
   const [liveFindings, setLiveFindings] = useState<LiveFindingItem[]>([]);
+  const [aiEnrichment, setAiEnrichment] = useState<AIEnrichmentJobPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const logSeqRef = useRef(0);
@@ -86,13 +89,15 @@ const ScanDetailDrawer: React.FC<ScanDetailDrawerProps> = ({ visible, jobId, onC
     try {
       if (!isPolling) setLoading(true);
 
-      const [jobData, logData] = await Promise.all([
+      const [jobData, logData, aiData] = await Promise.all([
         ScanService.getJob(jobId),
-        ScanService.getJobLogs(jobId, undefined, FULL_LOG_TAIL)
+        ScanService.getJobLogs(jobId, undefined, FULL_LOG_TAIL),
+        getScanAIEnrichment(jobId).catch(() => null),
       ]);
 
       setJob(jobData);
       setLogs(logData);
+      setAiEnrichment(aiData);
       setLiveSummary({
         total_findings: Number(jobData.result_summary?.total_findings || 0),
         severity_counts: (jobData.result_summary?.severity_counts as Record<string, number>) || {},
@@ -513,6 +518,20 @@ const ScanDetailDrawer: React.FC<ScanDetailDrawerProps> = ({ visible, jobId, onC
             </Descriptions.Item>
             <Descriptions.Item label="Resolved Rules" span={2}>
               {formatPayloadList(job.payload?.resolved_rule_keys ?? job.payload?.rule_keys)}
+            </Descriptions.Item>
+            <Descriptions.Item label="AI 研判" span={2}>
+              {aiEnrichment?.enabled ? (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <Tag color={aiEnrichment.latest_status === 'SUCCEEDED' ? 'green' : aiEnrichment.latest_status === 'FAILED' ? 'red' : 'blue'}>
+                    {aiEnrichment.latest_status || 'QUEUED'}
+                  </Tag>
+                  <Text type="secondary">
+                    已创建 {aiEnrichment.jobs.length} 个 AI 补充任务
+                  </Text>
+                </div>
+              ) : (
+                <Text type="secondary">本次扫描未开启 AI 异步研判</Text>
+              )}
             </Descriptions.Item>
           </Descriptions>
 

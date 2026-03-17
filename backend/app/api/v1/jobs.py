@@ -39,6 +39,7 @@ from app.schemas.job import (
     JobTriggerPayload,
     ScanJobCreateRequest,
 )
+from app.services.ai_service import build_scan_ai_payload, sanitize_job_payload
 from app.services.audit_service import append_audit_log
 from app.services.auth_service import AuthPrincipal
 from app.services.artifact_service import (
@@ -75,6 +76,14 @@ from app.services.task_log_service import (
 
 
 router = APIRouter(tags=["jobs"])
+
+
+def _task_log_type_for_job(job: Job) -> str | None:
+    if job.job_type == JobType.SCAN.value:
+        return "SCAN"
+    if job.job_type == JobType.AI.value:
+        return "AI"
+    return None
 
 
 def _normalize_idempotency_key(value: str | None) -> str | None:
@@ -143,7 +152,7 @@ def _job_payload(job: Job, *, steps: list[JobStep] | None = None) -> JobPayload:
         project_id=job.project_id,
         version_id=job.version_id,
         job_type=job.job_type,
-        payload=job.payload,
+        payload=sanitize_job_payload(job.payload),
         status=job.status,
         stage=job.stage,
         failure_code=job.failure_code,
@@ -256,6 +265,20 @@ def create_scan_job_endpoint(
             "rule_keys": normalized_rule_keys,
             "resolved_rule_keys": resolved_rule_keys,
             "note": payload.note,
+            **(
+                {
+                    "ai": build_scan_ai_payload(
+                        db,
+                        user_id=principal.user.id,
+                        ai_enabled=payload.ai_enabled,
+                        ai_source=payload.ai_source,
+                        ai_provider_id=payload.ai_provider_id,
+                        ai_model=payload.ai_model,
+                    )
+                }
+                if payload.ai_enabled
+                else {}
+            ),
         },
         created_by=principal.user.id,
         idempotency_key=normalized_idempotency_key,
@@ -389,18 +412,23 @@ def get_job_logs(
     job = db.get(Job, job_id)
     if job is None:
         raise AppError(code="NOT_FOUND", status_code=404, message="任务不存在")
-    if job.job_type != JobType.SCAN.value:
+    task_log_type = _task_log_type_for_job(job)
+    if task_log_type is None:
         raise AppError(
-            code="INVALID_ARGUMENT", status_code=422, message="当前仅支持扫描任务日志"
+            code="INVALID_ARGUMENT",
+            status_code=422,
+            message="当前任务类型不支持日志查看",
         )
 
     sync_task_log_index(
-        task_type="SCAN",
+        task_type=task_log_type,
         task_id=job.id,
         project_id=job.project_id,
         db=db,
     )
-    items = read_task_logs(task_type="SCAN", task_id=job_id, stage=stage, tail=tail)
+    items = read_task_logs(
+        task_type=task_log_type, task_id=job_id, stage=stage, tail=tail
+    )
     payload = JobLogPayload(
         job_id=job_id,
         items=[JobLogEntryPayload(**item) for item in items],
@@ -428,9 +456,10 @@ def stream_job_logs(
     job = db.get(Job, job_id)
     if job is None:
         raise AppError(code="NOT_FOUND", status_code=404, message="任务不存在")
-    if job.job_type != JobType.SCAN.value:
+    task_log_type = _task_log_type_for_job(job)
+    if task_log_type is None:
         raise AppError(
-            code="INVALID_ARGUMENT", status_code=422, message="当前仅支持扫描任务日志流"
+            code="INVALID_ARGUMENT", status_code=422, message="当前任务类型不支持日志流"
         )
 
     terminal_statuses = {
@@ -445,13 +474,13 @@ def stream_job_logs(
         started_at = time.monotonic()
         while True:
             sync_task_log_index(
-                task_type="SCAN",
+                task_type=task_log_type,
                 task_id=job.id,
                 project_id=job.project_id,
                 db=db,
             )
             events = read_task_log_events(
-                task_type="SCAN",
+                task_type=task_log_type,
                 task_id=job.id,
                 stage=stage,
                 after_seq=current_seq,
@@ -630,15 +659,16 @@ def download_job_logs(
     job = db.get(Job, job_id)
     if job is None:
         raise AppError(code="NOT_FOUND", status_code=404, message="任务不存在")
-    if job.job_type != JobType.SCAN.value:
+    task_log_type = _task_log_type_for_job(job)
+    if task_log_type is None:
         raise AppError(
             code="INVALID_ARGUMENT",
             status_code=422,
-            message="当前仅支持扫描任务日志下载",
+            message="当前任务类型不支持日志下载",
         )
 
     sync_task_log_index(
-        task_type="SCAN",
+        task_type=task_log_type,
         task_id=job.id,
         project_id=job.project_id,
         db=db,
@@ -646,7 +676,7 @@ def download_job_logs(
 
     if stage is not None and stage.strip():
         content = build_task_stage_log_bytes(
-            task_type="SCAN",
+            task_type=task_log_type,
             task_id=job_id,
             stage=stage.strip(),
         )
@@ -658,7 +688,7 @@ def download_job_logs(
             headers=headers,
         )
 
-    archive_bytes = build_task_logs_zip_bytes(task_type="SCAN", task_id=job_id)
+    archive_bytes = build_task_logs_zip_bytes(task_type=task_log_type, task_id=job_id)
     filename = f"job_{job_id}_logs.zip"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return StreamingResponse(
@@ -731,6 +761,10 @@ def cancel_job(
     job = db.get(Job, job_id)
     if job is None:
         raise AppError(code="NOT_FOUND", status_code=404, message="任务不存在")
+    if job.job_type != JobType.SCAN.value:
+        raise AppError(
+            code="INVALID_ARGUMENT", status_code=422, message="仅支持取消扫描任务"
+        )
     updated = cancel_scan_job(
         db,
         job=job,
@@ -757,6 +791,10 @@ def retry_job(
     source_job = db.get(Job, job_id)
     if source_job is None:
         raise AppError(code="NOT_FOUND", status_code=404, message="任务不存在")
+    if source_job.job_type != JobType.SCAN.value:
+        raise AppError(
+            code="INVALID_ARGUMENT", status_code=422, message="仅支持重试扫描任务"
+        )
 
     retried_job = clone_scan_job_for_retry(
         db,

@@ -14,6 +14,10 @@ class ScanJobCreateRequest(BaseModel):
     rule_set_keys: list[str] = Field(default_factory=list)
     rule_keys: list[str] = Field(default_factory=list)
     note: str | None = Field(default=None, max_length=1024)
+    ai_enabled: bool = False
+    ai_source: str | None = Field(default=None, max_length=64)
+    ai_provider_id: uuid.UUID | None = None
+    ai_model: str | None = Field(default=None, max_length=255)
 
 
 class JobTriggerPayload(BaseModel):

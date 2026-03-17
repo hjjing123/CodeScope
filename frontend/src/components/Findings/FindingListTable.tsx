@@ -42,6 +42,10 @@ const getVulnDisplayName = (record: Finding) => {
 };
 
 const getEntryDisplay = (record: Finding) => {
+  const entryDisplay = record.entry_display;
+  if (record.entry_kind === 'route' && entryDisplay) {
+    return entryDisplay.replace(/^[A-Z]+\s+/, '');
+  }
   if (record.entry_display) {
     return record.entry_display;
   }
@@ -49,6 +53,10 @@ const getEntryDisplay = (record: Finding) => {
 };
 
 const getEntryTooltip = (record: Finding) => {
+  const entryDisplay = record.entry_display;
+  if (record.entry_kind === 'route' && entryDisplay) {
+    return entryDisplay.replace(/^[A-Z]+\s+/, '');
+  }
   if (record.entry_display) {
     return record.entry_display;
   }

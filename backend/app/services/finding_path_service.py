@@ -9,6 +9,10 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.core.errors import AppError
 from app.models import Finding, FindingPath, FindingPathEdge, FindingPathStep, Job
+from app.services.finding_highlight_service import (
+    resolve_finding_focus_highlight,
+    resolve_path_step_highlight,
+)
 from app.services.path_graph_service import (
     build_linear_path_edges,
     build_path_edge_payload,
@@ -571,6 +575,14 @@ def load_finding_path_context(
     before: int = 3,
     after: int = 3,
 ) -> dict[str, object]:
+    if not bool(getattr(finding, "has_path", False)):
+        return _load_node_only_finding_context(
+            finding=finding,
+            step_id=step_id,
+            before=before,
+            after=after,
+        )
+
     paths = query_finding_paths(db=db, finding=finding, mode="shortest", limit=1)
     if not paths:
         raise AppError(
@@ -587,6 +599,7 @@ def load_finding_path_context(
         )
 
     step = steps[step_id]
+    active_path = paths[0]
     file_path = str(step.get("file") or "").strip()
     line = _to_int(step.get("line"))
     if not file_path or line is None:
@@ -613,6 +626,12 @@ def load_finding_path_context(
             ) from exc
         raise
 
+    highlight_ranges, focus_range = resolve_path_step_highlight(
+        version_id=finding.version_id,
+        path=active_path,
+        step_id=step_id,
+    )
+
     return {
         "step_id": step_id,
         "file": file_path,
@@ -620,6 +639,62 @@ def load_finding_path_context(
         "start_line": start_line,
         "end_line": end_line,
         "lines": lines,
+        "highlight_ranges": highlight_ranges,
+        "focus_range": focus_range,
+    }
+
+
+def _load_node_only_finding_context(
+    *, finding: Finding, step_id: int, before: int, after: int
+) -> dict[str, object]:
+    if step_id != 0:
+        raise AppError(
+            code="INVALID_ARGUMENT",
+            status_code=422,
+            message="step_id 超出路径范围",
+            detail={"step_count": 1},
+        )
+
+    file_path = (
+        str(finding.file_path or "").strip()
+        or str(finding.sink_file or "").strip()
+        or str(finding.source_file or "").strip()
+    )
+    line = (
+        _to_int(finding.line_start)
+        or _to_int(finding.sink_line)
+        or _to_int(finding.source_line)
+    )
+    if not file_path or line is None:
+        raise AppError(
+            code="PATH_CONTEXT_NOT_AVAILABLE",
+            status_code=422,
+            message="该命中缺少源码定位信息",
+        )
+
+    lines, start_line, end_line = read_snapshot_file_context(
+        version_id=finding.version_id,
+        path=file_path,
+        line=line,
+        before=before,
+        after=after,
+    )
+    highlight_ranges, focus_range = resolve_finding_focus_highlight(
+        version_id=finding.version_id,
+        rule_key=finding.rule_key,
+        file_path=file_path,
+        line=line,
+        evidence=dict(finding.evidence_json or {}),
+    )
+    return {
+        "step_id": 0,
+        "file": file_path,
+        "line": line,
+        "start_line": start_line,
+        "end_line": end_line,
+        "lines": lines,
+        "highlight_ranges": highlight_ranges,
+        "focus_range": focus_range,
     }
 
 

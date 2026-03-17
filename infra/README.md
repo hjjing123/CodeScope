@@ -1,8 +1,13 @@
 # Docker Runtime Notes
 
-`infra/docker-compose.yml` still only starts infrastructure dependencies.
+当前仓库默认使用 `infra/docker-compose.yml` 启动本地依赖组，项目名为 `CodeScope`。
 
-Use `infra/docker-compose.app.yml` when you want the full local Docker runtime for this repository.
+当前系统暂未整体部署到 Docker 中，因此推荐模式是：
+
+- 后端、前端、Worker 在宿主机本地运行
+- PostgreSQL / Redis / MinIO / Ollama 通过 Docker 启动
+
+`infra/docker-compose.app.yml` 仍保留给后续整套应用容器化时使用，但不是当前默认路径。
 
 Before the first startup, copy the committed example env file:
 
@@ -10,50 +15,71 @@ Before the first startup, copy the committed example env file:
 cp infra/docker.env.example infra/docker.env
 ```
 
-Required for the current code paths:
+当前本地 Docker 依赖组包含：
 
-- `backend`: FastAPI API and frontend reverse proxy.
-- `frontend`: Vite dev server used because the current frontend tree does not pass `npm run build` yet.
-- `worker`: Celery worker for import jobs and asynchronous scan/self-test jobs.
 - `postgres`: primary application database.
 - `redis`: Celery broker and result backend.
-- shared `codescope_backend_storage` volume: upload, snapshot, scan workspace, and task log local storage.
+- `minio`: 对象存储与任务日志兼容路径。
+- `ollama`: system-level local AI runtime used by the AI Center and asynchronous AI enrichment jobs.
 
-Not required for the default Docker runtime:
+`neo4j` 不属于常驻依赖组：
 
-- a separate production static-file container: once the frontend build is clean, the backend can serve `frontend/dist` directly.
-- `minio`: task logs can fall back to local filesystem storage (`CODESCOPE_TASK_LOG_STORAGE_BACKEND=local`).
-- `neo4j`: only needed when you switch from stub scan mode to external scan mode.
-- `infra/tools/joern-cli`: only needed for external scan mode, so it is intentionally not baked into the default image.
+- 外部扫描模式下由扫描任务运行时按需拉起临时 Neo4j 容器
+- 不需要在当前 `CodeScope` 本地依赖组里常驻运行
 
-Start the app stack:
+当前模式下，不需要放入 Docker 的服务：
+
+- `backend`
+- `frontend`
+- `worker`
+
+启动当前本地 Docker 依赖组：
 
 ```bash
-docker compose -f infra/docker-compose.app.yml up --build -d
+docker compose -f infra/docker-compose.yml up -d postgres redis minio ollama
 ```
 
-Open:
+可访问：
 
-- `http://127.0.0.1:8000`
-- `http://127.0.0.1:8000/healthz`
+- `http://127.0.0.1:5432`
+- `http://127.0.0.1:6379`
+- `http://127.0.0.1:19000`
+- `http://127.0.0.1:19001`
+- `http://127.0.0.1:11434`
 
-The backend proxies `/`, `/login`, `/register`, `/dashboard`, assets, and SPA routes to the internal Vite container, so you only need to open port `8000`.
+Ollama 集成说明：
+
+- `infra/docker-compose.yml` 已将 `ollama` 加入当前本地 `CodeScope` 组，容器名为 `CodeScope_ollama`。
+- Ollama 对宿主机暴露为 `http://127.0.0.1:11434`。
+- 后端会在首次访问 AI 相关能力时自动创建系统级 Ollama Provider，并优先探测 `CODESCOPE_AI_SYSTEM_OLLAMA_BASE_URL`，默认值为 `http://127.0.0.1:11434`。
+- 为了兼容后续容器化部署，后端还会自动尝试 `http://localhost:11434` 和 `http://ollama:11434` 作为回退地址。
+- 管理员打开 `AI Center -> System Ollama` 时，可以直接看到自动探测结果，不需要先手工填地址。
+- Ordinary users can then choose either the published system Ollama models or their own external API profiles when creating scan jobs or AI chat sessions.
+
+本地宿主机运行建议：
+
+- 后端读取 `CODESCOPE_AI_SYSTEM_OLLAMA_BASE_URL=http://127.0.0.1:11434`
+- 前端继续本地 `npm run dev`
+- 后端继续本地 `uv run uvicorn app.main:app --reload`
+- Worker 继续本地 `uv run celery -A app.worker.celery_app worker -Q import,scan,patch,env,report,low -l info`
+
+If you want GPU-backed Ollama locally, add your platform-specific GPU settings to the `ollama` service before startup. The committed Compose file stays CPU-safe by default.
 
 Default bootstrap login after migrations:
 
 - email: `admin@example.com`
 - password: `admin123`
 
-Stop and remove containers:
+停止当前本地 Docker 依赖组：
 
 ```bash
-docker compose -f infra/docker-compose.app.yml down
+docker compose -f infra/docker-compose.yml down
 ```
 
-Remove containers plus local Docker volumes:
+删除容器和本地卷：
 
 ```bash
-docker compose -f infra/docker-compose.app.yml down -v
+docker compose -f infra/docker-compose.yml down -v
 ```
 
-If you later need external scan mode, add Neo4j, Docker socket access, Joern runtime, and container/host path mapping intentionally instead of enabling them by default.
+如果后续需要把整套系统也放进 Docker，再切换到 `infra/docker-compose.app.yml`，并把 `CODESCOPE_AI_SYSTEM_OLLAMA_BASE_URL` 改成容器网络可达的 `http://ollama:11434` 即可。

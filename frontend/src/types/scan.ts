@@ -4,6 +4,10 @@ export interface ScanJobCreateRequest {
   rule_set_keys?: string[];
   rule_keys?: string[];
   note?: string;
+  ai_enabled?: boolean;
+  ai_source?: string;
+  ai_provider_id?: string;
+  ai_model?: string;
 }
 
 export interface JobStep {

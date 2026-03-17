@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Drawer, Typography, Tag, Button, Space, message, Spin, Empty, Tabs } from 'antd';
-import { BugOutlined, CheckCircleOutlined, CloseCircleOutlined, WarningOutlined, CodeOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { BugOutlined, CheckCircleOutlined, CloseCircleOutlined, WarningOutlined, CodeOutlined, InfoCircleOutlined, RobotOutlined } from '@ant-design/icons';
 import { FindingService } from '../../services/findings';
 import { getVersionFile } from '../../services/projectVersion';
 import FindingPathViewer from './FindingPathViewer';
+import FindingAIReviewPanel from './FindingAIReviewPanel';
 import CodeViewer from './CodeViewer';
-import type { Finding, FindingPath, FindingPathStep, FindingLabelRequest } from '../../types/finding';
+import type { Finding, FindingHighlightRange, FindingPath, FindingPathNodeContext, FindingPathStep, FindingLabelRequest } from '../../types/finding';
 import { pickPreferredPathStep } from './findingPathGraph';
 import { buildFallbackFindingPaths } from './findingPathFallback';
 import { formatLocation } from '../../utils/findingLocation';
@@ -27,6 +28,17 @@ const getEntryDisplay = (finding?: Finding | null) => {
 
 const hasValidLine = (value?: number | null) => typeof value === 'number' && value > 0;
 
+const summarizeContext = (context: FindingPathNodeContext) => {
+  const rangeLabel = `Lines ${context.start_line}-${context.end_line}`;
+  const precise = context.highlight_ranges?.length ? 'precise highlight' : 'line highlight';
+  return `${rangeLabel} · ${precise}`;
+};
+
+const summarizeFullFile = (totalLines: number, precise: boolean, truncated: boolean) => {
+  const coverage = truncated ? `Showing partial file (${totalLines} total lines)` : `Full file · ${totalLines} lines`;
+  return `${coverage} · ${precise ? 'precise highlight' : 'line highlight'}`;
+};
+
 interface FindingDetailPanelProps {
   visible: boolean;
   finding: Finding | null;
@@ -46,8 +58,50 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
   const [selectedStep, setSelectedStep] = useState<FindingPathStep | null>(null);
   const [sourceFileContent, setSourceFileContent] = useState<string>('');
   const [sourceFileSummary, setSourceFileSummary] = useState<string>('');
+  const [sourceStartLine, setSourceStartLine] = useState<number>(1);
+  const [highlightRanges, setHighlightRanges] = useState<FindingHighlightRange[]>([]);
+  const [focusRange, setFocusRange] = useState<FindingHighlightRange | null>(null);
   const [loadingSourceFile, setLoadingSourceFile] = useState(false);
   const [pathEmptyMessage, setPathEmptyMessage] = useState(DEFAULT_EMPTY_PATH_MESSAGE);
+
+  const applySourceContext = useCallback((context: FindingPathNodeContext, step: FindingPathStep) => {
+    setSourceFileContent(context.lines.join('\n') || '// No source available');
+    setSourceFileSummary(summarizeContext(context));
+    setSourceStartLine(context.start_line || step.line || 1);
+    setHighlightRanges(context.highlight_ranges || []);
+    setFocusRange(context.focus_range || null);
+  }, []);
+
+  const applyFullFilePreview = useCallback((
+    content: string,
+    totalLines: number,
+    truncated: boolean,
+    ranges: FindingHighlightRange[],
+    focus: FindingHighlightRange | null,
+    fallbackLine?: number | null
+  ) => {
+    setSourceFileContent(content || '// No source available');
+    setSourceFileSummary(summarizeFullFile(totalLines, ranges.length > 0, truncated));
+    setSourceStartLine(1);
+    setHighlightRanges(ranges);
+    if (focus) {
+      setFocusRange(focus);
+      return;
+    }
+    if (fallbackLine && fallbackLine > 0) {
+      setFocusRange({
+        start_line: fallbackLine,
+        start_column: 1,
+        end_line: fallbackLine,
+        end_column: 1,
+        text: null,
+        kind: 'line',
+        confidence: 'low',
+      });
+      return;
+    }
+    setFocusRange(null);
+  }, []);
 
   const resetPathState = useCallback((emptyMessage = DEFAULT_EMPTY_PATH_MESSAGE) => {
     setPaths([]);
@@ -55,6 +109,9 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
     setSelectedStep(null);
     setSourceFileContent('');
     setSourceFileSummary('');
+    setSourceStartLine(1);
+    setHighlightRanges([]);
+    setFocusRange(null);
     setPathEmptyMessage(emptyMessage);
   }, []);
 
@@ -77,27 +134,46 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
     if (!step.file) {
       setSourceFileContent('// No source file available for this propagation step');
       setSourceFileSummary('No source file available');
+      setSourceStartLine(1);
+      setHighlightRanges([]);
+      setFocusRange(null);
       setLoadingSourceFile(false);
       return;
     }
     setLoadingSourceFile(true);
+    let context: FindingPathNodeContext | null = null;
     try {
-      const response = await getVersionFile(versionId, step.file);
+      context = await FindingService.getPathNodeContext(_findingId, step.step_id);
+    } catch (error) {
+      console.warn('Failed to fetch precise path-node context:', error);
+    }
+
+    try {
+      const response = await getVersionFile(versionId, step.file, { full: true });
       const fileData = response.data;
-      setSourceFileContent(fileData.content || '// No source available');
-      setSourceFileSummary(
-        fileData.truncated
-          ? `Showing ${fileData.content.split('\n').length}/${fileData.total_lines} lines`
-          : `${fileData.total_lines} lines`
+      applyFullFilePreview(
+        fileData.content || '// No source available',
+        fileData.total_lines,
+        fileData.truncated,
+        context?.highlight_ranges || [],
+        context?.focus_range || null,
+        step.line
       );
     } catch (error) {
-      console.error('Failed to fetch source file:', error);
-      setSourceFileContent('// Failed to load full source file');
-      setSourceFileSummary('Source preview unavailable');
+      console.error('Failed to fetch full source file:', error);
+      if (context) {
+        applySourceContext(context, step);
+      } else {
+        setSourceFileContent('// Failed to load full source file');
+        setSourceFileSummary('Source preview unavailable');
+        setSourceStartLine(1);
+        setHighlightRanges([]);
+        setFocusRange(null);
+      }
     } finally {
       setLoadingSourceFile(false);
     }
-  }, []);
+  }, [applyFullFilePreview, applySourceContext]);
 
   const applyPaths = useCallback(async (nextPaths: FindingPath[], activeFinding: Finding) => {
     setPaths(nextPaths);
@@ -179,6 +255,7 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
   }, [visible, finding, fetchPaths, resetPathState]);
 
   const highlightedLines = selectedStep?.file && hasValidLine(selectedStep.line)
+    && highlightRanges.length === 0
     ? [selectedStep.line as number]
     : [];
 
@@ -282,13 +359,15 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
                         </div>
                       ) : (
                         <div style={{ height: '100%', borderRadius: 8, border: '1px solid #d1d5db', overflow: 'hidden' }}>
-                         <CodeViewer
+                          <CodeViewer
                             code={sourceFileContent || '// Select a propagation step to load the full source file'}
                             language="java"
                             fileName={selectedStep ? formatLocation(selectedStep.file, selectedStep.line) : undefined}
                             highlightLines={highlightedLines}
+                            highlightRanges={highlightRanges}
+                            focusRange={focusRange}
                             focusLine={selectedStep?.line ?? null}
-                            startLine={1}
+                            startLine={sourceStartLine}
                             summary={sourceFileSummary}
                           />
                         </div>
@@ -308,6 +387,15 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
                            fileName="finding_details.json"
                          />
                        </div>
+                      </div>
+                    )
+                },
+                {
+                   key: 'ai',
+                   label: (<span><RobotOutlined /> AI Review</span>),
+                   children: (
+                     <div style={{ height: 'calc(100vh - 110px)', overflow: 'auto', background: '#f8fafc' }}>
+                       <FindingAIReviewPanel finding={finding} />
                      </div>
                    )
                 }

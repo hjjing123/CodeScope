@@ -41,6 +41,11 @@ from app.models import (
 )
 from app.services.path_graph_service import normalize_path_graph
 from app.services.audit_service import append_audit_log
+from app.services.ai_service import (
+    create_scan_enrichment_ai_job,
+    dispatch_ai_job,
+    mark_ai_dispatch_failed,
+)
 from app.services.artifact_service import delete_scan_job_artifacts
 from app.services.finding_presentation_service import build_finding_presentation
 from app.services.job_stream_service import append_job_stream_event
@@ -1499,6 +1504,7 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
     owns_db = db is None
     session = db or SessionLocal()
     slot_acquired = False
+    pending_ai_job_id: uuid.UUID | None = None
     try:
         job = session.get(Job, job_id)
         if job is None:
@@ -1818,7 +1824,46 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
                 "total_findings": execution.result_summary.get("total_findings", 0),
             },
         )
+
+        ai_job = create_scan_enrichment_ai_job(session, scan_job=job)
+        if ai_job is not None:
+            pending_ai_job_id = ai_job.id
+            _append_scan_log(
+                job_id=job.id,
+                stage=JobStage.CLEANUP.value,
+                message=f"已创建 AI 异步研判任务: {ai_job.id}",
+                project_id=job.project_id,
+            )
         session.commit()
+
+        if pending_ai_job_id is not None:
+            ai_job = session.get(Job, pending_ai_job_id)
+            if ai_job is not None:
+                try:
+                    dispatch_info = dispatch_ai_job(session, job=ai_job)
+                    session.commit()
+                    _append_scan_log(
+                        job_id=job.id,
+                        stage=JobStage.CLEANUP.value,
+                        message=(
+                            "AI 异步研判任务已派发: "
+                            f"backend={dispatch_info.get('backend')}, task_id={dispatch_info.get('task_id')}"
+                        ),
+                        project_id=job.project_id,
+                    )
+                except AppError:
+                    mark_ai_dispatch_failed(
+                        session,
+                        job_id=pending_ai_job_id,
+                        request_id=request_id,
+                        operator_user_id=job.created_by,
+                    )
+                    _append_scan_log(
+                        job_id=job.id,
+                        stage=JobStage.CLEANUP.value,
+                        message="AI 异步研判任务派发失败，可在结果页手动重试。",
+                        project_id=job.project_id,
+                    )
 
         try:
             from app.services.rule_stats_service import dispatch_rule_stats_aggregation
@@ -2255,6 +2300,12 @@ def _create_finding_model_from_draft(*, job: Job, draft: dict[str, object]) -> F
         evidence_payload.setdefault("trace_summary", draft.get("trace_summary"))
     if isinstance(draft.get("code_context"), dict):
         evidence_payload.setdefault("code_context", draft.get("code_context"))
+    llm_payload = _build_llm_payload(draft)
+    evidence_payload.setdefault("llm_payload", llm_payload)
+    evidence_payload.setdefault(
+        "llm_prompt_block", _build_llm_prompt_block(llm_payload)
+    )
+    evidence_payload.setdefault("ai_fingerprint", _build_ai_fingerprint(llm_payload))
     return Finding(
         project_id=job.project_id,
         version_id=job.version_id,
@@ -2868,6 +2919,7 @@ def _attach_ai_payloads(
         llm_payload = _build_llm_payload(draft)
         copied["llm_payload"] = llm_payload
         copied["llm_prompt_block"] = _build_llm_prompt_block(llm_payload)
+        copied["ai_fingerprint"] = _build_ai_fingerprint(llm_payload)
         enriched.append(copied)
     return enriched
 
@@ -2977,6 +3029,11 @@ def _build_llm_prompt_block(llm_payload: dict[str, object]) -> str:
             lines.append("Code:")
             lines.extend(context_lines)
     return _truncate_text("\n".join(lines), LLM_TEXT_MAX_LENGTH * 2)
+
+
+def _build_ai_fingerprint(llm_payload: dict[str, object]) -> str:
+    content = json.dumps(llm_payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def _build_reason_summary(draft: dict[str, object]) -> str:

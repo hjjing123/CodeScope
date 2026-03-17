@@ -30,6 +30,8 @@ def create_celery_app() -> Any | None:
         "task_eager_propagates": settings.celery_task_eager_propagates,
         "task_routes": {
             "scan.run_scan_job": {"queue": "scan"},
+            "ai.run_ai_job": {"queue": "low"},
+            "ai.run_system_ollama_pull_job": {"queue": "low"},
             "import.run_import_job": {"queue": "import"},
             "rule.run_selftest_job": {"queue": "low"},
             "rule.aggregate_stats": {"queue": "low"},

@@ -83,9 +83,9 @@ export const getVersionTree = (versionId: string, path = '') => {
   });
 };
 
-export const getVersionFile = (versionId: string, path: string) => {
+export const getVersionFile = (versionId: string, path: string, options?: { full?: boolean }) => {
   return request.get<unknown, ApiResponse<VersionFileResponse>>(`/versions/${versionId}/file`, {
-    params: { path },
+    params: { path, full: options?.full },
   });
 };
 

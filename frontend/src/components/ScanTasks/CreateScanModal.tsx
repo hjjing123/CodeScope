@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, Form, Select, message, Input } from 'antd';
+import { Alert, Form, Input, Modal, Select, Switch, message } from 'antd';
 import { getProjects, getVersions } from '../../services/projectVersion';
+import AIProviderSelectFields from '../AI/AIProviderSelectFields';
+import { getMyAIOptions } from '../../services/ai';
 import { getRules, getRuleSets } from '../../services/rules';
 import { ScanService } from '../../services/scan';
+import type { AIProviderOptionsPayload, AIProviderSelectionRequest } from '../../types/ai';
 import type { ScanJobCreateRequest } from '../../types/scan';
 import type { Project, Version } from '../../types/projectVersion';
 import type { Rule, RuleSet } from '../../types/rule';
@@ -21,6 +24,7 @@ interface CreateScanFormValues {
   rule_set_keys?: string[];
   rule_keys?: string[];
   note?: string;
+  ai_enabled?: boolean;
 }
 
 const CreateScanModal: React.FC<CreateScanModalProps> = ({
@@ -38,8 +42,12 @@ const CreateScanModal: React.FC<CreateScanModalProps> = ({
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [loadingVersions, setLoadingVersions] = useState(false);
   const [loadingRuleOptions, setLoadingRuleOptions] = useState(false);
+  const [loadingAIOptions, setLoadingAIOptions] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [aiOptions, setAiOptions] = useState<AIProviderOptionsPayload | null>(null);
+  const [aiSelection, setAiSelection] = useState<AIProviderSelectionRequest>({});
+  const [aiEnabled, setAiEnabled] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -53,12 +61,15 @@ const CreateScanModal: React.FC<CreateScanModalProps> = ({
       rule_set_keys: [],
       rule_keys: [],
       note: '',
+      ai_enabled: false,
     });
+    setAiEnabled(false);
     setVersions([]);
     setSelectedProjectId(initialProjectId ?? null);
 
     void fetchProjects();
     void fetchRuleOptions();
+    void fetchAIOptions();
     if (initialProjectId) {
       void fetchVersions(initialProjectId, initialVersionId ?? undefined);
     }
@@ -115,6 +126,24 @@ const CreateScanModal: React.FC<CreateScanModalProps> = ({
     }
   };
 
+  const fetchAIOptions = async () => {
+    try {
+      setLoadingAIOptions(true);
+      const payload = await getMyAIOptions();
+      setAiOptions(payload);
+      setAiSelection({
+        ai_source: payload.default_selection.ai_source as AIProviderSelectionRequest['ai_source'],
+        ai_provider_id: payload.default_selection.ai_provider_id as string | undefined,
+        ai_model: payload.default_selection.ai_model as string | undefined,
+      });
+    } catch (error) {
+      console.error('Failed to fetch AI options:', error);
+      setAiOptions(null);
+    } finally {
+      setLoadingAIOptions(false);
+    }
+  };
+
   const handleProjectChange = (value: string) => {
     setSelectedProjectId(value);
     setVersions([]);
@@ -133,6 +162,8 @@ const CreateScanModal: React.FC<CreateScanModalProps> = ({
         rule_set_keys: values.rule_set_keys ?? [],
         rule_keys: values.rule_keys ?? [],
         note: values.note?.trim() || undefined,
+        ai_enabled: Boolean(values.ai_enabled),
+        ...(values.ai_enabled ? aiSelection : {}),
       };
 
       await ScanService.createScanJob(values.project_id, payload);
@@ -164,6 +195,7 @@ const CreateScanModal: React.FC<CreateScanModalProps> = ({
           rule_set_keys: [],
           rule_keys: [],
           note: '',
+          ai_enabled: false,
         }}
       >
         <Form.Item
@@ -238,6 +270,40 @@ const CreateScanModal: React.FC<CreateScanModalProps> = ({
         <Form.Item name="note" label="备注">
           <Input.TextArea rows={3} maxLength={1024} showCount />
         </Form.Item>
+
+        <Form.Item name="ai_enabled" label="扫描后 AI 异步研判" valuePropName="checked">
+          <Switch
+            checked={aiEnabled}
+            onChange={(checked) => {
+              setAiEnabled(checked);
+              form.setFieldValue('ai_enabled', checked);
+            }}
+          />
+        </Form.Item>
+
+        {aiEnabled ? (
+          <div
+            style={{
+              padding: 16,
+              borderRadius: 16,
+              border: '1px solid rgba(2,132,199,0.12)',
+              background: 'linear-gradient(180deg, rgba(240,249,255,0.75), rgba(255,255,255,0.98))',
+            }}
+          >
+            <Alert
+              type="info"
+              showIcon
+              message="扫描完成后会异步创建 AI 研判任务"
+              description="AI 不会阻塞扫描结果入库；如果 AI 不可用，扫描任务仍会正常完成。"
+              style={{ marginBottom: 16 }}
+            />
+            {loadingAIOptions ? (
+              <Alert type="info" showIcon message="正在加载 AI Provider 选项" />
+            ) : (
+              <AIProviderSelectFields options={aiOptions} value={aiSelection} onChange={setAiSelection} />
+            )}
+          </div>
+        ) : null}
       </Form>
     </Modal>
   );

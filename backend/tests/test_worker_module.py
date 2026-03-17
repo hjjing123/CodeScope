@@ -14,6 +14,7 @@ def test_celery_worker_tasks_are_discoverable() -> None:
     celery_app.loader.import_default_modules()
 
     assert "scan.run_scan_job" in celery_app.tasks
+    assert "ai.run_system_ollama_pull_job" in celery_app.tasks
     assert "import.run_import_job" in celery_app.tasks
     assert "rule.run_selftest_job" in celery_app.tasks
     assert "rule.aggregate_stats" in celery_app.tasks

@@ -101,6 +101,16 @@ class FindingPathStepPayload(BaseModel):
     node_ref: str
 
 
+class FindingHighlightRangePayload(BaseModel):
+    start_line: int
+    start_column: int
+    end_line: int
+    end_column: int
+    text: str | None = None
+    kind: str | None = None
+    confidence: str | None = None
+
+
 class FindingPathEdgePayload(BaseModel):
     edge_id: int
     edge_type: str
@@ -137,3 +147,5 @@ class FindingPathNodeContextPayload(BaseModel):
     start_line: int
     end_line: int
     lines: list[str]
+    highlight_ranges: list[FindingHighlightRangePayload] = Field(default_factory=list)
+    focus_range: FindingHighlightRangePayload | None = None

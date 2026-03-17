@@ -43,9 +43,12 @@ class Settings(BaseSettings):
     scan_engine_mode: str = "stub"
     scan_dispatch_backend: str = "celery"
     scan_dispatch_fallback_to_sync: bool = True
+    ai_dispatch_backend: str = "celery"
+    ai_dispatch_fallback_to_sync: bool = True
     scan_log_root: str = "./storage/job-logs"
     import_log_root: str = "./storage/import-logs"
     selftest_log_root: str = "./storage/selftest-logs"
+    ai_log_root: str = "./storage/ai-logs"
     task_log_storage_backend: str = "minio"
     task_log_object_prefix: str = "logs/tasks"
     task_log_minio_endpoint: str = ""
@@ -128,6 +131,14 @@ class Settings(BaseSettings):
     runtime_http_log_sample_rate: float = 0.05
     runtime_http_log_slow_threshold_ms: int = 1200
     runtime_http_log_record_success: bool = False
+
+    ai_default_timeout_seconds: int = 60
+    ai_default_temperature: float = 0.1
+    ai_chat_history_limit: int = 12
+    ai_system_ollama_auto_configure: bool = True
+    ai_system_ollama_display_name: str = "System Ollama"
+    ai_system_ollama_base_url: str = "http://127.0.0.1:11434"
+    ai_system_ollama_default_model: str = ""
 
     @model_validator(mode="after")
     def validate_security_settings(self) -> "Settings":

@@ -169,10 +169,16 @@ def test_dispatch_settings():
     settings = get_settings()
     old_scan_backend = settings.scan_dispatch_backend
     old_scan_fallback = settings.scan_dispatch_fallback_to_sync
+    old_ai_backend = settings.ai_dispatch_backend
+    old_ai_fallback = settings.ai_dispatch_fallback_to_sync
     settings.scan_dispatch_backend = "sync"
     settings.scan_dispatch_fallback_to_sync = True
+    settings.ai_dispatch_backend = "sync"
+    settings.ai_dispatch_fallback_to_sync = True
     try:
         yield
     finally:
         settings.scan_dispatch_backend = old_scan_backend
         settings.scan_dispatch_fallback_to_sync = old_scan_fallback
+        settings.ai_dispatch_backend = old_ai_backend
+        settings.ai_dispatch_fallback_to_sync = old_ai_fallback

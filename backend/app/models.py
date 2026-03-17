@@ -10,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -58,6 +59,7 @@ class VersionStatus(StrEnum):
 class JobType(StrEnum):
     IMPORT = "IMPORT"
     SCAN = "SCAN"
+    AI = "AI"
     PATCH = "PATCH"
     ENV = "ENV"
     REPORT = "REPORT"
@@ -165,6 +167,22 @@ class SelfTestJobStage(StrEnum):
     CLEANUP = "Cleanup"
 
 
+class SystemOllamaPullJobStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELED = "CANCELED"
+    TIMEOUT = "TIMEOUT"
+
+
+class SystemOllamaPullJobStage(StrEnum):
+    PREPARE = "Prepare"
+    PULL = "Pull"
+    VERIFY = "Verify"
+    FINALIZE = "Finalize"
+
+
 class RuntimeLogLevel(StrEnum):
     INFO = "INFO"
     WARN = "WARN"
@@ -185,7 +203,31 @@ class SystemLogKind(StrEnum):
 class TaskLogType(StrEnum):
     SCAN = "SCAN"
     IMPORT = "IMPORT"
+    AI = "AI"
     SELFTEST = "SELFTEST"
+    OLLAMA_PULL = "OLLAMA_PULL"
+
+
+class AIProviderType(StrEnum):
+    OLLAMA_LOCAL = "ollama_local"
+    OPENAI_COMPATIBLE = "openai_compatible"
+
+
+class AIAssessmentStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+
+
+class AIChatRole(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class AIChatSessionMode(StrEnum):
+    GENERAL = "general"
+    FINDING_CONTEXT = "finding_context"
 
 
 class RuleVersionStatus(StrEnum):
@@ -786,6 +828,213 @@ class AuthSession(Base):
     )
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+class SystemAIProvider(Base):
+    __tablename__ = "system_ai_providers"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    provider_key: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider_type: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=AIProviderType.OLLAMA_LOCAL.value
+    )
+    base_url: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    default_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    published_models_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    temperature: Mapped[float] = mapped_column(Float, nullable=False, default=0.1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+
+class SystemOllamaPullJob(Base):
+    __tablename__ = "system_ollama_pull_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    provider_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("system_ai_providers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=SystemOllamaPullJobStatus.PENDING.value,
+        index=True,
+    )
+    stage: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=SystemOllamaPullJobStage.PREPARE.value,
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_hint: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    result_summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
+class UserAIProvider(Base):
+    __tablename__ = "user_ai_providers"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "display_name", name="uq_user_ai_providers_user_display_name"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    vendor_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    provider_type: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=AIProviderType.OPENAI_COMPATIBLE.value
+    )
+    base_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    api_key_encrypted: Mapped[str] = mapped_column(Text(), nullable=False)
+    default_model: Mapped[str] = mapped_column(String(255), nullable=False)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    temperature: Mapped[float] = mapped_column(Float, nullable=False, default=0.1)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+
+class FindingAIAssessment(Base):
+    __tablename__ = "finding_ai_assessments"
+    __table_args__ = (
+        UniqueConstraint(
+            "finding_id", "job_id", name="uq_finding_ai_assessments_finding_job"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    finding_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    scan_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, nullable=True, index=True
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    version_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    provider_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=AIAssessmentStatus.PENDING.value, index=True
+    )
+    summary_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    response_text: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+
+class AIChatSession(Base):
+    __tablename__ = "ai_chat_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    session_mode: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=AIChatSessionMode.FINDING_CONTEXT.value,
+        index=True,
+    )
+    finding_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("findings.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, nullable=True, index=True
+    )
+    version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, nullable=True, index=True
+    )
+    provider_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_snapshot_json: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+
+class AIChatMessage(Base):
+    __tablename__ = "ai_chat_messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("ai_chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=AIChatRole.USER.value
+    )
+    content: Mapped[str] = mapped_column(Text(), nullable=False)
+    meta_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
 
 
 class AuditLog(Base):

@@ -92,4 +92,28 @@ describe('findingPathFallback', () => {
       display_name: 'Source / Sink',
     });
   });
+
+  it('uses match label for node-only findings without propagation', () => {
+    const finding = buildFinding({
+      has_path: false,
+      file_path: 'pom.xml',
+      line_start: 85,
+      sink_file: 'pom.xml',
+      sink_line: 85,
+      evidence_json: {
+        match_kind: 'node',
+        labels: ['PomDependency'],
+        node_ref: 'dependency-1',
+      },
+    });
+
+    const [path] = buildFallbackFindingPaths(finding);
+
+    expect(path.steps).toHaveLength(1);
+    expect(path.steps[0]).toMatchObject({
+      display_name: 'Match',
+      file: 'pom.xml',
+      line: 85,
+    });
+  });
 });

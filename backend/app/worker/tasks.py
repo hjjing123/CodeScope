@@ -8,11 +8,13 @@ from typing import Any, Callable
 from sqlalchemy.orm import sessionmaker
 
 from app.models import TaskLogType
+from app.services.ai_service import run_ai_job
 from app.services.import_service import run_import_job
 from app.services.runtime_log_service import append_runtime_log
 from app.services.rule_stats_service import run_rule_stats_aggregation
 from app.services.scan_service import run_scan_job
 from app.services.selftest_service import run_selftest_job
+from app.services.system_ollama_pull_service import run_system_ollama_pull_job
 from app.worker.celery_app import celery_app
 
 
@@ -26,12 +28,16 @@ _local_future_lock = Lock()
 def _task_context_from_kwargs(
     kwargs: dict[str, Any],
 ) -> tuple[str | None, uuid.UUID | None]:
+    if "ai_job_id" in kwargs:
+        return TaskLogType.AI.value, _coerce_uuid(kwargs.get("ai_job_id"))
     if "job_id" in kwargs:
         return TaskLogType.SCAN.value, _coerce_uuid(kwargs.get("job_id"))
     if "import_job_id" in kwargs:
         return TaskLogType.IMPORT.value, _coerce_uuid(kwargs.get("import_job_id"))
     if "selftest_job_id" in kwargs:
         return TaskLogType.SELFTEST.value, _coerce_uuid(kwargs.get("selftest_job_id"))
+    if "pull_job_id" in kwargs:
+        return TaskLogType.OLLAMA_PULL.value, _coerce_uuid(kwargs.get("pull_job_id"))
     return None, None
 
 
@@ -179,6 +185,14 @@ def _run_scan(job_id: str) -> None:
     _run_with_bind(None, run_scan_job, job_id=uuid.UUID(job_id))
 
 
+def _run_ai_bound(*, ai_job_id: uuid.UUID, db: Any | None = None) -> None:
+    run_ai_job(job_id=ai_job_id, db=db)
+
+
+def _run_ai(ai_job_id: str, db_bind: Any | None = None) -> None:
+    _run_with_bind(db_bind, _run_ai_bound, ai_job_id=uuid.UUID(ai_job_id))
+
+
 def _run_import(import_job_id: str, db_bind: Any | None = None) -> None:
     _run_with_bind(db_bind, run_import_job, import_job_id=uuid.UUID(import_job_id))
 
@@ -193,11 +207,21 @@ def _run_rule_stats(job_id: str, db_bind: Any | None = None) -> None:
     _run_with_bind(db_bind, run_rule_stats_aggregation, job_id=uuid.UUID(job_id))
 
 
+def _run_system_ollama_pull(pull_job_id: str, db_bind: Any | None = None) -> None:
+    _run_with_bind(
+        db_bind, run_system_ollama_pull_job, pull_job_id=uuid.UUID(pull_job_id)
+    )
+
+
 if celery_app is not None:
 
     @celery_app.task(name="scan.run_scan_job")
     def run_scan_job_task(job_id: str) -> None:
         _run_scan(job_id)
+
+    @celery_app.task(name="ai.run_ai_job")
+    def run_ai_job_task(ai_job_id: str) -> None:
+        _run_ai(ai_job_id, None)
 
     @celery_app.task(name="import.run_import_job")
     def run_import_job_task(import_job_id: str) -> None:
@@ -211,10 +235,17 @@ if celery_app is not None:
     def run_rule_stats_aggregation_task(job_id: str) -> None:
         _run_rule_stats(job_id, None)
 
+    @celery_app.task(name="ai.run_system_ollama_pull_job")
+    def run_system_ollama_pull_job_task(pull_job_id: str) -> None:
+        _run_system_ollama_pull(pull_job_id, None)
+
 else:
 
     def run_scan_job_task(job_id: str) -> None:
         _run_scan(job_id)
+
+    def run_ai_job_task(ai_job_id: str) -> None:
+        _run_ai(ai_job_id, None)
 
     def run_import_job_task(import_job_id: str) -> None:
         _run_import(import_job_id, None)
@@ -225,6 +256,9 @@ else:
     def run_rule_stats_aggregation_task(job_id: str) -> None:
         _run_rule_stats(job_id, None)
 
+    def run_system_ollama_pull_job_task(pull_job_id: str) -> None:
+        _run_system_ollama_pull(pull_job_id, None)
+
 
 def enqueue_scan_job(*, job_id: uuid.UUID) -> str | None:
     if celery_app is None:
@@ -232,6 +266,15 @@ def enqueue_scan_job(*, job_id: uuid.UUID) -> str | None:
 
     task = run_scan_job_task.delay(str(job_id))
     return str(task.id)
+
+
+def enqueue_ai_job(*, ai_job_id: uuid.UUID, db_bind: Any | None = None) -> str | None:
+    if celery_app is not None:
+        if bool(celery_app.conf.task_always_eager):
+            return _submit_local_async(_run_ai, str(ai_job_id), db_bind)
+        task = run_ai_job_task.delay(str(ai_job_id))
+        return str(task.id)
+    return _submit_local_async(_run_ai, str(ai_job_id), db_bind)
 
 
 def enqueue_import_job(
@@ -267,6 +310,19 @@ def enqueue_rule_stats_aggregation(
         task = run_rule_stats_aggregation_task.delay(str(job_id))
         return str(task.id)
     return _submit_local_async(_run_rule_stats, str(job_id), db_bind)
+
+
+def enqueue_system_ollama_pull_job(
+    *, pull_job_id: uuid.UUID, db_bind: Any | None = None
+) -> str | None:
+    if celery_app is not None:
+        if bool(celery_app.conf.task_always_eager):
+            return _submit_local_async(
+                _run_system_ollama_pull, str(pull_job_id), db_bind
+            )
+        task = run_system_ollama_pull_job_task.delay(str(pull_job_id))
+        return str(task.id)
+    return _submit_local_async(_run_system_ollama_pull, str(pull_job_id), db_bind)
 
 
 def revoke_scan_job(*, task_id: str) -> bool:

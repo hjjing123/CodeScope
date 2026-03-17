@@ -17,6 +17,7 @@ import { workspaceSections } from './config/workspaceSections';
 const CodeManagementPage = lazy(() => import('./pages/CodeManagementPage'));
 const ScanTasksPage = lazy(() => import('./pages/ScanTasksPage'));
 const FindingsPage = lazy(() => import('./pages/FindingsPage'));
+const AICenterPage = lazy(() => import('./pages/AICenterPage'));
 
 const RouteFallback = () => (
   <div style={{ display: 'flex', justifyContent: 'center', padding: '48px 0' }}>
@@ -93,6 +94,14 @@ function App() {
                 </Suspense>
               }
             />
+            <Route
+              path="ai-center"
+              element={
+                <Suspense fallback={<RouteFallback />}>
+                  <AICenterPage />
+                </Suspense>
+              }
+            />
             {workspaceSections
               .filter(
                 (section) =>
@@ -100,7 +109,8 @@ function App() {
                   section.key !== 'scans' &&
                   section.key !== 'log-center' &&
                   section.key !== 'rules' &&
-                  section.key !== 'findings'
+                  section.key !== 'findings' &&
+                  section.key !== 'ai-center'
               )
               .map((section) => (
                 <Route

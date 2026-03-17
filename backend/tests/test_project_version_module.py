@@ -321,6 +321,51 @@ def test_upload_import_success_and_code_browse(client, db_session, storage_setti
     assert "print('hello')" in file_resp.json()["data"]["content"]
 
 
+def test_version_file_supports_full_content_preview(
+    client, db_session, storage_settings
+):
+    developer = _create_user(
+        db_session,
+        email="version-file-full@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "version-file-full-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+
+    long_content = "\n".join(f"line-{index}" for index in range(1, 41)) + "\n"
+    version_resp = client.post(
+        f"/api/v1/projects/{project_id}/versions",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "name": "version-file-full-v1",
+            "source": "UPLOAD",
+            "snapshot_object_key": _seed_snapshot_object_key(
+                {"src/Main.java": long_content}
+            ),
+        },
+    )
+    assert version_resp.status_code == 201
+    version_id = version_resp.json()["data"]["id"]
+
+    file_resp = client.get(
+        f"/api/v1/versions/{version_id}/file",
+        headers=_auth_header(tokens["access_token"]),
+        params={"path": "src/Main.java", "full": True},
+    )
+    assert file_resp.status_code == 200
+    payload = file_resp.json()["data"]
+    assert payload["truncated"] is False
+    assert payload["total_lines"] == 40
+    assert "line-40" in payload["content"]
+
+
 def test_upload_zip_slip_marks_import_job_failed(client, db_session, storage_settings):
     developer = _create_user(
         db_session,

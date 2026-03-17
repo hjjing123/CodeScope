@@ -27,6 +27,9 @@ const formatLocation = (filePath?: string | null, line?: number | null) => {
 };
 
 const getRoleMeta = (index: number, total: number) => {
+  if (total === 1) {
+    return { label: 'Match', color: 'default' as const, accent: '#0f766e' };
+  }
   if (index === 0) {
     return { label: 'Source', color: 'success' as const, accent: '#16a34a' };
   }

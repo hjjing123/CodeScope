@@ -10,6 +10,9 @@ export interface OpenSseStreamOptions {
   url: string;
   signal: AbortSignal;
   onEvent: (payload: SseEventPayload) => void;
+  method?: 'GET' | 'POST';
+  body?: string;
+  headers?: Record<string, string>;
 }
 
 const parseChunk = (chunk: string): SseEventPayload | null => {
@@ -50,20 +53,50 @@ const parseChunk = (chunk: string): SseEventPayload | null => {
   return { id: id || undefined, event, data };
 };
 
-export const openSseStream = async ({ url, signal, onEvent }: OpenSseStreamOptions) => {
+export const openSseStream = async ({
+  url,
+  signal,
+  onEvent,
+  method = 'GET',
+  body,
+  headers,
+}: OpenSseStreamOptions) => {
   const token = getAuthToken();
   const response = await fetch(url, {
-    method: 'GET',
+    method,
     headers: {
       Accept: 'text/event-stream',
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...headers,
     },
     credentials: 'same-origin',
     signal,
+    body,
   });
 
   if (!response.ok || !response.body) {
-    throw new Error(`SSE request failed: ${response.status}`);
+    const contentType = response.headers.get('content-type') || '';
+    let errorMessage = `SSE request failed: ${response.status}`;
+
+    try {
+      if (contentType.includes('application/json')) {
+        const payload = await response.json();
+        const message = payload?.error?.message || payload?.message;
+        if (typeof message === 'string' && message.trim()) {
+          errorMessage = message;
+        }
+      } else {
+        const text = await response.text();
+        if (text.trim()) {
+          errorMessage = text.trim();
+        }
+      }
+    } catch {
+      // ignore parse failures and fall back to status-based message
+    }
+
+    throw new Error(errorMessage);
   }
 
   const reader = response.body.getReader();

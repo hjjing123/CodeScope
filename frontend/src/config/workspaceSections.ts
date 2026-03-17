@@ -10,6 +10,7 @@ import {
   FileSearchOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
+  RobotOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
 
@@ -187,6 +188,36 @@ export const workspaceSections: WorkspaceSection[] = [
       },
     ],
     nextAction: '先完成漏洞列表 + 筛选，再接入证据定位详情。',
+  },
+  {
+    key: 'ai-center',
+    route: 'ai-center',
+    path: '/ai-center',
+    label: 'AI 中心',
+    tagline: '智能研判助手与模型管理。',
+    badge: 'AI Nexus',
+    intro:
+      'AI 中心提供基于大模型的交互式研判能力，帮助分析复杂漏洞。同时提供本地模型（Ollama）的统一配置管理。',
+    icon: RobotOutlined,
+    highlights: ['上下文感知对话', '本地模型一键部署', '历史会话管理'],
+    blocks: [
+      {
+        title: '交互式对话框',
+        description: '类 ChatGPT 界面，支持针对漏洞上下文的多轮对话。',
+        status: 'next',
+      },
+      {
+        title: '模型配置面板',
+        description: '管理员可在此管理 Ollama 服务地址与模型库。',
+        status: 'next',
+      },
+      {
+        title: '会话历史',
+        description: '本地存储最近的研判会话，方便快速回溯。',
+        status: 'next',
+      },
+    ],
+    nextAction: '完善漏洞上下文注入逻辑，提升回答准确性。',
   },
   {
     key: 'reports',

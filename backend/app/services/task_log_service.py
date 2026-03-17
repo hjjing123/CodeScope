@@ -48,6 +48,17 @@ TASK_ALLOWED_STAGES: dict[str, list[str]] = {
         ImportJobStage.ARCHIVE.value,
         ImportJobStage.FINALIZE.value,
     ],
+    TaskLogType.AI.value: [
+        JobStage.PREPARE.value,
+        JobStage.AI.value,
+        JobStage.CLEANUP.value,
+    ],
+    TaskLogType.OLLAMA_PULL.value: [
+        "Prepare",
+        "Pull",
+        "Verify",
+        "Finalize",
+    ],
     TaskLogType.SELFTEST.value: [
         SelfTestJobStage.PREPARE.value,
         SelfTestJobStage.EXECUTE.value,
@@ -397,6 +408,10 @@ def _task_log_root(*, task_type: str) -> Path:
         return Path(settings.scan_log_root)
     if normalized == TaskLogType.IMPORT.value:
         return Path(settings.import_log_root)
+    if normalized == TaskLogType.AI.value:
+        return Path(settings.ai_log_root)
+    if normalized == TaskLogType.OLLAMA_PULL.value:
+        return Path(settings.ai_log_root)
     return Path(settings.selftest_log_root)
 
 

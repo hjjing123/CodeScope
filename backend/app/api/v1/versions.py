@@ -305,6 +305,7 @@ def version_file(
     request: Request,
     version_id: uuid.UUID,
     path: str,
+    full: bool = Query(default=False),
     db: Session = Depends(get_db),
     _principal: AuthPrincipal = Depends(
         require_project_resource_action(
@@ -317,7 +318,7 @@ def version_file(
     version = _get_existing_version(db=db, version_id=version_id)
 
     content, truncated, total_lines = read_snapshot_file(
-        version_id=version.id, path=path
+        version_id=version.id, path=path, full=full
     )
     data = VersionFilePayload(
         path=path, content=content, truncated=truncated, total_lines=total_lines

@@ -60,12 +60,14 @@
 
 ## Full-stack and integration
 - Start local dependencies:
-- `docker compose up -d postgres redis neo4j minio`.
+- `docker compose up -d postgres redis minio ollama`.
 - Typical local run:
 - Start frontend in `frontend/`, API and worker in `backend/`.
 - Expected critical E2E path:
 - Upload -> Scan -> Findings -> Report.
 - Patch -> Verify.
+- AI path:
+- Configure system Ollama or personal external API -> Scan with AI enabled -> AI enrichment job -> Finding AI review/chat.
 
 ## Recommended CI order
 - Backend: `ruff check` -> `ruff format --check` -> `mypy` -> `pytest`.

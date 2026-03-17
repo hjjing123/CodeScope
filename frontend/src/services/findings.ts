@@ -55,7 +55,9 @@ export class FindingService {
     findingId: string,
     stepId: number
   ): Promise<FindingPathNodeContext> {
-    const res = await request.get(`/findings/${findingId}/path-nodes/${stepId}/context`);
+    const res = await request.get(`/findings/${findingId}/path-nodes/${stepId}/context`, {
+      skipErrorToast: true,
+    });
     return res.data;
   }
 }

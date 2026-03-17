@@ -445,3 +445,153 @@ def test_query_finding_paths_normalizes_compiled_paths_and_infers_lines(
     assert payload.line_start is None
     assert context["file"] == "src/main/java/com/best/hello/controller/SSTI.java"
     assert context["line"] == 3
+
+
+def test_load_finding_path_context_supports_node_only_pom_dependency(
+    db_session,
+) -> None:
+    settings = get_settings()
+    old_snapshot_root = settings.snapshot_storage_root
+    project, version = _seed_finding_scope(db_session)
+    backend_root = Path(__file__).resolve().parents[1]
+    relative_root = f"storage/test-node-only-context-{uuid.uuid4().hex}"
+    source_root = backend_root / relative_root / str(version.id) / "source"
+    source_root.mkdir(parents=True, exist_ok=True)
+    (source_root / "pom.xml").write_text(
+        "<project>\n"
+        "  <dependencies>\n"
+        "    <dependency>\n"
+        "      <groupId>com.thoughtworks.xstream</groupId>\n"
+        "      <artifactId>xstream</artifactId>\n"
+        "      <version>1.4.10</version>\n"
+        "    </dependency>\n"
+        "  </dependencies>\n"
+        "</project>\n",
+        encoding="utf-8",
+    )
+    settings.snapshot_storage_root = f"./{relative_root}"
+    try:
+        job = Job(
+            project_id=project.id,
+            version_id=version.id,
+            job_type=JobType.SCAN.value,
+            status=JobStatus.SUCCEEDED.value,
+            stage=JobStage.CLEANUP.value,
+            payload={},
+            result_summary={},
+        )
+        db_session.add(job)
+        db_session.flush()
+
+        finding = Finding(
+            project_id=project.id,
+            version_id=version.id,
+            job_id=job.id,
+            rule_key="pom_log4j_codei",
+            vuln_type="RCE",
+            severity="MED",
+            status="OPEN",
+            has_path=False,
+            file_path="pom.xml",
+            line_start=3,
+            sink_file="pom.xml",
+            sink_line=3,
+            evidence_json={
+                "match_kind": "node",
+                "labels": ["PomDependency"],
+                "node_ref": "PomDependency|pom.xml|3|1|com.thoughtworks.xstream:xstream:1.4.10",
+            },
+        )
+        db_session.add(finding)
+        db_session.commit()
+
+        context = load_finding_path_context(
+            db=db_session,
+            finding=finding,
+            step_id=0,
+            before=2,
+            after=4,
+        )
+    finally:
+        settings.snapshot_storage_root = old_snapshot_root
+
+    assert context["file"] == "pom.xml"
+    assert context["line"] == 3
+    assert [item["text"] for item in context["highlight_ranges"]] == [
+        "xstream",
+        "1.4.10",
+    ]
+
+
+def test_load_finding_path_context_supports_node_only_properties_value(
+    db_session,
+) -> None:
+    settings = get_settings()
+    old_snapshot_root = settings.snapshot_storage_root
+    project, version = _seed_finding_scope(db_session)
+    backend_root = Path(__file__).resolve().parents[1]
+    relative_root = f"storage/test-node-only-properties-{uuid.uuid4().hex}"
+    source_root = (
+        backend_root
+        / relative_root
+        / str(version.id)
+        / "source"
+        / "src"
+        / "main"
+        / "resources"
+    )
+    source_root.mkdir(parents=True, exist_ok=True)
+    (source_root / "application.properties").write_text(
+        "local.admin.name = admin\nlocal.admin.password = admin\n",
+        encoding="utf-8",
+    )
+    settings.snapshot_storage_root = f"./{relative_root}"
+    try:
+        job = Job(
+            project_id=project.id,
+            version_id=version.id,
+            job_type=JobType.SCAN.value,
+            status=JobStatus.SUCCEEDED.value,
+            stage=JobStage.CLEANUP.value,
+            payload={},
+            result_summary={},
+        )
+        db_session.add(job)
+        db_session.flush()
+
+        finding = Finding(
+            project_id=project.id,
+            version_id=version.id,
+            job_id=job.id,
+            rule_key="config_secret_hardcode",
+            vuln_type="CUSTOM",
+            severity="MED",
+            status="OPEN",
+            has_path=False,
+            file_path="src/main/resources/application.properties",
+            line_start=2,
+            sink_file="src/main/resources/application.properties",
+            sink_line=2,
+            evidence_json={
+                "match_kind": "node",
+                "labels": ["PropertiesKeyValue"],
+                "node_ref": "PropertiesKeyValue|application.properties|2|1|local.admin.password",
+            },
+        )
+        db_session.add(finding)
+        db_session.commit()
+
+        context = load_finding_path_context(
+            db=db_session,
+            finding=finding,
+            step_id=0,
+            before=1,
+            after=1,
+        )
+    finally:
+        settings.snapshot_storage_root = old_snapshot_root
+
+    assert [item["text"] for item in context["highlight_ranges"]] == [
+        "local.admin.password",
+        "admin",
+    ]

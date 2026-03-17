@@ -91,6 +91,16 @@ export interface FindingPathStep {
   node_ref: string;
 }
 
+export interface FindingHighlightRange {
+  start_line: number;
+  start_column: number;
+  end_line: number;
+  end_column: number;
+  text?: string | null;
+  kind?: string | null;
+  confidence?: string | null;
+}
+
 export interface FindingPathNode {
   node_id: number;
   labels: string[];
@@ -144,4 +154,6 @@ export interface FindingPathNodeContext {
   start_line: number;
   end_line: number;
   lines: string[];
+  highlight_ranges: FindingHighlightRange[];
+  focus_range?: FindingHighlightRange | null;
 }
