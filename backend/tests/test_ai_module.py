@@ -12,6 +12,9 @@ from app.models import (
     AIChatSession,
     Finding,
     FindingAIAssessment,
+    FindingPath,
+    FindingPathEdge,
+    FindingPathStep,
     Job,
     JobType,
     Project,
@@ -33,6 +36,10 @@ from app.services.ai_client_service import (
     AIChatResult,
     AIChatStreamChunk,
     OllamaPullStreamResult,
+)
+from app.services.ai_service import (
+    _build_assessment_messages,
+    _parse_assessment_content,
 )
 from app.services.task_log_service import append_task_log
 
@@ -123,6 +130,55 @@ def _create_finding(db, *, project_id: uuid.UUID, version_id: uuid.UUID) -> Find
     db.commit()
     db.refresh(finding)
     return finding
+
+
+def _create_finding_path(
+    db,
+    *,
+    finding_id: uuid.UUID,
+    steps: list[dict[str, object]],
+    edges: list[dict[str, object]],
+) -> None:
+    finding_path = FindingPath(
+        finding_id=finding_id,
+        path_order=0,
+        path_length=max(0, len(edges)),
+    )
+    db.add(finding_path)
+    db.flush()
+
+    for index, step in enumerate(steps):
+        db.add(
+            FindingPathStep(
+                finding_path_id=finding_path.id,
+                step_order=index,
+                labels_json=list(step.get("labels") or []),
+                file_path=step.get("file_path"),
+                line_no=step.get("line_no"),
+                func_name=step.get("func_name"),
+                display_name=step.get("display_name"),
+                node_kind=step.get("node_kind"),
+                code_snippet=step.get("code_snippet"),
+                node_ref=str(step.get("node_ref") or f"step-{index}"),
+                raw_props_json={},
+            )
+        )
+
+    for index, edge in enumerate(edges):
+        db.add(
+            FindingPathEdge(
+                finding_path_id=finding_path.id,
+                edge_order=index,
+                from_step_order=edge.get("from_step_order"),
+                to_step_order=edge.get("to_step_order"),
+                edge_type=str(edge.get("edge_type") or "STEP_NEXT"),
+                label=edge.get("label"),
+                is_hidden=False,
+                props_json={},
+            )
+        )
+
+    db.commit()
 
 
 def _parse_sse_events(body: str) -> list[dict[str, object]]:
@@ -802,11 +858,149 @@ def test_scan_with_ai_enabled_creates_ai_job_and_assessments(
     assessments = db_session.scalars(select(FindingAIAssessment)).all()
     assert assessments
     assert assessments[0].summary_json["verdict"] == "TP"
+    assert assessments[0].summary_json["prompt_meta"]["max_context_tokens"] == 32768
 
     response = client.get(f"/api/v1/jobs/{scan_job_id}/ai-enrichment", headers=headers)
     assert response.status_code == 200, response.text
     assert response.json()["data"]["enabled"] is True
     assert response.json()["data"]["latest_status"] == "SUCCEEDED"
+
+
+def test_assessment_prompt_includes_key_flow_and_respects_budget(db_session):
+    project = _create_project(db_session, name="AI Prompt Budget Project")
+    version = _create_version(db_session, project_id=project.id)
+    finding = _create_finding(db_session, project_id=project.id, version_id=version.id)
+    finding.rule_key = "any_fastjson_deserialization"
+    finding.vuln_type = "DESERIALIZATION"
+    finding.severity = "HIGH"
+    finding.file_path = "src/main/java/com/demo/FastjsonController.java"
+    finding.line_start = 42
+    finding.source_file = "src/main/java/com/demo/FastjsonController.java"
+    finding.source_line = 38
+    finding.sink_file = "src/main/java/com/demo/FastjsonService.java"
+    finding.sink_line = 88
+    finding.evidence_json = {
+        "llm_payload": {
+            "rule_key": "any_fastjson_deserialization",
+            "severity": "HIGH",
+            "vuln_type": "DESERIALIZATION",
+            "location": {
+                "file_path": "src/main/java/com/demo/FastjsonController.java",
+                "line_start": 42,
+            },
+            "source": {
+                "file": "src/main/java/com/demo/FastjsonController.java",
+                "line": 38,
+            },
+            "sink": {
+                "file": "src/main/java/com/demo/FastjsonService.java",
+                "line": 88,
+            },
+            "trace_summary": "HTTP body -> controller parse -> service parseObject -> target class init",
+            "why_flagged": "Untrusted request body reaches Fastjson parseObject without an allowlist.",
+            "evidence_preview": [
+                "user_input=request.body",
+                "api=JSON.parseObject",
+                "target_type=com.demo.UserDto",
+                "guard=none",
+            ],
+            "code_context": {
+                "focus": "JSON.parseObject(body, UserDto.class);" * 20,
+                "source": "String body = request.getBody();" * 20,
+                "sink": "return JSON.parseObject(body, clazz);" * 20,
+            },
+        }
+    }
+    db_session.commit()
+
+    _create_finding_path(
+        db_session,
+        finding_id=finding.id,
+        steps=[
+            {
+                "file_path": "src/main/java/com/demo/FastjsonController.java",
+                "line_no": 38,
+                "display_name": "request body",
+                "node_kind": "Param",
+                "code_snippet": "String body = request.getBody();",
+                "node_ref": "source-1",
+            },
+            {
+                "file_path": "src/main/java/com/demo/FastjsonController.java",
+                "line_no": 42,
+                "display_name": "parse request",
+                "node_kind": "Call",
+                "code_snippet": "service.parse(body);",
+                "node_ref": "call-2",
+            },
+            {
+                "file_path": "src/main/java/com/demo/FastjsonService.java",
+                "line_no": 88,
+                "display_name": "JSON.parseObject",
+                "node_kind": "Call",
+                "code_snippet": "return JSON.parseObject(body, clazz);",
+                "node_ref": "sink-3",
+            },
+        ],
+        edges=[
+            {
+                "from_step_order": 0,
+                "to_step_order": 1,
+                "edge_type": "PARAM_PASS",
+                "label": "跨函数参数传递",
+            },
+            {
+                "from_step_order": 1,
+                "to_step_order": 2,
+                "edge_type": "REF",
+                "label": "引用传播",
+            },
+        ],
+    )
+
+    bundle = _build_assessment_messages(
+        db_session,
+        finding=finding,
+        provider_snapshot={
+            "provider_type": "ollama_local",
+            "max_context_tokens": 4096,
+            "max_output_tokens": 1024,
+        },
+    )
+
+    assert bundle.budget_meta["profile"] == "DESERIALIZATION"
+    assert (
+        bundle.budget_meta["input_tokens_estimate"]
+        <= bundle.budget_meta["max_input_tokens"]
+    )
+    assert "Fastjson" in bundle.messages[0]["content"]
+    assert "data_flow_chain" in bundle.messages[1]["content"]
+    assert "JSON.parseObject" in bundle.messages[1]["content"]
+    assert "跨函数参数传递" in bundle.messages[1]["content"]
+
+
+def test_parse_assessment_content_supports_labeled_fallback():
+    raw = """
+    Verdict: TP
+    Confidence: high
+    Summary: 输入可控并进入高危反序列化入口。
+    Risk Reason: 外部请求体未经白名单校验进入 JSON.parseObject。
+    False Positive Signals:
+    - 仅当 parseObject 实际不可达时才可能误报
+    Fix Suggestions:
+    - 禁用危险 autoType
+    - 增加目标类型白名单
+    Evidence Refs:
+    - trace_summary
+    - data_flow_chain
+    """
+
+    payload = _parse_assessment_content(raw)
+    assert payload["schema_version"] == "codescope.ai_assessment.v1"
+    assert payload["verdict"] == "TP"
+    assert payload["confidence"] == "high"
+    assert payload["fix_suggestions"] == ["禁用危险 autoType", "增加目标类型白名单"]
+    assert payload["evidence_refs"] == ["trace_summary", "data_flow_chain"]
 
 
 def test_finding_ai_chat_session_can_send_messages(client, db_session, monkeypatch):

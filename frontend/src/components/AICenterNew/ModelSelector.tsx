@@ -8,6 +8,9 @@ import type { AIModelCatalogPayload, AIProviderSelectionRequest } from '../../ty
 const { Text } = Typography;
 type MenuItem = NonNullable<MenuProps['items']>[number];
 
+const MODEL_CATALOG_RETRY_DELAY_MS = 5000;
+const MODEL_CATALOG_MAX_RETRIES = 12;
+
 interface ModelSelectorProps {
   value?: AIProviderSelectionRequest;
   onChange?: (value: AIProviderSelectionRequest) => void;
@@ -53,7 +56,9 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ value, onChange, disabled
 
   useEffect(() => {
     let isMounted = true;
-    const fetchCatalog = async () => {
+    let retryTimer: number | null = null;
+
+    const fetchCatalog = async (attempt = 0) => {
       setLoading(true);
       try {
         const data = await getMyAIModelCatalog();
@@ -66,9 +71,23 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ value, onChange, disabled
           if (isValueEmpty && data.default_selection && onChange) {
             onChange(data.default_selection as AIProviderSelectionRequest);
           }
+
+          const hasAvailableModels = data.items.some(
+            (provider) => provider.models && provider.models.length > 0
+          );
+          if (!hasAvailableModels && attempt < MODEL_CATALOG_MAX_RETRIES) {
+            retryTimer = window.setTimeout(() => {
+              void fetchCatalog(attempt + 1);
+            }, MODEL_CATALOG_RETRY_DELAY_MS);
+          }
         }
       } catch (error) {
         console.error('Failed to load model catalog', error);
+        if (isMounted && attempt < MODEL_CATALOG_MAX_RETRIES) {
+          retryTimer = window.setTimeout(() => {
+            void fetchCatalog(attempt + 1);
+          }, MODEL_CATALOG_RETRY_DELAY_MS);
+        }
       } finally {
         if (isMounted) {
           setLoading(false);
@@ -76,8 +95,13 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ value, onChange, disabled
       }
     };
 
-    fetchCatalog();
-    return () => { isMounted = false; };
+    void fetchCatalog();
+    return () => {
+      isMounted = false;
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+      }
+    };
   }, []);
 
   const selectedKey = useMemo(() => {

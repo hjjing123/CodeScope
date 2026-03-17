@@ -46,6 +46,9 @@ import type {
 
 const { Title, Text } = Typography;
 
+const OLLAMA_CONNECTION_RETRY_DELAY_MS = 5000;
+const OLLAMA_CONNECTION_MAX_RETRIES = 12;
+
 interface OllamaConfigPanelProps {
   onBack: () => void;
 }
@@ -62,10 +65,25 @@ const OllamaConfigPanel: React.FC<OllamaConfigPanelProps> = ({ onBack }) => {
   const [viewMode, setViewMode] = useState<'models' | 'pulls'>('models');
   const [pullJobs, setPullJobs] = useState<SystemOllamaPullJob[]>([]);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectionRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectionRetryCountRef = useRef(0);
 
   const [form] = Form.useForm();
 
-  const loadConfig = async () => {
+  const loadConfig = async ({
+    silent = true,
+    resetRetry = false,
+  }: {
+    silent?: boolean;
+    resetRetry?: boolean;
+  } = {}) => {
+    if (resetRetry) {
+      connectionRetryCountRef.current = 0;
+      if (connectionRetryTimerRef.current) {
+        clearTimeout(connectionRetryTimerRef.current);
+        connectionRetryTimerRef.current = null;
+      }
+    }
     setLoading(true);
     try {
       const res = await getSystemOllamaConfig();
@@ -77,10 +95,36 @@ const OllamaConfigPanel: React.FC<OllamaConfigPanelProps> = ({ onBack }) => {
         temperature: res.temperature,
       });
       if (res.connection_ok) {
+        connectionRetryCountRef.current = 0;
+        if (connectionRetryTimerRef.current) {
+          clearTimeout(connectionRetryTimerRef.current);
+          connectionRetryTimerRef.current = null;
+        }
         loadModels();
+      } else if (connectionRetryCountRef.current < OLLAMA_CONNECTION_MAX_RETRIES) {
+        connectionRetryCountRef.current += 1;
+        if (connectionRetryTimerRef.current) {
+          clearTimeout(connectionRetryTimerRef.current);
+        }
+        connectionRetryTimerRef.current = setTimeout(() => {
+          void loadConfig({ silent: true });
+        }, OLLAMA_CONNECTION_RETRY_DELAY_MS);
       }
+      return res;
     } catch (error) {
-      message.error('加载配置失败');
+      if (!silent) {
+        message.error('加载配置失败');
+      }
+      if (connectionRetryCountRef.current < OLLAMA_CONNECTION_MAX_RETRIES) {
+        connectionRetryCountRef.current += 1;
+        if (connectionRetryTimerRef.current) {
+          clearTimeout(connectionRetryTimerRef.current);
+        }
+        connectionRetryTimerRef.current = setTimeout(() => {
+          void loadConfig({ silent: true });
+        }, OLLAMA_CONNECTION_RETRY_DELAY_MS);
+      }
+      return null;
     } finally {
       setLoading(false);
     }
@@ -107,10 +151,13 @@ const OllamaConfigPanel: React.FC<OllamaConfigPanelProps> = ({ onBack }) => {
   };
 
   useEffect(() => {
-    loadConfig();
+    void loadConfig({ silent: true });
     return () => {
       if (pollTimerRef.current) {
         clearTimeout(pollTimerRef.current);
+      }
+      if (connectionRetryTimerRef.current) {
+        clearTimeout(connectionRetryTimerRef.current);
       }
     };
   }, []);
@@ -149,6 +196,11 @@ const OllamaConfigPanel: React.FC<OllamaConfigPanelProps> = ({ onBack }) => {
       const res = await testSystemOllamaConfig();
       if (res.ok) {
         message.success('连接成功');
+        connectionRetryCountRef.current = 0;
+        if (connectionRetryTimerRef.current) {
+          clearTimeout(connectionRetryTimerRef.current);
+          connectionRetryTimerRef.current = null;
+        }
         setConfig(prev => prev ? { ...prev, connection_ok: true } : null);
         loadModels();
       } else {
@@ -175,6 +227,7 @@ const OllamaConfigPanel: React.FC<OllamaConfigPanelProps> = ({ onBack }) => {
         display_name: 'System Ollama'
       });
       message.success('配置已保存');
+      connectionRetryCountRef.current = 0;
       handleTestConnection();
     } catch (error) {
       message.error('保存失败');
@@ -341,7 +394,7 @@ const OllamaConfigPanel: React.FC<OllamaConfigPanelProps> = ({ onBack }) => {
                   <Text type="secondary">Base URL: {config?.base_url}</Text>
                 </Space>
                 <Space>
-                  <Button icon={<ReloadOutlined />} onClick={loadConfig} loading={loading}>刷新状态</Button>
+                  <Button icon={<ReloadOutlined />} onClick={() => void loadConfig({ silent: false, resetRetry: true })} loading={loading}>刷新状态</Button>
                 </Space>
               </div>
             </Card>

@@ -48,6 +48,8 @@ def list_ollama_models(
         method="GET",
         url=f"{normalize_base_url(base_url)}/api/tags",
         timeout_seconds=timeout_seconds,
+        connect_timeout_seconds=2.0,
+        trust_env=False,
     )
     models = payload.get("models")
     if not isinstance(models, list):
@@ -68,6 +70,8 @@ def pull_ollama_model(
         url=f"{normalize_base_url(base_url)}/api/pull",
         timeout_seconds=timeout_seconds,
         json_payload={"name": str(name).strip(), "stream": False},
+        connect_timeout_seconds=2.0,
+        trust_env=False,
     )
 
 
@@ -93,12 +97,12 @@ def stream_ollama_model_pull(
 
     try:
         timeout = httpx.Timeout(
-            connect=5.0,
+            connect=2.0,
             read=max(1, int(timeout_seconds)),
             write=30.0,
             pool=5.0,
         )
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, trust_env=False) as client:
             with client.stream(
                 method="POST",
                 url=url,
@@ -201,6 +205,8 @@ def delete_ollama_model(
         url=f"{normalize_base_url(base_url)}/api/delete",
         timeout_seconds=timeout_seconds,
         json_payload={"name": str(name).strip()},
+        connect_timeout_seconds=2.0,
+        trust_env=False,
     )
 
 
@@ -288,15 +294,24 @@ def _iter_ollama_chat_stream(
 ) -> Iterator[AIChatStreamChunk]:
     url = f"{normalize_base_url(str(provider_snapshot.get('base_url') or ''))}/api/chat"
     event_count = 0
+    options = {
+        "temperature": float(provider_snapshot.get("temperature") or 0.1),
+    }
+    num_ctx = _coerce_positive_int(provider_snapshot.get("max_context_tokens"))
+    if num_ctx is not None:
+        options["num_ctx"] = num_ctx
+    num_predict = _coerce_positive_int(provider_snapshot.get("max_output_tokens"))
+    if num_predict is not None:
+        options["num_predict"] = num_predict
 
     try:
         timeout = httpx.Timeout(
-            connect=5.0,
+            connect=2.0,
             read=max(1, int(provider_snapshot.get("timeout_seconds") or 60)),
             write=30.0,
             pool=5.0,
         )
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, trust_env=False) as client:
             with client.stream(
                 method="POST",
                 url=url,
@@ -304,11 +319,7 @@ def _iter_ollama_chat_stream(
                     "model": str(provider_snapshot.get("model") or ""),
                     "messages": messages,
                     "stream": True,
-                    "options": {
-                        "temperature": float(
-                            provider_snapshot.get("temperature") or 0.1
-                        ),
-                    },
+                    "options": options,
                 },
             ) as response:
                 response.raise_for_status()
@@ -383,6 +394,7 @@ def _iter_openai_compatible_chat_stream(
         "/chat/completions"
     )
     event_count = 0
+    max_output_tokens = _coerce_positive_int(provider_snapshot.get("max_output_tokens"))
 
     try:
         timeout = httpx.Timeout(
@@ -401,6 +413,7 @@ def _iter_openai_compatible_chat_stream(
                     "messages": messages,
                     "temperature": float(provider_snapshot.get("temperature") or 0.1),
                     "stream": True,
+                    **({"max_tokens": max_output_tokens} if max_output_tokens else {}),
                 },
             ) as response:
                 response.raise_for_status()
@@ -483,9 +496,17 @@ def _request_json(
     timeout_seconds: int,
     headers: dict[str, str] | None = None,
     json_payload: dict[str, Any] | None = None,
+    connect_timeout_seconds: float = 5.0,
+    trust_env: bool = True,
 ) -> dict[str, object]:
     try:
-        with httpx.Client(timeout=max(1, timeout_seconds)) as client:
+        timeout = httpx.Timeout(
+            connect=max(0.1, float(connect_timeout_seconds)),
+            read=max(1, int(timeout_seconds)),
+            write=30.0,
+            pool=5.0,
+        )
+        with httpx.Client(timeout=timeout, trust_env=trust_env) as client:
             response = client.request(
                 method=method,
                 url=url,
@@ -557,3 +578,10 @@ def _coerce_non_negative_int(value: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed >= 0 else None
+
+
+def _coerce_positive_int(value: object) -> int | None:
+    parsed = _coerce_non_negative_int(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed

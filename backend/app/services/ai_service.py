@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,6 +21,9 @@ from app.models import (
     AIProviderType,
     Finding,
     FindingAIAssessment,
+    FindingPath,
+    FindingPathEdge,
+    FindingPathStep,
     Job,
     JobStage,
     JobStatus,
@@ -42,6 +46,8 @@ from app.services.ai_client_service import (
     test_openai_compatible_connection,
 )
 from app.services.audit_service import append_audit_log
+from app.services.path_graph_service import edge_display_label
+from app.services.rule_file_service import get_rules_by_keys
 from app.services.task_log_service import append_task_log
 
 
@@ -68,15 +74,123 @@ TERMINAL_STEP_STATUSES = {
 }
 
 ASSESSMENT_SYSTEM_PROMPT = (
-    "你是代码安全研判助手。请只基于给定证据和代码上下文进行判断，不要臆造未提供的信息。"
-    "输出 JSON，字段包含 verdict, confidence, summary, risk_reason, false_positive_signals,"
-    " fix_suggestions, evidence_refs。"
-    "verdict 只能是 TP、FP、NEEDS_REVIEW 之一；confidence 只能是 high、medium、low 之一。"
+    "你是代码安全研判助手。请只基于给定证据、数据传播链路和代码上下文进行判断，"
+    "不要臆造未提供的信息。你的输出必须是单个 JSON object，禁止输出 Markdown、代码块、"
+    "前后解释文字或多余字段。JSON 字段固定为 schema_version, verdict, confidence, summary,"
+    " risk_reason, false_positive_signals, fix_suggestions, evidence_refs。"
+    "schema_version 固定为 codescope.ai_assessment.v1；verdict 只能是 TP、FP、NEEDS_REVIEW 之一；"
+    "confidence 只能是 high、medium、low 之一。"
+)
+
+ASSESSMENT_RESPONSE_SCHEMA_VERSION = "codescope.ai_assessment.v1"
+ASSESSMENT_JSON_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "schema_version": ("schema_version", "schemaVersion", "version"),
+    "verdict": ("verdict", "decision", "conclusion", "result", "判定", "结论"),
+    "confidence": ("confidence", "certainty", "置信度", "可信度"),
+    "summary": ("summary", "摘要", "结论摘要", "overview"),
+    "risk_reason": (
+        "risk_reason",
+        "riskReason",
+        "risk reason",
+        "reason",
+        "风险依据",
+        "原因分析",
+    ),
+    "false_positive_signals": (
+        "false_positive_signals",
+        "falsePositiveSignals",
+        "false positive signals",
+        "fp_signals",
+        "误报线索",
+    ),
+    "fix_suggestions": (
+        "fix_suggestions",
+        "fixSuggestions",
+        "fix suggestions",
+        "remediation",
+        "修复建议",
+    ),
+    "evidence_refs": (
+        "evidence_refs",
+        "evidenceRefs",
+        "evidence refs",
+        "evidence",
+        "证据引用",
+    ),
+}
+
+ASSESSMENT_PROFILE_HINTS: dict[str, str] = {
+    "GENERIC": (
+        "优先判断命中原因是否真的形成可利用风险；如果证据链存在断点、关键控制条件缺失、"
+        "或上下文不足，应偏向 NEEDS_REVIEW，而不是臆断。"
+    ),
+    "XSS": (
+        "重点检查输入是否真正流入可执行的 HTML/JS/模板输出位置，结合输出上下文、模板默认转义、"
+        "显式编码/过滤、前端框架自动 escaping 判断是否可利用。"
+    ),
+    "SQLI": (
+        "重点检查参数是否可控、是否进入 SQL 拼接或动态片段、ORM/预编译占位符是否有效拦截，"
+        "不要把普通参数绑定误判为 SQL 注入。"
+    ),
+    "SSRF": (
+        "重点检查用户输入是否控制目标 URL/host/path/protocol，是否存在内网访问、元数据访问、"
+        "协议白名单和 host 校验等有效限制。"
+    ),
+    "DESERIALIZATION": (
+        "重点检查不可信数据是否进入反序列化入口，是否存在可达 gadget 链、危险 autoType/白名单缺失、"
+        "以及真实触发条件，不要只因出现相关 API 就直接判定高危。"
+    ),
+    "CMDI": (
+        "重点检查用户输入是否进入命令拼接、shell 解释器或 ProcessBuilder 等执行入口，"
+        "以及参数化执行、固定命令模板、白名单过滤是否足以阻断命令注入。"
+    ),
+    "CODEI": (
+        "重点检查表达式、脚本或反射执行入口是否被外部输入控制，关注 OGNL、SpEL、MVEL、"
+        "ScriptEngine 等解释执行能力以及是否存在安全沙箱。"
+    ),
+    "SSTI": (
+        "重点检查模板名或模板变量是否可控，模板引擎是否支持表达式求值、危险对象访问、"
+        "以及模板上下文是否暴露高危能力。"
+    ),
+    "XXE": (
+        "重点检查 XML 解析是否允许外部实体、DTD、XInclude 或外部资源访问，结合解析器配置判断是否可利用。"
+    ),
+    "PATHTRAVERSAL": (
+        "重点检查用户输入是否控制文件路径、目录拼接或下载读取目标，路径规范化、根目录限制、"
+        "白名单校验是否真正生效。"
+    ),
+    "UPLOAD": (
+        "重点检查上传后是否可被执行或覆盖敏感位置，关注文件名、路径、类型校验、存储位置、"
+        "URL 暴露和后续处理逻辑。"
+    ),
+    "REDIRECT": (
+        "重点检查跳转目标是否被外部输入控制，是否限制站内跳转、白名单域名或协议，"
+        "不要把固定路由跳转误判为开放重定向。"
+    ),
+    "INFOLEAK": (
+        "重点检查敏感信息是否真实对外暴露，关注错误信息、调试接口、配置泄露、凭据明文、"
+        "以及是否仅在开发环境或受限边界内可见。"
+    ),
+}
+
+ASSESSMENT_RULE_HINTS: tuple[tuple[str, str], ...] = (
+    (
+        "fastjson",
+        "针对 Fastjson 规则，重点判断 autoType、白名单、版本修复状态以及输入是否真正进入 parse/反序列化链路。",
+    ),
+    (
+        "jndi",
+        "针对 JNDI 相关规则，重点判断外部输入是否可控地触发远程查找、协议限制、以及上下游是否已禁用远程加载。",
+    ),
+    (
+        "mybatis",
+        "针对 MyBatis 相关规则，重点判断是否存在 ${} 直接拼接、动态 order by/table 名拼接，而不是普通 #{} 参数绑定。",
+    ),
 )
 
 CHAT_SYSTEM_PROMPT = (
     "你是代码安全分析助手。回答时仅基于当前漏洞证据、代码上下文、历史 AI 研判和用户问题。"
-    "如果证据不足，明确说明需要更多上下文。不要输出攻击载荷。"
+    "如果证据不足，明确说明需要更多上下文"
 )
 
 GENERAL_CHAT_SYSTEM_PROMPT = (
@@ -89,6 +203,13 @@ GENERAL_CHAT_SYSTEM_PROMPT = (
 class AssessmentRunResult:
     assessment: FindingAIAssessment
     ok: bool
+
+
+@dataclass(slots=True)
+class AssessmentPromptBundle:
+    messages: list[dict[str, str]]
+    budget_meta: dict[str, object]
+    context_payload: dict[str, object]
 
 
 def get_system_ollama_provider(db: Session) -> SystemAIProvider | None:
@@ -1516,9 +1637,17 @@ def _run_assessment_for_finding(
     ai_job: Job,
     provider_snapshot: dict[str, object],
 ) -> AssessmentRunResult:
-    snapshot = _inflate_provider_snapshot(provider_snapshot)
-    messages = _build_assessment_messages(finding=finding)
-    result = run_provider_chat(provider_snapshot=snapshot, messages=messages)
+    snapshot = _prepare_assessment_provider_snapshot(
+        _inflate_provider_snapshot(provider_snapshot)
+    )
+    prompt_bundle = _build_assessment_messages(
+        db,
+        finding=finding,
+        provider_snapshot=snapshot,
+    )
+    result = run_provider_chat(
+        provider_snapshot=snapshot, messages=prompt_bundle.messages
+    )
     summary = _parse_assessment_content(result.content)
     assessment = db.scalar(
         select(FindingAIAssessment).where(
@@ -1541,7 +1670,7 @@ def _run_assessment_for_finding(
         )
         db.add(assessment)
     assessment.status = AIAssessmentStatus.SUCCEEDED.value
-    assessment.summary_json = summary
+    assessment.summary_json = {**summary, "prompt_meta": prompt_bundle.budget_meta}
     assessment.response_text = result.content
     assessment.error_code = None
     assessment.error_message = None
@@ -1590,6 +1719,7 @@ def _record_failed_assessment(
 def _build_system_provider_snapshot(
     *, provider: SystemAIProvider, override_model: str | None
 ) -> dict[str, object]:
+    settings = get_settings()
     model = override_model or provider.default_model or _first_published_model(provider)
     if not model:
         raise AppError(
@@ -1606,12 +1736,15 @@ def _build_system_provider_snapshot(
         "model": model,
         "timeout_seconds": int(provider.timeout_seconds),
         "temperature": float(provider.temperature),
+        "max_context_tokens": int(settings.ai_default_max_context_tokens),
+        "max_output_tokens": int(settings.ai_reserved_output_tokens),
     }
 
 
 def _build_user_provider_snapshot(
     *, provider: UserAIProvider, override_model: str | None
 ) -> dict[str, object]:
+    settings = get_settings()
     model = override_model or provider.default_model
     if not model:
         raise AppError(
@@ -1630,6 +1763,8 @@ def _build_user_provider_snapshot(
         "timeout_seconds": int(provider.timeout_seconds),
         "temperature": float(provider.temperature),
         "api_key_encrypted": provider.api_key_encrypted,
+        "max_context_tokens": int(settings.ai_default_max_context_tokens),
+        "max_output_tokens": int(settings.ai_reserved_output_tokens),
     }
 
 
@@ -1691,24 +1826,481 @@ def _inflate_provider_snapshot(snapshot: dict[str, object]) -> dict[str, object]
     return payload
 
 
-def _build_assessment_messages(*, finding: Finding) -> list[dict[str, str]]:
-    prompt_block = _resolve_llm_prompt_block(finding)
-    user_prompt = (
-        "请基于以下漏洞信息进行研判，并严格返回 JSON。\n\n"
-        f"{prompt_block}\n\n"
-        "JSON 字段要求：\n"
-        "- verdict: TP/FP/NEEDS_REVIEW\n"
-        "- confidence: high/medium/low\n"
-        "- summary: 字符串\n"
-        "- risk_reason: 字符串\n"
-        "- false_positive_signals: 字符串数组\n"
-        "- fix_suggestions: 字符串数组\n"
-        "- evidence_refs: 字符串数组"
+def _build_assessment_messages(
+    db: Session,
+    *,
+    finding: Finding,
+    provider_snapshot: dict[str, object],
+) -> AssessmentPromptBundle:
+    context_payload = _build_assessment_context_payload(db, finding=finding)
+    prompt_context = json.loads(json.dumps(context_payload, ensure_ascii=False))
+    prompt_hint_meta = _resolve_assessment_prompt_hint(context_payload=prompt_context)
+    budget_meta = _build_assessment_budget(provider_snapshot=provider_snapshot)
+
+    system_prompt = (
+        f"{ASSESSMENT_SYSTEM_PROMPT}\n漏洞专项关注点：{prompt_hint_meta['hint']}"
     )
-    return [
-        {"role": "system", "content": ASSESSMENT_SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
+    user_prompt, budget_meta = _render_assessment_user_prompt(
+        context_payload=prompt_context,
+        budget_meta={
+            **budget_meta,
+            "profile": prompt_hint_meta["profile"],
+            "rule_hint_applied": bool(prompt_hint_meta["rule_hint"]),
+        },
+    )
+    return AssessmentPromptBundle(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        budget_meta=budget_meta,
+        context_payload=prompt_context,
+    )
+
+
+def _prepare_assessment_provider_snapshot(
+    provider_snapshot: dict[str, object],
+) -> dict[str, object]:
+    payload = dict(provider_snapshot)
+    settings = get_settings()
+    max_context_tokens = _to_int(payload.get("max_context_tokens")) or int(
+        settings.ai_default_max_context_tokens
+    )
+    max_output_tokens = _to_int(payload.get("max_output_tokens")) or int(
+        settings.ai_reserved_output_tokens
+    )
+    payload["max_context_tokens"] = max(2048, max_context_tokens)
+    payload["max_output_tokens"] = max(512, min(max_output_tokens, max_context_tokens))
+    return payload
+
+
+def _build_assessment_context_payload(
+    db: Session, *, finding: Finding
+) -> dict[str, object]:
+    evidence = (
+        dict(finding.evidence_json or {})
+        if isinstance(finding.evidence_json, dict)
+        else {}
+    )
+    llm_payload = (
+        dict(evidence.get("llm_payload"))
+        if isinstance(evidence.get("llm_payload"), dict)
+        else {}
+    )
+    rule_meta = get_rules_by_keys({finding.rule_key}).get(finding.rule_key)
+    path_payload = _build_assessment_path_payload(db, finding=finding)
+
+    reason = _normalize_optional_text(llm_payload.get("why_flagged"))
+    trace_summary = _normalize_optional_text(llm_payload.get("trace_summary"))
+    key_path_summary = _normalize_optional_text(path_payload.get("key_path_summary"))
+
+    core_location = (
+        llm_payload.get("location")
+        if isinstance(llm_payload.get("location"), dict)
+        else {}
+    )
+    source = (
+        llm_payload.get("source") if isinstance(llm_payload.get("source"), dict) else {}
+    )
+    sink = llm_payload.get("sink") if isinstance(llm_payload.get("sink"), dict) else {}
+
+    code_context = (
+        llm_payload.get("code_context")
+        if isinstance(llm_payload.get("code_context"), dict)
+        else {}
+    )
+
+    return {
+        "finding_core": {
+            "rule_key": finding.rule_key,
+            "rule_name": rule_meta.name if rule_meta is not None else finding.rule_key,
+            "rule_description": (
+                _normalize_optional_text(rule_meta.description) if rule_meta else None
+            ),
+            "severity": finding.severity,
+            "vuln_type": finding.vuln_type
+            or (rule_meta.vuln_type if rule_meta else None),
+            "location": _sanitize_location_payload(core_location, finding=finding),
+            "source": _sanitize_endpoint_payload(
+                source,
+                fallback_file=finding.source_file,
+                fallback_line=finding.source_line,
+            ),
+            "sink": _sanitize_endpoint_payload(
+                sink, fallback_file=finding.sink_file, fallback_line=finding.sink_line
+            ),
+        },
+        "analysis_focus": {
+            "why_flagged": reason,
+            "trace_summary": trace_summary,
+            "key_path_summary": key_path_summary or trace_summary,
+            "data_flow_chain": path_payload.get("data_flow_chain")
+            if isinstance(path_payload.get("data_flow_chain"), list)
+            else [],
+        },
+        "evidence_preview": _string_list(llm_payload.get("evidence_preview")),
+        "code_context": _sanitize_code_context_payload(code_context),
+    }
+
+
+def _build_assessment_path_payload(
+    db: Session, *, finding: Finding
+) -> dict[str, object]:
+    row = db.scalar(
+        select(FindingPath)
+        .where(FindingPath.finding_id == finding.id)
+        .order_by(FindingPath.path_length.asc(), FindingPath.path_order.asc())
+        .limit(1)
+    )
+    if row is None:
+        return {}
+
+    step_rows = db.scalars(
+        select(FindingPathStep)
+        .where(FindingPathStep.finding_path_id == row.id)
+        .order_by(FindingPathStep.step_order.asc())
+    ).all()
+    edge_rows = db.scalars(
+        select(FindingPathEdge)
+        .where(FindingPathEdge.finding_path_id == row.id)
+        .order_by(FindingPathEdge.edge_order.asc())
+    ).all()
+    if not step_rows:
+        return {}
+
+    chain = _build_data_flow_chain(step_rows=step_rows, edge_rows=edge_rows)
+    return {
+        "path_length": row.path_length,
+        "key_path_summary": _build_data_flow_summary(chain),
+        "data_flow_chain": chain,
+    }
+
+
+def _build_data_flow_chain(
+    *,
+    step_rows: list[FindingPathStep],
+    edge_rows: list[FindingPathEdge],
+) -> list[dict[str, object]]:
+    if not step_rows:
+        return []
+    edge_by_order = {int(edge.edge_order): edge for edge in edge_rows}
+    selected_indexes = _select_key_flow_indexes(
+        step_rows=step_rows, edge_by_order=edge_by_order
+    )
+
+    chain: list[dict[str, object]] = []
+    for selected_index in selected_indexes:
+        step = step_rows[selected_index]
+        next_selected_index = _next_selected_index(selected_indexes, selected_index)
+        edge_label = None
+        if next_selected_index is not None:
+            for edge_index in range(selected_index, next_selected_index):
+                edge = edge_by_order.get(edge_index)
+                if edge is not None:
+                    edge_label = edge_display_label(edge.edge_type)
+                    break
+        chain.append(
+            {
+                "step_order": step.step_order,
+                "location": _format_location(step.file_path, step.line_no),
+                "display_name": _truncate_text(
+                    str(
+                        step.display_name
+                        or step.symbol_name
+                        or step.owner_method
+                        or "-"
+                    ).strip()
+                    or "-",
+                    160,
+                ),
+                "node_kind": _normalize_optional_text(step.node_kind),
+                "code_snippet": _normalize_optional_text(step.code_snippet),
+                "edge_to_next": edge_label,
+            }
+        )
+    return chain
+
+
+def _select_key_flow_indexes(
+    *,
+    step_rows: list[FindingPathStep],
+    edge_by_order: dict[int, FindingPathEdge],
+) -> list[int]:
+    settings = get_settings()
+    limit = max(2, int(settings.ai_assessment_max_flow_steps))
+    total = len(step_rows)
+    if total <= limit:
+        return list(range(total))
+
+    keep = {0, total - 1}
+    for index in range(1, total - 1):
+        prev_step = step_rows[index - 1]
+        current = step_rows[index]
+        edge = edge_by_order.get(index - 1)
+        if edge is not None and edge.edge_type in {
+            "REF",
+            "PARAM_PASS",
+            "SRC_FLOW",
+            "CALLS",
+            "ARG",
+        }:
+            keep.add(index)
+            continue
+        if (current.file_path or "") != (prev_step.file_path or ""):
+            keep.add(index)
+            continue
+        if (current.owner_method or "") != (prev_step.owner_method or ""):
+            keep.add(index)
+
+    ordered = sorted(keep)
+    if len(ordered) <= limit:
+        return ordered
+
+    middle = ordered[1:-1]
+    slots = max(0, limit - 2)
+    if len(middle) <= slots:
+        return ordered[:1] + middle + ordered[-1:]
+    picked = [
+        middle[int(round(index * (len(middle) - 1) / max(1, slots - 1)))]
+        for index in range(slots)
     ]
+    return [ordered[0], *sorted(set(picked)), ordered[-1]]
+
+
+def _next_selected_index(selected_indexes: list[int], current_index: int) -> int | None:
+    for value in selected_indexes:
+        if value > current_index:
+            return value
+    return None
+
+
+def _build_data_flow_summary(chain: list[dict[str, object]]) -> str | None:
+    if not chain:
+        return None
+    parts: list[str] = []
+    for index, item in enumerate(chain):
+        location = str(item.get("location") or "-")
+        display_name = str(item.get("display_name") or "-")
+        parts.append(f"{index + 1}. {display_name} @ {location}")
+        edge_label = str(item.get("edge_to_next") or "").strip()
+        if edge_label:
+            parts.append(f" --[{edge_label}]--> ")
+    return _truncate_text("".join(parts), 1600)
+
+
+def _format_location(file_path: str | None, line_no: int | None) -> str:
+    normalized_path = str(file_path or "").strip() or "-"
+    if line_no is None:
+        return normalized_path
+    return f"{normalized_path}:{line_no}"
+
+
+def _sanitize_location_payload(
+    payload: dict[str, object],
+    *,
+    finding: Finding,
+) -> dict[str, object]:
+    return {
+        "file_path": _normalize_optional_text(payload.get("file_path"))
+        or finding.file_path
+        or finding.sink_file
+        or finding.source_file,
+        "line_start": _to_int(payload.get("line_start"))
+        or finding.line_start
+        or finding.sink_line
+        or finding.source_line,
+        "line_end": _to_int(payload.get("line_end")) or finding.line_end,
+    }
+
+
+def _sanitize_endpoint_payload(
+    payload: dict[str, object],
+    *,
+    fallback_file: str | None,
+    fallback_line: int | None,
+) -> dict[str, object]:
+    return {
+        "file": _normalize_optional_text(payload.get("file")) or fallback_file,
+        "line": _to_int(payload.get("line")) or fallback_line,
+    }
+
+
+def _sanitize_code_context_payload(payload: dict[str, object]) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for key in ("focus", "source", "sink"):
+        value = _normalize_optional_text(payload.get(key))
+        if value:
+            normalized[key] = value
+    return normalized
+
+
+def _resolve_assessment_prompt_hint(
+    *, context_payload: dict[str, object]
+) -> dict[str, str]:
+    finding_core = (
+        context_payload.get("finding_core")
+        if isinstance(context_payload.get("finding_core"), dict)
+        else {}
+    )
+    vuln_type = str(finding_core.get("vuln_type") or "").strip().upper()
+    rule_key = str(finding_core.get("rule_key") or "").strip().lower()
+    profile = _resolve_assessment_profile_key(vuln_type=vuln_type, rule_key=rule_key)
+    rule_hint = next(
+        (hint for token, hint in ASSESSMENT_RULE_HINTS if token and token in rule_key),
+        "",
+    )
+    hints = [
+        ASSESSMENT_PROFILE_HINTS.get(profile) or ASSESSMENT_PROFILE_HINTS["GENERIC"]
+    ]
+    if rule_hint:
+        hints.append(rule_hint)
+    return {
+        "profile": profile,
+        "rule_hint": rule_hint,
+        "hint": " ".join(item for item in hints if item).strip(),
+    }
+
+
+def _resolve_assessment_profile_key(*, vuln_type: str, rule_key: str) -> str:
+    aliases = {
+        "OPEN_REDIRECT": "REDIRECT",
+        "URLREDIRECT": "REDIRECT",
+        "PATH_TRAVERSAL": "PATHTRAVERSAL",
+        "FILE_UPLOAD": "UPLOAD",
+        "RCE": "CODEI",
+        "INFO_LEAK": "INFOLEAK",
+    }
+    normalized = aliases.get(vuln_type, vuln_type)
+    if normalized in ASSESSMENT_PROFILE_HINTS:
+        return normalized
+    for token, profile in (
+        ("deserialization", "DESERIALIZATION"),
+        ("sqli", "SQLI"),
+        ("xss", "XSS"),
+        ("ssrf", "SSRF"),
+        ("xxe", "XXE"),
+        ("cmdi", "CMDI"),
+        ("codei", "CODEI"),
+        ("ssti", "SSTI"),
+        ("pathtraver", "PATHTRAVERSAL"),
+        ("upload", "UPLOAD"),
+        ("redirect", "REDIRECT"),
+        ("infoleak", "INFOLEAK"),
+    ):
+        if token in rule_key:
+            return profile
+    return "GENERIC"
+
+
+def _build_assessment_budget(
+    *, provider_snapshot: dict[str, object]
+) -> dict[str, object]:
+    settings = get_settings()
+    max_context_tokens = _to_int(provider_snapshot.get("max_context_tokens")) or int(
+        settings.ai_default_max_context_tokens
+    )
+    reserved_output_tokens = _to_int(provider_snapshot.get("max_output_tokens")) or int(
+        settings.ai_reserved_output_tokens
+    )
+    reserved_system_tokens = int(settings.ai_reserved_system_tokens)
+    safety_margin_tokens = int(settings.ai_context_safety_margin_tokens)
+    max_input_tokens = max(
+        2048,
+        max_context_tokens
+        - reserved_output_tokens
+        - reserved_system_tokens
+        - safety_margin_tokens,
+    )
+    return {
+        "max_context_tokens": max_context_tokens,
+        "reserved_output_tokens": reserved_output_tokens,
+        "reserved_system_tokens": reserved_system_tokens,
+        "safety_margin_tokens": safety_margin_tokens,
+        "max_input_tokens": max_input_tokens,
+    }
+
+
+def _render_assessment_user_prompt(
+    *,
+    context_payload: dict[str, object],
+    budget_meta: dict[str, object],
+) -> tuple[str, dict[str, object]]:
+    prompt = _render_assessment_prompt_text(context_payload)
+    input_tokens = _estimate_text_tokens(prompt)
+    while input_tokens > int(budget_meta["max_input_tokens"]):
+        changed = _shrink_assessment_context_payload(context_payload)
+        if not changed:
+            break
+        prompt = _render_assessment_prompt_text(context_payload)
+        input_tokens = _estimate_text_tokens(prompt)
+    return prompt, {
+        **budget_meta,
+        "input_tokens_estimate": input_tokens,
+        "input_chars": len(prompt),
+    }
+
+
+def _render_assessment_prompt_text(context_payload: dict[str, object]) -> str:
+    schema_payload = {
+        "schema_version": ASSESSMENT_RESPONSE_SCHEMA_VERSION,
+        "verdict": "TP|FP|NEEDS_REVIEW",
+        "confidence": "high|medium|low",
+        "summary": "string",
+        "risk_reason": "string",
+        "false_positive_signals": ["string"],
+        "fix_suggestions": ["string"],
+        "evidence_refs": ["string"],
+    }
+    context_json = json.dumps(
+        context_payload, ensure_ascii=False, separators=(",", ":")
+    )
+    schema_json = json.dumps(schema_payload, ensure_ascii=False, separators=(",", ":"))
+    return (
+        "请基于以下结构化漏洞上下文进行安全研判。只允许依据输入证据判断。\n"
+        "如果证据无法形成完整利用链，请输出 NEEDS_REVIEW 或 FP，不要臆造缺失前提。\n"
+        f"输出 JSON Schema: {schema_json}\n"
+        f"漏洞上下文(JSON): {context_json}"
+    )
+
+
+def _shrink_assessment_context_payload(context_payload: dict[str, object]) -> bool:
+    for section_key in ("code_context", "evidence_preview", "analysis_focus"):
+        section = context_payload.get(section_key)
+        if section_key == "code_context" and isinstance(section, dict):
+            for key in ("sink", "source", "focus"):
+                value = _normalize_optional_text(section.get(key))
+                if value and len(value) > 120:
+                    section[key] = _truncate_text(value, max(120, len(value) // 2))
+                    return True
+                if value:
+                    section.pop(key, None)
+                    return True
+        if section_key == "evidence_preview" and isinstance(section, list) and section:
+            section.pop()
+            return True
+        if section_key == "analysis_focus" and isinstance(section, dict):
+            chain = section.get("data_flow_chain")
+            if isinstance(chain, list) and len(chain) > 3:
+                section["data_flow_chain"] = chain[:-1]
+                section["key_path_summary"] = _build_data_flow_summary(
+                    section["data_flow_chain"]
+                )
+                return True
+            for key in ("trace_summary", "key_path_summary", "why_flagged"):
+                value = _normalize_optional_text(section.get(key))
+                if value and len(value) > 160:
+                    section[key] = _truncate_text(value, max(160, len(value) // 2))
+                    return True
+    return False
+
+
+def _estimate_text_tokens(text: str) -> int:
+    raw = str(text or "")
+    if not raw:
+        return 0
+    cjk_count = sum(1 for char in raw if "\u4e00" <= char <= "\u9fff")
+    other_chars = max(0, len(raw) - cjk_count)
+    return cjk_count + ((other_chars + 2) // 3)
 
 
 def _build_chat_messages(
@@ -1808,33 +2400,20 @@ def _build_prompt_block_from_payload(llm_payload: dict[str, object]) -> str:
 
 def _parse_assessment_content(content: str) -> dict[str, object]:
     raw = str(content or "").strip()
-    candidate = raw
-    if raw.startswith("```") and raw.endswith("```"):
-        lines = raw.splitlines()
-        candidate = "\n".join(lines[1:-1]).strip()
-    try:
-        payload = json.loads(candidate)
-    except ValueError:
-        payload = None
-    if isinstance(payload, dict):
-        verdict = str(payload.get("verdict") or "NEEDS_REVIEW").strip().upper()
-        confidence = str(payload.get("confidence") or "medium").strip().lower()
-        return {
-            "verdict": verdict
-            if verdict in {"TP", "FP", "NEEDS_REVIEW"}
-            else "NEEDS_REVIEW",
-            "confidence": confidence
-            if confidence in {"high", "medium", "low"}
-            else "medium",
-            "summary": str(payload.get("summary") or "").strip(),
-            "risk_reason": str(payload.get("risk_reason") or "").strip(),
-            "false_positive_signals": _string_list(
-                payload.get("false_positive_signals")
-            ),
-            "fix_suggestions": _string_list(payload.get("fix_suggestions")),
-            "evidence_refs": _string_list(payload.get("evidence_refs")),
-        }
+    for candidate in _assessment_json_candidates(raw):
+        try:
+            payload = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(payload, dict):
+            return _normalize_assessment_payload(payload, fallback_text=raw)
+
+    fallback_payload = _parse_assessment_labeled_text(raw)
+    if fallback_payload is not None:
+        return _normalize_assessment_payload(fallback_payload, fallback_text=raw)
+
     return {
+        "schema_version": ASSESSMENT_RESPONSE_SCHEMA_VERSION,
         "verdict": "NEEDS_REVIEW",
         "confidence": "medium",
         "summary": _truncate_text(raw, 4000),
@@ -1843,6 +2422,159 @@ def _parse_assessment_content(content: str) -> dict[str, object]:
         "fix_suggestions": [],
         "evidence_refs": [],
     }
+
+
+def _assessment_json_candidates(raw: str) -> list[str]:
+    candidates: list[str] = []
+    stripped = raw.strip()
+    if stripped.startswith("```") and stripped.endswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) >= 3:
+            candidates.append("\n".join(lines[1:-1]).strip())
+    candidates.append(stripped)
+
+    start = stripped.find("{")
+    while start >= 0:
+        depth = 0
+        for index in range(start, len(stripped)):
+            char = stripped[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(stripped[start : index + 1])
+                    break
+        start = stripped.find("{", start + 1)
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        normalized = item.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+    return unique
+
+
+def _normalize_assessment_payload(
+    payload: dict[str, object], *, fallback_text: str
+) -> dict[str, object]:
+    candidate = payload
+    for key in ("assessment", "result", "data"):
+        inner = candidate.get(key)
+        if isinstance(inner, dict):
+            candidate = inner
+            break
+
+    verdict = (
+        str(_get_assessment_value(candidate, "verdict") or "NEEDS_REVIEW")
+        .strip()
+        .upper()
+    )
+    confidence = (
+        str(_get_assessment_value(candidate, "confidence") or "medium").strip().lower()
+    )
+    summary = _normalize_optional_text(_get_assessment_value(candidate, "summary"))
+    risk_reason = _normalize_optional_text(
+        _get_assessment_value(candidate, "risk_reason")
+    )
+
+    return {
+        "schema_version": ASSESSMENT_RESPONSE_SCHEMA_VERSION,
+        "verdict": verdict
+        if verdict in {"TP", "FP", "NEEDS_REVIEW"}
+        else "NEEDS_REVIEW",
+        "confidence": confidence
+        if confidence in {"high", "medium", "low"}
+        else "medium",
+        "summary": summary or _truncate_text(fallback_text, 4000),
+        "risk_reason": risk_reason
+        or "模型未完整返回风险依据，已保留原始文本供人工复核。",
+        "false_positive_signals": _string_list(
+            _get_assessment_value(candidate, "false_positive_signals")
+        ),
+        "fix_suggestions": _string_list(
+            _get_assessment_value(candidate, "fix_suggestions")
+        ),
+        "evidence_refs": _string_list(
+            _get_assessment_value(candidate, "evidence_refs")
+        ),
+    }
+
+
+def _get_assessment_value(payload: dict[str, object], field: str) -> object:
+    aliases = ASSESSMENT_JSON_FIELD_ALIASES.get(field, (field,))
+    for key in aliases:
+        if key in payload:
+            return payload.get(key)
+    return None
+
+
+def _parse_assessment_labeled_text(raw: str) -> dict[str, object] | None:
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if not lines:
+        return None
+
+    alias_to_field: dict[str, str] = {}
+    for field, aliases in ASSESSMENT_JSON_FIELD_ALIASES.items():
+        for alias in aliases:
+            alias_to_field[alias.lower()] = field
+
+    payload: dict[str, object] = {}
+    current_field: str | None = None
+    buffered: list[str] = []
+
+    def flush_current() -> None:
+        nonlocal buffered, current_field
+        if current_field is None:
+            buffered = []
+            return
+        text = "\n".join(buffered).strip()
+        if current_field in {
+            "false_positive_signals",
+            "fix_suggestions",
+            "evidence_refs",
+        }:
+            payload[current_field] = _string_list(text)
+        elif text:
+            payload[current_field] = text
+        current_field = None
+        buffered = []
+
+    for raw_line in lines:
+        line = raw_line.lstrip("-*0123456789. ").strip()
+        matched_field = None
+        matched_value = ""
+        for alias, field in alias_to_field.items():
+            pattern = rf"^{re.escape(alias)}\s*[:：]\s*(.*)$"
+            match = re.match(pattern, line, flags=re.IGNORECASE)
+            if match:
+                matched_field = field
+                matched_value = match.group(1).strip()
+                break
+        if matched_field is not None:
+            flush_current()
+            current_field = matched_field
+            if matched_value:
+                buffered.append(matched_value)
+            continue
+        if current_field is not None:
+            buffered.append(line)
+
+    flush_current()
+
+    verdict_match = re.search(r"\b(TP|FP|NEEDS_REVIEW)\b", raw, flags=re.IGNORECASE)
+    if verdict_match and "verdict" not in payload:
+        payload["verdict"] = verdict_match.group(1).upper()
+    confidence_match = re.search(r"\b(high|medium|low)\b", raw, flags=re.IGNORECASE)
+    if confidence_match and "confidence" not in payload:
+        payload["confidence"] = confidence_match.group(1).lower()
+
+    if not payload:
+        return None
+    return payload
 
 
 def _fail_ai_job(
@@ -2027,6 +2759,13 @@ def _safe_uuid(value: object) -> uuid.UUID | None:
 
 
 def _string_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        parts = [
+            item.strip(" -*\t")
+            for item in re.split(r"[\n,;；]+", value)
+            if item.strip(" -*\t")
+        ]
+        return parts
     if not isinstance(value, list):
         return []
     items: list[str] = []

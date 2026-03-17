@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     scan_dispatch_fallback_to_sync: bool = True
     ai_dispatch_backend: str = "celery"
     ai_dispatch_fallback_to_sync: bool = True
+    ai_default_max_context_tokens: int = 32768
+    ai_reserved_output_tokens: int = 6144
+    ai_reserved_system_tokens: int = 2048
+    ai_context_safety_margin_tokens: int = 1024
+    ai_assessment_max_flow_steps: int = 7
     scan_log_root: str = "./storage/job-logs"
     import_log_root: str = "./storage/import-logs"
     selftest_log_root: str = "./storage/selftest-logs"
