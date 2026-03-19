@@ -16,13 +16,15 @@ from app.dependencies.auth import (
     require_platform_action,
     require_project_resource_action,
 )
-from app.models import Finding, Job
+from app.models import AIAssessmentStatus, Finding, Job
 from app.schemas.ai import (
+    AIAssessmentChatSessionTriggerPayload,
     AIChatSessionDeletePayload,
     AIChatSessionSelectionUpdateRequest,
     AIChatMessageCreateRequest,
     AIChatMessagePayload,
     AIChatSessionCreateRequest,
+    FindingAIAssessmentContextPayload,
     AIChatSessionListPayload,
     AIChatSessionPayload,
     AIEnrichmentJobPayload,
@@ -56,6 +58,7 @@ from app.services.ai_service import (
     build_finding_ai_assessment_payload,
     build_system_ollama_payload,
     build_user_ai_provider_payload,
+    create_assessment_seed_chat_session,
     create_general_chat_session,
     create_chat_session,
     create_finding_retry_ai_job,
@@ -743,6 +746,31 @@ def get_latest_finding_assessment(
     return success_response(request, data=data)
 
 
+@router.get("/api/v1/findings/{finding_id}/ai/assessment/latest/context")
+def get_latest_finding_assessment_context(
+    request: Request,
+    finding_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _principal: AuthPrincipal = Depends(
+        require_project_resource_action(
+            "finding:read", resource_type="FINDING", resource_id_param="finding_id"
+        )
+    ),
+):
+    assessment = get_latest_finding_ai_assessment(db, finding_id=finding_id)
+    if assessment is None:
+        raise AppError(code="NOT_FOUND", status_code=404, message="AI 研判结果不存在")
+    data = FindingAIAssessmentContextPayload(
+        assessment_id=assessment.id,
+        finding_id=assessment.finding_id,
+        request_messages=assessment.request_messages_json,
+        context_snapshot=assessment.context_snapshot_json,
+        response_text=assessment.response_text,
+        summary_json=assessment.summary_json,
+    )
+    return success_response(request, data=data.model_dump())
+
+
 @router.post("/api/v1/findings/{finding_id}/ai/retry")
 def retry_finding_ai(
     request: Request,
@@ -795,6 +823,66 @@ def retry_finding_ai(
         raise
     data = JobTriggerPayload(job_id=job.id, idempotent_replay=False)
     return success_response(request, data=data.model_dump(), status_code=202)
+
+
+@router.post("/api/v1/findings/{finding_id}/ai/chat/sessions/from-latest-assessment")
+def create_assessment_seed_chat_session_endpoint(
+    request: Request,
+    finding_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    principal: AuthPrincipal = Depends(
+        require_project_resource_action(
+            "finding:read", resource_type="FINDING", resource_id_param="finding_id"
+        )
+    ),
+):
+    finding = db.get(Finding, finding_id)
+    if finding is None:
+        raise AppError(code="NOT_FOUND", status_code=404, message="漏洞不存在")
+    assessment = get_latest_finding_ai_assessment(db, finding_id=finding_id)
+    if assessment is None:
+        raise AppError(
+            code="NOT_FOUND",
+            status_code=404,
+            message="当前漏洞还没有可承接的 AI 研判结果",
+        )
+    if assessment.status != AIAssessmentStatus.SUCCEEDED.value:
+        raise AppError(
+            code="AI_ASSESSMENT_NOT_READY",
+            status_code=409,
+            message="当前最新 AI 研判尚未成功，暂时无法创建承接会话",
+        )
+    session, idempotent_replay = create_assessment_seed_chat_session(
+        db,
+        finding=finding,
+        assessment=assessment,
+        created_by=principal.user.id,
+    )
+    append_audit_log(
+        db,
+        request_id=get_request_id(request),
+        operator_user_id=principal.user.id,
+        action=(
+            "finding.ai.chat.session.reused"
+            if idempotent_replay
+            else "finding.ai.chat.session.seeded"
+        ),
+        resource_type="AI_CHAT_SESSION",
+        resource_id=str(session.id),
+        project_id=finding.project_id,
+        detail_json={
+            "finding_id": str(finding.id),
+            "assessment_id": str(assessment.id),
+        },
+    )
+    db.commit()
+    data = AIAssessmentChatSessionTriggerPayload(
+        ok=True,
+        session_id=session.id,
+        assessment_id=assessment.id,
+        idempotent_replay=idempotent_replay,
+    )
+    return success_response(request, data=data.model_dump(), status_code=200)
 
 
 @router.get("/api/v1/findings/{finding_id}/ai/chat/sessions")

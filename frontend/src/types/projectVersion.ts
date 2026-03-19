@@ -79,8 +79,14 @@ export interface VersionFileResponse {
 
 export interface GitImportRequest {
   repo_url: string;
-  ref_type: string;
-  ref_value: string;
+  ref_type?: string | null;
+  ref_value?: string | null;
+  repo_visibility?: 'public' | 'private' | null;
+  auth_type?: 'none' | 'https_token' | 'ssh_key' | null;
+  username?: string | null;
+  access_token?: string | null;
+  ssh_private_key?: string | null;
+  ssh_passphrase?: string | null;
   credential_id?: string | null;
   version_name?: string | null;
   note?: string | null;
@@ -88,8 +94,14 @@ export interface GitImportRequest {
 
 export interface GitImportTestRequest {
   repo_url: string;
-  ref_type: string;
-  ref_value: string;
+  ref_type?: string | null;
+  ref_value?: string | null;
+  repo_visibility?: 'public' | 'private' | null;
+  auth_type?: 'none' | 'https_token' | 'ssh_key' | null;
+  username?: string | null;
+  access_token?: string | null;
+  ssh_private_key?: string | null;
+  ssh_passphrase?: string | null;
   credential_id?: string | null;
 }
 
@@ -111,6 +123,22 @@ export interface ScanJobTriggerResponse {
   idempotent_replay: boolean;
 }
 
+export interface ImportJobProgressStage {
+  stage: string;
+  display_name: string;
+  order: number;
+  status: string;
+}
+
+export interface ImportJobProgress {
+  current_stage: string;
+  percent: number;
+  completed_stages: number;
+  total_stages: number;
+  is_terminal: boolean;
+  stages: ImportJobProgressStage[];
+}
+
 export interface ImportJob {
   id: string;
   project_id: string;
@@ -121,6 +149,8 @@ export interface ImportJob {
   stage: string;
   failure_code?: string | null;
   failure_hint?: string | null;
+  progress?: ImportJobProgress;
+  result_summary?: Record<string, unknown>;
   created_by?: string | null;
   created_at: string;
   updated_at: string;
@@ -129,6 +159,9 @@ export interface ImportJob {
 export interface GitImportTestResponse {
   ok: boolean;
   resolved_ref: string;
+  resolved_ref_type: string;
+  resolved_ref_value: string;
+  auto_detected: boolean;
 }
 
 export interface TaskLogEntry {

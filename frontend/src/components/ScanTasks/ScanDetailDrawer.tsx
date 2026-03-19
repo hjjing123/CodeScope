@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Drawer, Steps, Typography, Spin, Tag, Descriptions, Empty, Button } from 'antd';
+import { Drawer, Steps, Typography, Spin, Tag, Descriptions, Empty, Button, Space } from 'antd';
 import type { StepsProps } from 'antd';
 import { LoadingOutlined, ReloadOutlined } from '@ant-design/icons';
 import { getScanAIEnrichment } from '../../services/ai';
@@ -507,11 +507,17 @@ const ScanDetailDrawer: React.FC<ScanDetailDrawerProps> = ({ visible, jobId, onC
             <Descriptions.Item label="Created At">
               {dayjs(job.created_at).format('YYYY-MM-DD HH:mm:ss')}
             </Descriptions.Item>
-            <Descriptions.Item label="Project ID">
-              <Text code>{job.project_id}</Text>
+            <Descriptions.Item label="Project">
+              <Space direction="vertical" size={0}>
+                <Text>{job.project_name || job.project_id}</Text>
+                <Text type="secondary" code>{job.project_id}</Text>
+              </Space>
             </Descriptions.Item>
-            <Descriptions.Item label="Version ID">
-              <Text code>{job.version_id}</Text>
+            <Descriptions.Item label="Version">
+              <Space direction="vertical" size={0}>
+                <Text>{job.version_name || job.version_id}</Text>
+                <Text type="secondary" code>{job.version_id}</Text>
+              </Space>
             </Descriptions.Item>
             <Descriptions.Item label="Rule Sets" span={2}>
               {formatPayloadList(job.payload?.rule_set_keys)}

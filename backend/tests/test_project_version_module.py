@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import shutil
 import subprocess
 import tarfile
@@ -151,6 +152,29 @@ def _wait_import_job_terminal(
     return last_response
 
 
+def _parse_sse_events(body: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for block in body.split("\n\n"):
+        chunk = block.strip()
+        if not chunk:
+            continue
+        payload: dict[str, object] = {"event": "message", "id": None, "data": {}}
+        data_lines: list[str] = []
+        for line in chunk.splitlines():
+            if line.startswith("event:"):
+                payload["event"] = line.split(":", 1)[1].strip()
+                continue
+            if line.startswith("id:"):
+                payload["id"] = line.split(":", 1)[1].strip()
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].strip())
+        if data_lines:
+            payload["data"] = json.loads("\n".join(data_lines))
+        events.append(payload)
+    return events
+
+
 def test_project_and_version_flow(client, db_session, storage_settings):
     developer = _create_user(
         db_session,
@@ -272,6 +296,10 @@ def test_upload_import_success_and_code_browse(client, db_session, storage_setti
     assert job_payload["status"] == "SUCCEEDED"
     version_id = job_payload["version_id"]
     assert version_id is not None
+    assert job_payload["progress"]["percent"] == 100
+    assert job_payload["progress"]["is_terminal"] is True
+    assert job_payload["result_summary"]["version_id"] == version_id
+    assert job_payload["result_summary"]["version_name"] == "upload-v1"
 
     logs_resp = client.get(
         f"/api/v1/import-jobs/{import_job_id}/logs",
@@ -296,6 +324,16 @@ def test_upload_import_success_and_code_browse(client, db_session, storage_setti
     )
     assert all_logs_download_resp.status_code == 200
     assert "application/zip" in all_logs_download_resp.headers.get("content-type", "")
+
+    stream_resp = client.get(
+        f"/api/v1/import-jobs/{import_job_id}/logs/stream",
+        headers=_auth_header(tokens["access_token"]),
+    )
+    assert stream_resp.status_code == 200
+    assert "text/event-stream" in stream_resp.headers.get("content-type", "")
+    events = _parse_sse_events(stream_resp.text)
+    assert any(item["event"] == "log" for item in events)
+    assert events[-1]["event"] == "done"
 
     tree_resp = client.get(
         f"/api/v1/versions/{version_id}/tree",
@@ -476,6 +514,166 @@ def test_git_import_and_sync(client, db_session, storage_settings, tmp_path: Pat
     )
     assert versions_resp.status_code == 200
     assert versions_resp.json()["data"]["total"] >= 2
+
+
+def test_public_git_test_and_import_auto_detect_default_branch(
+    client, db_session, storage_settings, tmp_path: Path
+):
+    developer = _create_user(
+        db_session,
+        email="git-public-default@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "git-public-default-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+
+    repo_path = tmp_path / "default-branch-repo"
+    _init_local_git_repo(repo_path)
+
+    git_test_resp = client.post(
+        f"/api/v1/projects/{project_id}/imports/git/test",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "repo_url": str(repo_path),
+            "repo_visibility": "public",
+        },
+    )
+    assert git_test_resp.status_code == 200, git_test_resp.text
+    payload = git_test_resp.json()["data"]
+    assert payload["ok"] is True
+    assert payload["auto_detected"] is True
+    assert payload["resolved_ref_type"] == "branch"
+    assert payload["resolved_ref_value"] == "master"
+
+    import_resp = client.post(
+        f"/api/v1/projects/{project_id}/imports/git",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "repo_url": str(repo_path),
+            "repo_visibility": "public",
+            "version_name": "git-default-v1",
+        },
+    )
+    assert import_resp.status_code == 202, import_resp.text
+    import_job_id = import_resp.json()["data"]["import_job_id"]
+
+    job_payload = _wait_import_job_terminal(
+        client,
+        access_token=tokens["access_token"],
+        job_id=import_job_id,
+    )
+    assert job_payload["status"] == "SUCCEEDED"
+    assert job_payload["payload"]["ref_type"] == "branch"
+    assert job_payload["payload"]["ref_value"] == "master"
+    assert job_payload["payload"]["auto_detected_ref"] is True
+
+
+def test_private_git_import_with_https_token_uses_authenticated_git_commands(
+    client, db_session, storage_settings, monkeypatch, tmp_path: Path
+):
+    developer = _create_user(
+        db_session,
+        email="git-private-dev@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_resp = client.post(
+        "/api/v1/projects",
+        headers=_auth_header(tokens["access_token"]),
+        json={"name": "git-private-project"},
+    )
+    project_id = project_resp.json()["data"]["id"]
+
+    captured_envs: list[dict[str, str]] = []
+
+    def _fake_git_run(args, capture_output, text, timeout, check, env=None):
+        captured_envs.append(dict(env or {}))
+        if args[:3] == ["git", "ls-remote", "--exit-code"]:
+            return subprocess.CompletedProcess(
+                args, 0, stdout="deadbeef\trefs/heads/main\n", stderr=""
+            )
+        if args[:2] == ["git", "clone"]:
+            repo_dir = Path(args[3])
+            repo_dir.mkdir(parents=True, exist_ok=True)
+            (repo_dir / "README.md").write_text("# private\n", encoding="utf-8")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if (
+            len(args) >= 4
+            and args[0] == "git"
+            and args[1] == "-C"
+            and args[3] == "checkout"
+        ):
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if (
+            len(args) >= 4
+            and args[0] == "git"
+            and args[1] == "-C"
+            and args[3] == "rev-parse"
+        ):
+            return subprocess.CompletedProcess(
+                args, 0, stdout="deadbeefcafebabe\n", stderr=""
+            )
+        raise AssertionError(f"unexpected git args: {args}")
+
+    monkeypatch.setattr("app.services.import_service.subprocess.run", _fake_git_run)
+
+    test_resp = client.post(
+        f"/api/v1/projects/{project_id}/imports/git/test",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "repo_url": "https://example.com/private/repo.git",
+            "repo_visibility": "private",
+            "auth_type": "https_token",
+            "username": "oauth2",
+            "access_token": "secret-token-123",
+            "ref_type": "branch",
+            "ref_value": "main",
+        },
+    )
+    assert test_resp.status_code == 200, test_resp.text
+
+    import_resp = client.post(
+        f"/api/v1/projects/{project_id}/imports/git",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "repo_url": "https://example.com/private/repo.git",
+            "repo_visibility": "private",
+            "auth_type": "https_token",
+            "username": "oauth2",
+            "access_token": "secret-token-123",
+            "ref_type": "branch",
+            "ref_value": "main",
+            "version_name": "private-v1",
+        },
+    )
+    assert import_resp.status_code == 202, import_resp.text
+    import_job_id = import_resp.json()["data"]["import_job_id"]
+
+    job_payload = _wait_import_job_terminal(
+        client,
+        access_token=tokens["access_token"],
+        job_id=import_job_id,
+    )
+    assert job_payload["status"] == "SUCCEEDED"
+    assert job_payload["payload"]["repo_visibility"] == "private"
+    assert job_payload["payload"]["auth_type"] == "https_token"
+    assert job_payload["payload"]["repo_url"] == "https://example.com/private/repo.git"
+
+    assert captured_envs
+    assert any(env.get("GIT_ASKPASS") for env in captured_envs)
+    assert any(env.get("CODESCOPE_GIT_USERNAME") == "oauth2" for env in captured_envs)
+    assert any(
+        env.get("CODESCOPE_GIT_SECRET") == "secret-token-123" for env in captured_envs
+    )
 
 
 def test_import_job_requires_project_membership(client, db_session, storage_settings):

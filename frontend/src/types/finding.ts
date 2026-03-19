@@ -1,3 +1,12 @@
+export interface FindingAIReviewSummary {
+  has_assessment: boolean;
+  assessment_id?: string | null;
+  status?: string | null;
+  verdict?: string | null;
+  confidence?: string | null;
+  updated_at?: string | null;
+}
+
 export interface Finding {
   id: string;
   project_id: string;
@@ -21,6 +30,7 @@ export interface Finding {
   sink_file?: string | null;
   sink_line?: number | null;
   evidence_json: Record<string, unknown>;
+  ai_review: FindingAIReviewSummary;
   created_at: string;
 }
 
@@ -156,4 +166,35 @@ export interface FindingPathNodeContext {
   lines: string[];
   highlight_ranges: FindingHighlightRange[];
   focus_range?: FindingHighlightRange | null;
+}
+
+export interface ScanResultRow {
+  scan_job_id: string;
+  project_id: string;
+  project_name: string;
+  version_id: string;
+  version_name: string;
+  job_status: string;
+  result_generated_at: string;
+  created_at: string;
+  finished_at?: string | null;
+  created_by?: string | null;
+  rule_count: number;
+  total_findings: number;
+  severity_dist: Record<string, number>;
+  ai_enabled: boolean;
+  ai_latest_status?: string | null;
+}
+
+export interface ScanResultListResponse {
+  items: ScanResultRow[];
+  total: number;
+}
+
+export interface ScanResultListParams {
+  project_id?: string;
+  version_id?: string;
+  status?: string;
+  page?: number;
+  page_size?: number;
 }

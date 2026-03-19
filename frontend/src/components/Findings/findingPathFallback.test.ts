@@ -13,6 +13,7 @@ const buildFinding = (overrides: Partial<Finding> = {}): Finding => ({
   status: 'new',
   has_path: false,
   evidence_json: {},
+  ai_review: { has_assessment: false },
   created_at: '2026-03-14T00:00:00Z',
   ...overrides,
 });

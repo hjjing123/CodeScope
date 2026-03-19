@@ -32,7 +32,9 @@ export type JobResultSummary = Record<string, unknown>;
 export interface Job {
   id: string;
   project_id: string;
+  project_name?: string | null;
   version_id: string;
+  version_name?: string | null;
   job_type: string;
   payload: Record<string, unknown>;
   status: string;

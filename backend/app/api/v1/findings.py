@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
@@ -20,6 +20,9 @@ from app.models import (
     FindingSeverity,
     FindingStatus,
     Job,
+    JobStatus,
+    JobType,
+    Project,
     SystemRole,
     UserProjectRole,
     Version,
@@ -37,12 +40,18 @@ from app.schemas.finding import (
     FindingPathStepPayload,
     FindingPayload,
     ProjectResultOverviewPayload,
+    ScanResultListPayload,
+    ScanResultRowPayload,
 )
 from app.services.audit_service import append_audit_log
 from app.services.auth_service import AuthPrincipal
 from app.services.authorization_service import (
     ensure_project_action,
     ensure_resource_action,
+)
+from app.services.ai_service import (
+    build_finding_ai_review_summary,
+    map_latest_finding_ai_assessments,
 )
 from app.services.finding_presentation_service import build_finding_presentation
 from app.services.finding_path_service import (
@@ -80,6 +89,21 @@ def _validate_status(value: str | None) -> str | None:
             code="INVALID_ARGUMENT",
             status_code=422,
             message="status 值不合法",
+            detail={"allowed_statuses": sorted(allowed)},
+        )
+    return normalized
+
+
+def _validate_scan_job_status(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().upper()
+    allowed = {item.value for item in JobStatus}
+    if normalized not in allowed:
+        raise AppError(
+            code="INVALID_ARGUMENT",
+            status_code=422,
+            message="scan result status 值不合法",
             detail={"allowed_statuses": sorted(allowed)},
         )
     return normalized
@@ -131,7 +155,7 @@ def _normalize_text(value: str | None) -> str | None:
     return normalized or None
 
 
-def _finding_payload(item: Finding) -> FindingPayload:
+def _finding_payload(item: Finding, *, latest_assessment=None) -> FindingPayload:
     file_path, line_start = normalize_graph_location(
         version_id=item.version_id,
         file_path=item.file_path,
@@ -182,6 +206,7 @@ def _finding_payload(item: Finding) -> FindingPayload:
         sink_file=sink_file,
         sink_line=sink_line,
         evidence_json=item.evidence_json,
+        ai_review=build_finding_ai_review_summary(latest_assessment),
         created_at=item.created_at,
     )
 
@@ -226,10 +251,150 @@ def _dedupe_finding_payloads(items: list[FindingPayload]) -> list[FindingPayload
     return passthrough + list(selected_by_key.values())
 
 
+def _scan_result_row_payload(
+    *,
+    scan_job: Job,
+    project: Project,
+    version: Version,
+    ai_latest_status: str | None,
+) -> ScanResultRowPayload:
+    payload = scan_job.payload if isinstance(scan_job.payload, dict) else {}
+    ai_payload = payload.get("ai") if isinstance(payload.get("ai"), dict) else {}
+    result_summary = (
+        scan_job.result_summary if isinstance(scan_job.result_summary, dict) else {}
+    )
+    resolved_rule_keys = payload.get("resolved_rule_keys")
+    rule_count = len(resolved_rule_keys) if isinstance(resolved_rule_keys, list) else 0
+    severity_dist = (
+        result_summary.get("severity_counts")
+        if isinstance(result_summary.get("severity_counts"), dict)
+        else {}
+    )
+    return ScanResultRowPayload(
+        scan_job_id=scan_job.id,
+        project_id=project.id,
+        project_name=project.name,
+        version_id=version.id,
+        version_name=version.name,
+        job_status=scan_job.status,
+        result_generated_at=scan_job.finished_at
+        or scan_job.updated_at
+        or scan_job.created_at,
+        created_at=scan_job.created_at,
+        finished_at=scan_job.finished_at,
+        created_by=scan_job.created_by,
+        rule_count=rule_count,
+        total_findings=int(result_summary.get("total_findings") or 0),
+        severity_dist={
+            key: int(value or 0)
+            for key, value in severity_dist.items()
+            if isinstance(key, str)
+        },
+        ai_enabled=bool(ai_payload.get("enabled")),
+        ai_latest_status=ai_latest_status,
+    )
+
+
+def _map_latest_ai_status_by_scan_job(
+    db: Session, *, scan_job_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    normalized_ids = [item for item in scan_job_ids if isinstance(item, uuid.UUID)]
+    if not normalized_ids:
+        return {}
+    target_ids = {str(item) for item in normalized_ids}
+    ai_jobs = db.scalars(
+        select(Job)
+        .where(Job.job_type == JobType.AI.value)
+        .order_by(Job.created_at.desc())
+    ).all()
+    latest_by_scan_job: dict[uuid.UUID, str] = {}
+    for job in ai_jobs:
+        payload = job.payload if isinstance(job.payload, dict) else {}
+        scan_job_id = str(payload.get("scan_job_id") or "").strip()
+        if not scan_job_id or scan_job_id not in target_ids:
+            continue
+        try:
+            parsed_scan_job_id = uuid.UUID(scan_job_id)
+        except ValueError:
+            continue
+        if parsed_scan_job_id not in latest_by_scan_job:
+            latest_by_scan_job[parsed_scan_job_id] = job.status
+    return latest_by_scan_job
+
+
+def _validate_finding_scope(
+    db: Session,
+    *,
+    project_id: uuid.UUID | None,
+    version_id: uuid.UUID | None,
+    job_id: uuid.UUID | None,
+) -> tuple[Version | None, Job | None]:
+    version: Version | None = None
+    job: Job | None = None
+
+    if version_id is not None:
+        version = db.get(Version, version_id)
+        if version is None:
+            raise AppError(code="NOT_FOUND", status_code=404, message="版本不存在")
+        if project_id is not None and version.project_id != project_id:
+            raise AppError(
+                code="INVALID_ARGUMENT",
+                status_code=422,
+                message="version_id 不属于当前项目",
+            )
+
+    if job_id is not None:
+        job = db.get(Job, job_id)
+        if job is None:
+            raise AppError(code="NOT_FOUND", status_code=404, message="任务不存在")
+        if job.job_type != JobType.SCAN.value:
+            raise AppError(
+                code="INVALID_ARGUMENT",
+                status_code=422,
+                message="job_id 必须是扫描任务",
+            )
+        if project_id is not None and job.project_id != project_id:
+            raise AppError(
+                code="INVALID_ARGUMENT",
+                status_code=422,
+                message="job_id 不属于当前项目",
+            )
+        if version is not None and job.version_id != version.id:
+            raise AppError(
+                code="INVALID_ARGUMENT",
+                status_code=422,
+                message="job_id 不属于当前版本",
+            )
+
+    return version, job
+
+
+CONFIG_EXTENSIONS = {'.xml', '.properties', '.yaml', '.yml', '.json', '.conf', '.ini', '.toml'}
+
 def _sort_finding_payloads(
     items: list[FindingPayload], *, sort_by: str, sort_order: str
 ) -> list[FindingPayload]:
     reverse = sort_order == "desc"
+    
+    # Define rank: Config(2) > Code(1) > Route(0) (Descending Order)
+    # Config: ends with CONFIG_EXTENSIONS
+    # Route: entry_kind == "route"
+    # Code: Everything else (e.g. .java, .py)
+    
+    def get_type_rank(item: FindingPayload) -> int:
+        is_route = (item.entry_kind == "route")
+        if is_route:
+            val = 0
+        else:
+            # Check if config file
+            fpath = (item.file_path or "").lower()
+            is_config = any(fpath.endswith(ext) for ext in CONFIG_EXTENSIONS)
+            val = 2 if is_config else 1
+            
+        if not reverse: # Ascending: Route(2) > Code(1) > Config(0) -> effectively Config < Code < Route
+             return 2 - val
+        return val
+
     if sort_by == "severity":
         severity_rank = {
             FindingSeverity.HIGH.value: 3,
@@ -240,6 +405,7 @@ def _sort_finding_payloads(
             items,
             key=lambda item: (
                 severity_rank.get(item.severity, 0),
+                get_type_rank(item),
                 item.created_at.isoformat(),
             ),
             reverse=reverse,
@@ -249,11 +415,20 @@ def _sort_finding_payloads(
             items,
             key=lambda item: (
                 (item.path_length if item.path_length is not None else -1),
+                get_type_rank(item),
                 item.created_at.isoformat(),
             ),
             reverse=reverse,
         )
-    return sorted(items, key=lambda item: item.created_at.isoformat(), reverse=reverse)
+    # Default sort (created_at)
+    return sorted(
+        items, 
+        key=lambda item: (
+            get_type_rank(item),
+            item.created_at.isoformat()
+        ), 
+        reverse=reverse
+    )
 
 
 def _label_payload(item: FindingLabel) -> FindingLabelPayload:
@@ -344,6 +519,95 @@ def get_project_results_overview(
     return success_response(request, data=payload.model_dump())
 
 
+@router.get("/api/v1/scan-results")
+def list_scan_results(
+    request: Request,
+    project_id: uuid.UUID | None = None,
+    version_id: uuid.UUID | None = None,
+    status: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+    db: Session = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    safe_page = max(1, page)
+    safe_size = min(max(1, page_size), 200)
+    _validate_finding_scope(
+        db,
+        project_id=project_id,
+        version_id=version_id,
+        job_id=None,
+    )
+    normalized_status = _validate_scan_job_status(status)
+
+    conditions = [Job.job_type == JobType.SCAN.value]
+    if project_id is not None:
+        conditions.append(Job.project_id == project_id)
+    if version_id is not None:
+        conditions.append(Job.version_id == version_id)
+    if normalized_status is not None:
+        conditions.append(Job.status == normalized_status)
+
+    if principal.user.role != SystemRole.ADMIN.value:
+        if project_id is not None:
+            ensure_project_action(
+                db=db,
+                user_id=principal.user.id,
+                role=principal.user.role,
+                project_id=project_id,
+                action="finding:read",
+            )
+        elif version_id is not None:
+            ensure_resource_action(
+                db=db,
+                user_id=principal.user.id,
+                role=principal.user.role,
+                action="finding:read",
+                resource_type="VERSION",
+                resource_id=version_id,
+            )
+        else:
+            conditions.append(
+                Job.project_id.in_(
+                    select(UserProjectRole.project_id).where(
+                        UserProjectRole.user_id == principal.user.id
+                    )
+                )
+            )
+
+    total_stmt = select(func.count()).select_from(Job)
+    if conditions:
+        total_stmt = total_stmt.where(*conditions)
+    total = db.scalar(total_stmt) or 0
+
+    rows = db.execute(
+        select(Job, Project, Version)
+        .join(Project, Project.id == Job.project_id)
+        .join(Version, Version.id == Job.version_id)
+        .where(*conditions)
+        .order_by(Job.created_at.desc())
+        .offset((safe_page - 1) * safe_size)
+        .limit(safe_size)
+    ).all()
+    ai_status_by_scan_job = _map_latest_ai_status_by_scan_job(
+        db, scan_job_ids=[job.id for job, _project, _version in rows]
+    )
+
+    payload = ScanResultListPayload(
+        items=[
+            _scan_result_row_payload(
+                scan_job=job,
+                project=project,
+                version=version,
+                ai_latest_status=ai_status_by_scan_job.get(job.id),
+            )
+            for job, project, version in rows
+        ],
+        total=total,
+    )
+    return success_response(request, data=payload.model_dump())
+
+
 @router.get("/api/v1/findings")
 def list_findings(
     request: Request,
@@ -369,6 +633,12 @@ def list_findings(
     normalized_vuln_type = _normalize_text(vuln_type)
     normalized_file_prefix = _normalize_text(file_prefix)
     normalized_q = _normalize_text(q)
+    _validate_finding_scope(
+        db,
+        project_id=project_id,
+        version_id=version_id,
+        job_id=job_id,
+    )
 
     if principal.user.role != SystemRole.ADMIN.value:
         if project_id is not None:
@@ -443,7 +713,15 @@ def list_findings(
     if conditions:
         rows_stmt = rows_stmt.where(*conditions)
     rows = db.scalars(rows_stmt).all()
-    items = _dedupe_finding_payloads([_finding_payload(item) for item in rows])
+    latest_assessments = map_latest_finding_ai_assessments(
+        db, finding_ids=[item.id for item in rows]
+    )
+    items = _dedupe_finding_payloads(
+        [
+            _finding_payload(item, latest_assessment=latest_assessments.get(item.id))
+            for item in rows
+        ]
+    )
     sorted_items = _sort_finding_payloads(
         items,
         sort_by=normalized_sort_by,
@@ -472,7 +750,15 @@ def get_finding(
     finding = db.get(Finding, finding_id)
     if finding is None:
         raise AppError(code="NOT_FOUND", status_code=404, message="漏洞不存在")
-    return success_response(request, data=_finding_payload(finding).model_dump())
+    latest_assessment = map_latest_finding_ai_assessments(
+        db, finding_ids=[finding.id]
+    ).get(finding.id)
+    return success_response(
+        request,
+        data=_finding_payload(
+            finding, latest_assessment=latest_assessment
+        ).model_dump(),
+    )
 
 
 @router.post("/api/v1/findings/{finding_id}/labels")

@@ -145,12 +145,20 @@ def _load_steps_by_job_ids(
     return by_job_id
 
 
-def _job_payload(job: Job, *, steps: list[JobStep] | None = None) -> JobPayload:
+def _job_payload(
+    job: Job,
+    *,
+    steps: list[JobStep] | None = None,
+    project_name: str | None = None,
+    version_name: str | None = None,
+) -> JobPayload:
     resolved_steps = steps if steps is not None else []
     return JobPayload(
         id=job.id,
         project_id=job.project_id,
+        project_name=project_name,
         version_id=job.version_id,
+        version_name=version_name,
         job_type=job.job_type,
         payload=sanitize_job_payload(job.payload),
         status=job.status,
@@ -355,19 +363,30 @@ def list_jobs(
         total_stmt = total_stmt.where(*conditions)
     total = db.scalar(total_stmt) or 0
 
-    rows_stmt = select(Job)
+    rows_stmt = (
+        select(Job, Project.name, Version.name)
+        .outerjoin(Project, Project.id == Job.project_id)
+        .outerjoin(Version, Version.id == Job.version_id)
+    )
     if conditions:
         rows_stmt = rows_stmt.where(*conditions)
-    rows = db.scalars(
+    rows = db.execute(
         rows_stmt.order_by(Job.created_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     ).all()
 
-    steps_by_job_id = _load_steps_by_job_ids(db, job_ids=[item.id for item in rows])
+    jobs = [item for item, _project_name, _version_name in rows]
+    steps_by_job_id = _load_steps_by_job_ids(db, job_ids=[item.id for item in jobs])
     data = JobListPayload(
         items=[
-            _job_payload(item, steps=steps_by_job_id.get(item.id, [])) for item in rows
+            _job_payload(
+                item,
+                steps=steps_by_job_id.get(item.id, []),
+                project_name=project_name,
+                version_name=version_name,
+            )
+            for item, project_name, version_name in rows
         ],
         total=total,
     )
@@ -390,8 +409,18 @@ def get_job(
     job = db.get(Job, job_id)
     if job is None:
         raise AppError(code="NOT_FOUND", status_code=404, message="任务不存在")
+    project_name = db.scalar(select(Project.name).where(Project.id == job.project_id))
+    version_name = db.scalar(select(Version.name).where(Version.id == job.version_id))
     steps = list_scan_job_steps(db, job_id=job.id)
-    return success_response(request, data=_job_payload(job, steps=steps).model_dump())
+    return success_response(
+        request,
+        data=_job_payload(
+            job,
+            steps=steps,
+            project_name=project_name,
+            version_name=version_name,
+        ).model_dump(),
+    )
 
 
 @router.get("/api/v1/jobs/{job_id}/logs")

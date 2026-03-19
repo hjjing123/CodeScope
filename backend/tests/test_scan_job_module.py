@@ -1150,6 +1150,50 @@ def test_list_jobs_non_admin_is_project_scoped(client, db_session):
     items = list_resp.json()["data"]["items"]
     assert len(items) == 1
     assert items[0]["project_id"] == str(project_a.id)
+    assert items[0]["project_name"] == "scope-project-a"
+    assert items[0]["version_name"] == "scope-a-v1"
+
+
+def test_get_job_returns_project_and_version_names(client, db_session):
+    user = _create_user(
+        db_session,
+        email="scan-job-names@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    project = _create_project(db_session, name="job-name-project")
+    _add_member(
+        db_session,
+        user_id=user.id,
+        project_id=project.id,
+        role=ProjectRole.OWNER.value,
+    )
+    version = _create_version(db_session, project_id=project.id, name="job-name-v1")
+    job = Job(
+        project_id=project.id,
+        version_id=version.id,
+        job_type=JobType.SCAN.value,
+        payload={"request_id": "req_job_names"},
+        status=JobStatus.SUCCEEDED.value,
+        stage=JobStage.CLEANUP.value,
+        created_by=user.id,
+        started_at=utc_now(),
+        finished_at=utc_now(),
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    tokens = _login(client, email=user.email, password="Password123!")
+    detail_resp = client.get(
+        f"/api/v1/jobs/{job.id}",
+        headers=_auth_header(tokens["access_token"]),
+    )
+    assert detail_resp.status_code == 200
+    payload = detail_resp.json()["data"]
+    assert payload["project_id"] == str(project.id)
+    assert payload["project_name"] == "job-name-project"
+    assert payload["version_id"] == str(version.id)
+    assert payload["version_name"] == "job-name-v1"
 
 
 def test_scan_job_logs_endpoint_returns_stage_logs(client, db_session):
@@ -2683,6 +2727,122 @@ def test_results_overview_and_finding_label_flow(client, db_session):
     )
     assert path_resp.status_code == 409
     assert path_resp.json()["error"]["code"] == "PATH_NOT_AVAILABLE"
+
+
+def test_scan_results_list_is_project_scoped(client, db_session):
+    user = _create_user(
+        db_session,
+        email="scan-result-user@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    other = _create_user(
+        db_session,
+        email="scan-result-other@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    user_tokens = _login(client, email=user.email, password="Password123!")
+    other_tokens = _login(client, email=other.email, password="Password123!")
+
+    project = _create_project(db_session, name="scan-result-project")
+    _add_member(
+        db_session,
+        user_id=user.id,
+        project_id=project.id,
+        role=ProjectRole.OWNER.value,
+    )
+    version = _create_version(db_session, project_id=project.id, name="scan-result-v1")
+
+    scan_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(user_tokens["access_token"]),
+        json={"project_id": str(project.id), "version_id": str(version.id)},
+    )
+    assert scan_resp.status_code == 202
+    scan_job_id = scan_resp.json()["data"]["job_id"]
+
+    other_project = _create_project(db_session, name="scan-result-other-project")
+    _add_member(
+        db_session,
+        user_id=other.id,
+        project_id=other_project.id,
+        role=ProjectRole.OWNER.value,
+    )
+    other_version = _create_version(
+        db_session, project_id=other_project.id, name="scan-result-other-v1"
+    )
+
+    other_scan_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(other_tokens["access_token"]),
+        json={"project_id": str(other_project.id), "version_id": str(other_version.id)},
+    )
+    assert other_scan_resp.status_code == 202
+
+    list_resp = client.get(
+        "/api/v1/scan-results",
+        headers=_auth_header(user_tokens["access_token"]),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    payload = list_resp.json()["data"]
+    assert payload["total"] == 1
+    row = payload["items"][0]
+    assert row["scan_job_id"] == scan_job_id
+    assert row["project_id"] == str(project.id)
+    assert row["project_name"] == "scan-result-project"
+    assert row["version_id"] == str(version.id)
+    assert row["version_name"] == "scan-result-v1"
+    assert row["job_status"] == "SUCCEEDED"
+    assert isinstance(row["total_findings"], int)
+    assert row["ai_enabled"] is False
+    assert row["ai_latest_status"] is None
+
+
+def test_findings_list_rejects_mismatched_project_and_job_scope(client, db_session):
+    developer = _create_user(
+        db_session,
+        email="finding-scope-user@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    project_one = _create_project(db_session, name="scope-project-one")
+    _add_member(
+        db_session,
+        user_id=developer.id,
+        project_id=project_one.id,
+        role=ProjectRole.OWNER.value,
+    )
+    _create_version(db_session, project_id=project_one.id, name="scope-v1")
+
+    project_two = _create_project(db_session, name="scope-project-two")
+    _add_member(
+        db_session,
+        user_id=developer.id,
+        project_id=project_two.id,
+        role=ProjectRole.OWNER.value,
+    )
+    version_two = _create_version(
+        db_session, project_id=project_two.id, name="scope-v2"
+    )
+
+    scan_two_resp = client.post(
+        "/api/v1/scan-jobs",
+        headers=_auth_header(tokens["access_token"]),
+        json={"project_id": str(project_two.id), "version_id": str(version_two.id)},
+    )
+    assert scan_two_resp.status_code == 202
+    scan_two_job_id = scan_two_resp.json()["data"]["job_id"]
+
+    findings_resp = client.get(
+        "/api/v1/findings",
+        headers=_auth_header(tokens["access_token"]),
+        params={"project_id": str(project_one.id), "job_id": scan_two_job_id},
+    )
+    assert findings_resp.status_code == 422, findings_resp.text
+    assert findings_resp.json()["error"]["message"] == "job_id 不属于当前项目"
 
 
 def test_job_logs_download_artifacts_and_version_download(

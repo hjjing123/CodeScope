@@ -8,6 +8,7 @@ import ChatLayout from '../components/AICenterNew/ChatLayout';
 import SessionSidebar from '../components/AICenterNew/SessionSidebar';
 import ModelSelector from '../components/AICenterNew/ModelSelector';
 import { 
+  getLatestFindingAIAssessmentContext,
   listMyChatSessions, 
   createGeneralChatSession,
   createChatSession, 
@@ -17,7 +18,12 @@ import {
   updateChatSessionSelection
 } from '../services/ai';
 import { FindingService } from '../services/findings';
-import type { AIChatSessionPayload, AIChatMessagePayload, AIProviderSelectionRequest } from '../types/ai';
+ import type {
+  AIChatSessionPayload,
+  AIChatMessagePayload,
+  AIProviderSelectionRequest,
+  FindingAIAssessmentContextPayload,
+ } from '../types/ai';
 import type { Finding } from '../types/finding';
 
 // Lazy load components
@@ -55,8 +61,10 @@ const AICenterPage: React.FC = () => {
   const [viewMode, setViewMode] = useState<'chat' | 'config' | 'user_config'>('chat');
   const [sessions, setSessions] = useState<AIChatSessionPayload[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(searchParams.get('session_id'));
+  const [currentSession, setCurrentSession] = useState<AIChatSessionPayload | null>(null);
   const [messages, setMessages] = useState<AIChatMessagePayload[]>([]);
   const [finding, setFinding] = useState<Finding | null>(null);
+  const [assessmentContext, setAssessmentContext] = useState<FindingAIAssessmentContextPayload | null>(null);
   const [modelSelection, setModelSelection] = useState<AIProviderSelectionRequest>({});
   
   // UI State
@@ -91,8 +99,10 @@ const AICenterPage: React.FC = () => {
   // Load Session Details
   useEffect(() => {
     if (!currentSessionId) {
+      setCurrentSession(null);
       setMessages([]);
       setFinding(null);
+      setAssessmentContext(null);
       pendingInitialMessageRef.current = null;
       return;
     }
@@ -101,6 +111,7 @@ const AICenterPage: React.FC = () => {
       setLoadingChat(true);
       try {
         const session = await getChatSession(currentSessionId);
+        setCurrentSession(session);
         const sessionMessages = session.messages ?? [];
         const pendingInitialMessage = pendingInitialMessageRef.current;
         if (
@@ -131,17 +142,26 @@ const AICenterPage: React.FC = () => {
         }
         
         // Update model selection from session
+        const providerSnapshot =
+          session.provider_snapshot && typeof session.provider_snapshot === 'object'
+            ? session.provider_snapshot
+            : {};
         setModelSelection({
-          ai_source: session.provider_source as any,
-          ai_provider_id: undefined, // Session doesn't store provider ID directly but it's part of snapshot
+          ai_source: (String(providerSnapshot.source || session.provider_source || '') || undefined) as any,
+          ai_provider_id:
+            typeof providerSnapshot.provider_id === 'string' ? providerSnapshot.provider_id : undefined,
           ai_model: session.model_name,
         });
 
         if (session.finding_id) {
           setLoadingFinding(true);
           try {
-            const f = await FindingService.getFinding(session.finding_id);
+            const [f, latestContext] = await Promise.all([
+              FindingService.getFinding(session.finding_id),
+              getLatestFindingAIAssessmentContext(session.finding_id).catch(() => null),
+            ]);
             setFinding(f);
+            setAssessmentContext(latestContext);
           } catch (e) {
             console.error(e);
           } finally {
@@ -149,9 +169,12 @@ const AICenterPage: React.FC = () => {
           }
         } else {
           setFinding(null);
+          setAssessmentContext(null);
         }
       } catch (error) {
         message.error('加载会话详情失败');
+        setCurrentSession(null);
+        setAssessmentContext(null);
         pendingInitialMessageRef.current = null;
         setCurrentSessionId(null);
       } finally {
@@ -165,17 +188,52 @@ const AICenterPage: React.FC = () => {
   // Handle URL params
   useEffect(() => {
     const sid = searchParams.get('session_id');
+    const findingId = searchParams.get('finding_id');
     if (sid && sid !== currentSessionId) {
       setCurrentSessionId(sid);
     }
-    // Handle finding_id to create new chat? 
-    // If finding_id is present and no session_id, maybe prompt to create or find existing?
-    // For now, let's just respect session_id.
-  }, [searchParams]);
+    if (!sid) {
+      if (currentSessionId) {
+        setCurrentSessionId(null);
+      }
+      setCurrentSession(null);
+      setMessages([]);
+      pendingInitialMessageRef.current = null;
+      if (!findingId) {
+        setFinding(null);
+        setAssessmentContext(null);
+        return;
+      }
+
+      const loadFindingContext = async () => {
+        setLoadingFinding(true);
+        try {
+          const [loadedFinding, latestContext] = await Promise.all([
+            FindingService.getFinding(findingId),
+            getLatestFindingAIAssessmentContext(findingId).catch(() => null),
+          ]);
+          setFinding(loadedFinding);
+          setAssessmentContext(latestContext);
+        } catch (error) {
+          console.error(error);
+          setFinding(null);
+          setAssessmentContext(null);
+        } finally {
+          setLoadingFinding(false);
+        }
+      };
+
+      void loadFindingContext();
+    }
+  }, [searchParams, currentSessionId]);
 
   const handleSelectSession = (session: AIChatSessionPayload) => {
     setViewMode('chat');
     setCurrentSessionId(session.id);
+    if (session.finding_id) {
+      setSearchParams({ session_id: session.id, finding_id: session.finding_id });
+      return;
+    }
     setSearchParams({ session_id: session.id });
   };
 
@@ -422,8 +480,10 @@ const AICenterPage: React.FC = () => {
 
       if (currentSessionId === session.id) {
         setCurrentSessionId(null);
+        setCurrentSession(null);
         setMessages([]);
         setFinding(null);
+        setAssessmentContext(null);
 
         const nextParams = new URLSearchParams(searchParams);
         nextParams.delete('session_id');
@@ -510,7 +570,7 @@ const AICenterPage: React.FC = () => {
     }
   };
 
-  const showWelcome = !forceLayout && !currentSessionId && viewMode === 'chat' && sessions.length === 0;
+  const showWelcome = !forceLayout && !currentSessionId && !searchParams.get('finding_id') && viewMode === 'chat' && sessions.length === 0;
 
   if (showWelcome) {
     return (
@@ -562,7 +622,12 @@ const AICenterPage: React.FC = () => {
         }
         contextPanel={viewMode === 'chat' && finding ? (
           <Suspense fallback={<Spin />}>
-            <FindingContextPanel finding={finding} loading={loadingFinding} />
+            <FindingContextPanel
+              finding={finding}
+              loading={loadingFinding}
+              assessmentContext={assessmentContext}
+              session={currentSession}
+            />
           </Suspense>
         ) : undefined}
       >

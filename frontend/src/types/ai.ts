@@ -149,6 +149,7 @@ export interface AISelectableModelPayload {
   name: string;
   label: string;
   is_default: boolean;
+  selectable?: boolean;
   details: Record<string, unknown>;
 }
 
@@ -159,6 +160,14 @@ export interface AIModelCatalogProviderPayload {
   provider_label: string;
   provider_type: string;
   enabled: boolean;
+  default_model?: string | null;
+  available: boolean;
+  connection_ok?: boolean | null;
+  model_catalog_ok?: boolean | null;
+  allow_manual_model_input?: boolean;
+  source_label?: string | null;
+  status_label?: string | null;
+  status_reason?: string | null;
   models: AISelectableModelPayload[];
 }
 
@@ -180,12 +189,30 @@ export interface FindingAIAssessmentPayload {
   model_name: string;
   status: string;
   summary_json: Record<string, unknown>;
+  request_messages_json: Array<Record<string, unknown>>;
+  context_snapshot_json: Record<string, unknown>;
   response_text?: string | null;
   error_code?: string | null;
   error_message?: string | null;
   created_by?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface FindingAIAssessmentContextPayload {
+  assessment_id: string;
+  finding_id: string;
+  request_messages: Array<Record<string, unknown>>;
+  context_snapshot: Record<string, unknown>;
+  response_text?: string | null;
+  summary_json: Record<string, unknown>;
+}
+
+export interface AIAssessmentChatSessionTriggerPayload {
+  ok: boolean;
+  session_id: string;
+  assessment_id: string;
+  idempotent_replay: boolean;
 }
 
 export interface AIEnrichmentJobSummary {
@@ -230,6 +257,8 @@ export interface AIChatSessionPayload {
   model_name: string;
   title: string | null;
   provider_snapshot: Record<string, unknown>;
+  seed_kind?: string | null;
+  seed_assessment_id?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

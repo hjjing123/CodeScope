@@ -29,6 +29,7 @@ class FindingPayload(BaseModel):
     sink_file: str | None = None
     sink_line: int | None = None
     evidence_json: dict[str, object] = Field(default_factory=dict)
+    ai_review: dict[str, object] = Field(default_factory=dict)
     created_at: datetime
 
 
@@ -45,6 +46,29 @@ class ProjectResultOverviewPayload(BaseModel):
     severity_dist: dict[str, int]
     status_dist: dict[str, int]
     top_vuln_types: list[dict[str, object]]
+
+
+class ScanResultRowPayload(BaseModel):
+    scan_job_id: uuid.UUID
+    project_id: uuid.UUID
+    project_name: str
+    version_id: uuid.UUID
+    version_name: str
+    job_status: str
+    result_generated_at: datetime
+    created_at: datetime
+    finished_at: datetime | None = None
+    created_by: uuid.UUID | None = None
+    rule_count: int = 0
+    total_findings: int = 0
+    severity_dist: dict[str, int] = Field(default_factory=dict)
+    ai_enabled: bool = False
+    ai_latest_status: str | None = None
+
+
+class ScanResultListPayload(BaseModel):
+    items: list[ScanResultRowPayload]
+    total: int
 
 
 class FindingLabelRequest(BaseModel):

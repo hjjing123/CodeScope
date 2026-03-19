@@ -45,7 +45,9 @@ class JobProgressPayload(BaseModel):
 class JobPayload(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
+    project_name: str | None = None
     version_id: uuid.UUID
+    version_name: str | None = None
     job_type: str
     payload: dict[str, object]
     status: str

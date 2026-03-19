@@ -181,6 +181,7 @@ class AISelectableModelPayload(BaseModel):
     name: str
     label: str
     is_default: bool = False
+    selectable: bool = True
     details: dict[str, object] = Field(default_factory=dict)
 
 
@@ -191,6 +192,14 @@ class AIModelCatalogProviderPayload(BaseModel):
     provider_label: str
     provider_type: str
     enabled: bool
+    default_model: str | None = None
+    available: bool = False
+    connection_ok: bool | None = None
+    model_catalog_ok: bool | None = None
+    allow_manual_model_input: bool = False
+    source_label: str | None = None
+    status_label: str | None = None
+    status_reason: str | None = None
     models: list[AISelectableModelPayload] = Field(default_factory=list)
 
 
@@ -212,6 +221,8 @@ class FindingAIAssessmentPayload(BaseModel):
     model_name: str
     status: str
     summary_json: dict[str, object] = Field(default_factory=dict)
+    request_messages_json: list[dict[str, object]] = Field(default_factory=list)
+    context_snapshot_json: dict[str, object] = Field(default_factory=dict)
     response_text: str | None = None
     error_code: str | None = None
     error_message: str | None = None
@@ -260,6 +271,8 @@ class AIChatSessionPayload(BaseModel):
     model_name: str
     title: str | None = None
     provider_snapshot: dict[str, object] = Field(default_factory=dict)
+    seed_kind: str | None = None
+    seed_assessment_id: uuid.UUID | None = None
     created_by: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
@@ -269,6 +282,22 @@ class AIChatSessionPayload(BaseModel):
 class AIChatSessionDeletePayload(BaseModel):
     ok: bool = True
     session_id: uuid.UUID
+
+
+class FindingAIAssessmentContextPayload(BaseModel):
+    assessment_id: uuid.UUID
+    finding_id: uuid.UUID
+    request_messages: list[dict[str, object]] = Field(default_factory=list)
+    context_snapshot: dict[str, object] = Field(default_factory=dict)
+    response_text: str | None = None
+    summary_json: dict[str, object] = Field(default_factory=dict)
+
+
+class AIAssessmentChatSessionTriggerPayload(BaseModel):
+    ok: bool = True
+    session_id: uuid.UUID
+    assessment_id: uuid.UUID
+    idempotent_replay: bool = False
 
 
 class AIChatSessionListPayload(BaseModel):

@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Alert, Form, Input, Modal, Select, Switch, message } from 'antd';
 import { getProjects, getVersions } from '../../services/projectVersion';
-import AIProviderSelectFields from '../AI/AIProviderSelectFields';
-import { getMyAIOptions } from '../../services/ai';
+import AIScanModelSelectFields from '../AI/AIScanModelSelectFields';
+import { getMyAIModelCatalog } from '../../services/ai';
 import { getRules, getRuleSets } from '../../services/rules';
 import { ScanService } from '../../services/scan';
-import type { AIProviderOptionsPayload, AIProviderSelectionRequest } from '../../types/ai';
+import type { AIModelCatalogPayload, AIProviderSelectionRequest } from '../../types/ai';
 import type { ScanJobCreateRequest } from '../../types/scan';
 import type { Project, Version } from '../../types/projectVersion';
 import type { Rule, RuleSet } from '../../types/rule';
@@ -45,7 +45,7 @@ const CreateScanModal: React.FC<CreateScanModalProps> = ({
   const [loadingAIOptions, setLoadingAIOptions] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [aiOptions, setAiOptions] = useState<AIProviderOptionsPayload | null>(null);
+  const [aiModelCatalog, setAiModelCatalog] = useState<AIModelCatalogPayload | null>(null);
   const [aiSelection, setAiSelection] = useState<AIProviderSelectionRequest>({});
   const [aiEnabled, setAiEnabled] = useState(false);
 
@@ -64,12 +64,13 @@ const CreateScanModal: React.FC<CreateScanModalProps> = ({
       ai_enabled: false,
     });
     setAiEnabled(false);
+    setAiSelection({});
     setVersions([]);
     setSelectedProjectId(initialProjectId ?? null);
 
     void fetchProjects();
     void fetchRuleOptions();
-    void fetchAIOptions();
+    void fetchAIModelCatalog();
     if (initialProjectId) {
       void fetchVersions(initialProjectId, initialVersionId ?? undefined);
     }
@@ -126,19 +127,24 @@ const CreateScanModal: React.FC<CreateScanModalProps> = ({
     }
   };
 
-  const fetchAIOptions = async () => {
+  const fetchAIModelCatalog = async () => {
     try {
       setLoadingAIOptions(true);
-      const payload = await getMyAIOptions();
-      setAiOptions(payload);
-      setAiSelection({
-        ai_source: payload.default_selection.ai_source as AIProviderSelectionRequest['ai_source'],
-        ai_provider_id: payload.default_selection.ai_provider_id as string | undefined,
-        ai_model: payload.default_selection.ai_model as string | undefined,
+      const payload = await getMyAIModelCatalog();
+      setAiModelCatalog(payload);
+      setAiSelection((prev) => {
+        if (prev.ai_model) {
+          return prev;
+        }
+        return {
+          ai_source: payload.default_selection.ai_source as AIProviderSelectionRequest['ai_source'],
+          ai_provider_id: payload.default_selection.ai_provider_id as string | undefined,
+          ai_model: payload.default_selection.ai_model as string | undefined,
+        };
       });
     } catch (error) {
-      console.error('Failed to fetch AI options:', error);
-      setAiOptions(null);
+      console.error('Failed to fetch AI model catalog:', error);
+      setAiModelCatalog(null);
     } finally {
       setLoadingAIOptions(false);
     }
@@ -154,6 +160,12 @@ const CreateScanModal: React.FC<CreateScanModalProps> = ({
   const handleOk = async () => {
     try {
       const values = (await form.validateFields()) as CreateScanFormValues;
+      if (values.ai_enabled) {
+        if (!aiSelection.ai_source || !aiSelection.ai_model?.trim()) {
+          message.error('请选择可用模型，或手动填写调用模型名称');
+          return;
+        }
+      }
       setSubmitting(true);
 
       const payload: ScanJobCreateRequest = {
@@ -298,9 +310,13 @@ const CreateScanModal: React.FC<CreateScanModalProps> = ({
               style={{ marginBottom: 16 }}
             />
             {loadingAIOptions ? (
-              <Alert type="info" showIcon message="正在加载 AI Provider 选项" />
+              <Alert type="info" showIcon message="正在加载 AI 模型目录" />
             ) : (
-              <AIProviderSelectFields options={aiOptions} value={aiSelection} onChange={setAiSelection} />
+              <AIScanModelSelectFields
+                catalog={aiModelCatalog}
+                value={aiSelection}
+                onChange={setAiSelection}
+              />
             )}
           </div>
         ) : null}

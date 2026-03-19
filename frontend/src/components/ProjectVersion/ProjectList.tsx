@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Table, Space, Button, Popconfirm, message, Tooltip } from 'antd';
+import { Table, Space, Button, Popconfirm, message, Tooltip, Badge } from 'antd';
 import { PlusOutlined, DeleteOutlined, FolderOpenOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType, TableProps } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
@@ -98,7 +98,24 @@ const ProjectList: React.FC<ProjectListProps> = ({ onProjectSelect }) => {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 100,
+      width: 120,
+      render: (status: string) => {
+        let color = 'default';
+        let text = status;
+        
+        if (status === 'SCANNABLE') {
+          color = 'success';
+          text = '可扫描';
+        } else if (status === 'ARCHIVED') {
+          color = 'default';
+          text = '已归档';
+        } else if (status === 'DELETED') {
+          color = 'error';
+          text = '已删除';
+        }
+
+        return <Badge status={color as any} text={text} />;
+      },
     },
     {
       title: '创建时间',

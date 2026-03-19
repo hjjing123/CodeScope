@@ -54,6 +54,7 @@ from app.services.task_log_service import append_task_log
 SYSTEM_OLLAMA_PROVIDER_KEY = "system_ollama"
 AI_SOURCE_SYSTEM_OLLAMA = "system_ollama"
 AI_SOURCE_USER_EXTERNAL = "user_external"
+AI_CHAT_SESSION_SEED_ASSESSMENT = "assessment_review"
 
 AI_STEP_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("prepare", "准备上下文"),
@@ -815,33 +816,12 @@ def build_ai_model_catalog_payload(
     items: list[dict[str, object]] = []
 
     system_ollama = options.get("system_ollama") if isinstance(options, dict) else None
-    if isinstance(system_ollama, dict) and bool(system_ollama.get("available")):
-        system_models = _normalize_model_list(system_ollama.get("published_models"))
-        items.append(
-            {
-                "provider_source": AI_SOURCE_SYSTEM_OLLAMA,
-                "provider_id": None,
-                "provider_key": SYSTEM_OLLAMA_PROVIDER_KEY,
-                "provider_label": str(
-                    system_ollama.get("display_name") or "System Ollama"
-                ),
-                "provider_type": str(
-                    system_ollama.get("provider_type")
-                    or AIProviderType.OLLAMA_LOCAL.value
-                ),
-                "enabled": True,
-                "models": [
-                    {
-                        "name": model,
-                        "label": model,
-                        "is_default": model
-                        == _normalize_optional_text(system_ollama.get("default_model")),
-                        "details": {},
-                    }
-                    for model in system_models
-                ],
-            }
-        )
+    if isinstance(system_ollama, dict) and (
+        bool(system_ollama.get("available"))
+        or bool(_normalize_model_list(system_ollama.get("published_models")))
+        or system_ollama.get("connection_ok") is not None
+    ):
+        items.append(_build_system_model_catalog_item(system_ollama))
 
     user_providers = list_user_ai_providers(db, user_id=user_id)
     for provider in user_providers:
@@ -891,12 +871,138 @@ def build_scan_ai_payload(
         ai_provider_id=ai_provider_id,
         ai_model=ai_model,
     )
+    validated_model = validate_scan_ai_selection(
+        db,
+        user_id=user_id,
+        ai_source=str(snapshot.get("source") or ""),
+        ai_provider_id=ai_provider_id,
+        ai_model=_normalize_optional_text(snapshot.get("model")),
+    )
+    snapshot["model"] = validated_model
     return {
         "enabled": True,
         "mode": "post_scan_enrichment",
         "source": snapshot["source"],
         "provider_snapshot": snapshot,
     }
+
+
+def validate_scan_ai_selection(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    ai_source: str | None,
+    ai_provider_id: uuid.UUID | None,
+    ai_model: str | None,
+) -> str:
+    normalized_source = _normalize_optional_text(ai_source)
+    normalized_model = _normalize_optional_text(ai_model)
+
+    if normalized_source == AI_SOURCE_SYSTEM_OLLAMA:
+        provider, probe_result = ensure_system_ollama_provider(db, probe=True)
+        if provider is None or not provider.enabled:
+            raise AppError(
+                code="AI_PROVIDER_NOT_AVAILABLE",
+                status_code=409,
+                message="系统 Ollama 未启用",
+            )
+        if probe_result.get("connection_ok") is False:
+            raise AppError(
+                code="AI_PROVIDER_NOT_AVAILABLE",
+                status_code=409,
+                message="系统 Ollama 当前不可用",
+                detail=probe_result.get("connection_detail") or {},
+            )
+        published_models = _normalize_model_list(provider.published_models_json)
+        selected_model = (
+            normalized_model
+            or provider.default_model
+            or _first_published_model(provider)
+        )
+        if selected_model is None:
+            raise AppError(
+                code="AI_MODEL_NOT_AVAILABLE",
+                status_code=422,
+                message="系统 Ollama 没有可用模型，请先发布模型后再启用 AI 研判",
+            )
+        if selected_model not in published_models:
+            raise AppError(
+                code="AI_MODEL_NOT_AVAILABLE",
+                status_code=422,
+                message="所选系统 Ollama 模型未发布或当前不可用",
+                detail={"model": selected_model},
+            )
+        return selected_model
+
+    if normalized_source == AI_SOURCE_USER_EXTERNAL:
+        if ai_provider_id is not None:
+            provider = get_user_ai_provider(
+                db, user_id=user_id, provider_id=ai_provider_id
+            )
+        else:
+            provider = db.scalar(
+                select(UserAIProvider).where(
+                    UserAIProvider.user_id == user_id,
+                    UserAIProvider.is_default.is_(True),
+                    UserAIProvider.enabled.is_(True),
+                )
+            )
+        if provider is None:
+            raise AppError(
+                code="AI_PROVIDER_NOT_FOUND",
+                status_code=404,
+                message="未找到可用的外部 AI Provider",
+            )
+        if not provider.enabled:
+            raise AppError(
+                code="AI_PROVIDER_DISABLED",
+                status_code=409,
+                message="所选外部 AI Provider 已被禁用",
+            )
+
+        catalog_state = _probe_user_provider_model_catalog(provider)
+        if not bool(catalog_state.get("available")):
+            raise AppError(
+                code="AI_PROVIDER_NOT_AVAILABLE",
+                status_code=409,
+                message="所选外部 AI Provider 当前不可用",
+                detail={
+                    "status_reason": catalog_state.get("status_reason"),
+                    "connection_ok": catalog_state.get("connection_ok"),
+                },
+            )
+
+        selected_model = normalized_model or provider.default_model
+        if not selected_model:
+            raise AppError(
+                code="AI_MODEL_NOT_AVAILABLE",
+                status_code=422,
+                message="请填写要调用的模型名称",
+            )
+
+        live_model_names = catalog_state.get("live_model_names")
+        if isinstance(live_model_names, list) and live_model_names:
+            if selected_model not in live_model_names:
+                raise AppError(
+                    code="AI_MODEL_NOT_AVAILABLE",
+                    status_code=422,
+                    message="所选模型不在当前可用模型列表中",
+                    detail={"model": selected_model},
+                )
+        elif not bool(catalog_state.get("allow_manual_model_input")):
+            raise AppError(
+                code="AI_MODEL_NOT_AVAILABLE",
+                status_code=422,
+                message="当前无法确认模型可用性，请稍后重试",
+            )
+        return selected_model
+
+    raise AppError(
+        code="INVALID_ARGUMENT",
+        status_code=422,
+        message="ai_source 值不合法",
+        detail={"allowed_values": [AI_SOURCE_SYSTEM_OLLAMA, AI_SOURCE_USER_EXTERNAL]},
+    )
 
 
 def create_ai_job(
@@ -1141,13 +1247,13 @@ def run_ai_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
         succeeded_count = 0
         failed_count = 0
         for index, finding in enumerate(findings, start=1):
-            try:
-                _run_assessment_for_finding(
-                    session,
-                    finding=finding,
-                    ai_job=job,
-                    provider_snapshot=provider_snapshot,
-                )
+            result = _run_assessment_for_finding(
+                session,
+                finding=finding,
+                ai_job=job,
+                provider_snapshot=provider_snapshot,
+            )
+            if result.ok:
                 succeeded_count += 1
                 _append_ai_log(
                     job_id=job.id,
@@ -1158,21 +1264,13 @@ def run_ai_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
                     project_id=job.project_id,
                     db=session,
                 )
-            except AppError as exc:
+            else:
                 failed_count += 1
-                _record_failed_assessment(
-                    session,
-                    finding=finding,
-                    ai_job=job,
-                    provider_snapshot=provider_snapshot,
-                    error_code=exc.code,
-                    error_message=exc.message,
-                )
                 _append_ai_log(
                     job_id=job.id,
                     stage=JobStage.AI.value,
                     message=(
-                        f"研判失败: finding_id={finding.id}, code={exc.code},"
+                        f"研判失败: finding_id={finding.id}, code={result.assessment.error_code},"
                         f" progress={index}/{total_findings}"
                     ),
                     project_id=job.project_id,
@@ -1304,6 +1402,8 @@ def build_finding_ai_assessment_payload(
         "model_name": assessment.model_name,
         "status": assessment.status,
         "summary_json": assessment.summary_json,
+        "request_messages_json": assessment.request_messages_json,
+        "context_snapshot_json": assessment.context_snapshot_json,
         "response_text": assessment.response_text,
         "error_code": assessment.error_code,
         "error_message": assessment.error_message,
@@ -1311,6 +1411,56 @@ def build_finding_ai_assessment_payload(
         "created_at": assessment.created_at,
         "updated_at": assessment.updated_at,
     }
+
+
+def build_finding_ai_review_summary(
+    assessment: FindingAIAssessment | None,
+) -> dict[str, object]:
+    if assessment is None:
+        return {
+            "has_assessment": False,
+            "assessment_id": None,
+            "status": None,
+            "verdict": None,
+            "confidence": None,
+            "updated_at": None,
+        }
+    summary = (
+        dict(assessment.summary_json or {})
+        if isinstance(assessment.summary_json, dict)
+        else {}
+    )
+    verdict = _normalize_optional_text(summary.get("verdict"))
+    confidence = _normalize_optional_text(summary.get("confidence"))
+    return {
+        "has_assessment": True,
+        "assessment_id": assessment.id,
+        "status": assessment.status,
+        "verdict": verdict.upper() if verdict else None,
+        "confidence": confidence.lower() if confidence else None,
+        "updated_at": assessment.updated_at,
+    }
+
+
+def map_latest_finding_ai_assessments(
+    db: Session, *, finding_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, FindingAIAssessment]:
+    normalized_ids = [item for item in finding_ids if isinstance(item, uuid.UUID)]
+    if not normalized_ids:
+        return {}
+    rows = db.scalars(
+        select(FindingAIAssessment)
+        .where(FindingAIAssessment.finding_id.in_(normalized_ids))
+        .order_by(
+            FindingAIAssessment.finding_id.asc(),
+            FindingAIAssessment.created_at.desc(),
+        )
+    ).all()
+    latest_by_finding: dict[uuid.UUID, FindingAIAssessment] = {}
+    for row in rows:
+        if row.finding_id not in latest_by_finding:
+            latest_by_finding[row.finding_id] = row
+    return latest_by_finding
 
 
 def list_related_ai_jobs_for_scan(db: Session, *, scan_job_id: uuid.UUID) -> list[Job]:
@@ -1361,6 +1511,8 @@ def create_general_chat_session(
         created_by=created_by,
         provider_snapshot=provider_snapshot,
         title=title,
+        seed_kind=None,
+        seed_assessment_id=None,
     )
 
 
@@ -1379,7 +1531,73 @@ def create_chat_session(
         created_by=created_by,
         provider_snapshot=provider_snapshot,
         title=title,
+        seed_kind=None,
+        seed_assessment_id=None,
     )
+
+
+def create_assessment_seed_chat_session(
+    db: Session,
+    *,
+    finding: Finding,
+    assessment: FindingAIAssessment,
+    created_by: uuid.UUID,
+) -> tuple[AIChatSession, bool]:
+    if assessment.status != AIAssessmentStatus.SUCCEEDED.value:
+        raise AppError(
+            code="AI_ASSESSMENT_NOT_READY",
+            status_code=409,
+            message="当前最新 AI 研判尚未成功，暂时无法创建承接会话",
+        )
+    existing = db.scalar(
+        select(AIChatSession).where(
+            AIChatSession.created_by == created_by,
+            AIChatSession.seed_assessment_id == assessment.id,
+        )
+    )
+    if existing is not None:
+        return existing, True
+
+    provider_snapshot = _resolve_assessment_provider_snapshot(db, assessment=assessment)
+    session = _create_chat_session_record(
+        db,
+        session_mode=AIChatSessionMode.FINDING_CONTEXT.value,
+        finding=finding,
+        created_by=created_by,
+        provider_snapshot=provider_snapshot,
+        title=_build_seed_session_title(finding=finding),
+        seed_kind=AI_CHAT_SESSION_SEED_ASSESSMENT,
+        seed_assessment_id=assessment.id,
+    )
+
+    request_messages = _resolve_assessment_request_messages(
+        db,
+        finding=finding,
+        assessment=assessment,
+        provider_snapshot=provider_snapshot,
+    )
+    create_chat_user_message(
+        db,
+        session=session,
+        content=_render_seed_request_content(request_messages),
+        meta_json={
+            "message_kind": "assessment_seed_input",
+            "assessment_id": str(assessment.id),
+            "exclude_from_model_context": True,
+        },
+    )
+    create_chat_assistant_message(
+        db,
+        session=session,
+        content=_render_seed_response_content(assessment),
+        raw_payload={"assessment_id": str(assessment.id)},
+        meta_json={
+            "message_kind": "assessment_seed_output",
+            "assessment_id": str(assessment.id),
+            "exclude_from_model_context": True,
+        },
+    )
+    return session, False
 
 
 def _create_chat_session_record(
@@ -1390,6 +1608,8 @@ def _create_chat_session_record(
     created_by: uuid.UUID,
     provider_snapshot: dict[str, object],
     title: str | None,
+    seed_kind: str | None,
+    seed_assessment_id: uuid.UUID | None,
 ) -> AIChatSession:
     session = AIChatSession(
         session_mode=session_mode,
@@ -1402,6 +1622,8 @@ def _create_chat_session_record(
         model_name=str(provider_snapshot.get("model") or ""),
         title=_normalize_optional_text(title),
         provider_snapshot_json=provider_snapshot,
+        seed_kind=_normalize_optional_text(seed_kind),
+        seed_assessment_id=seed_assessment_id,
         created_by=created_by,
     )
     db.add(session)
@@ -1456,6 +1678,8 @@ def build_chat_session_payload(
         "model_name": session.model_name,
         "title": session.title,
         "provider_snapshot": sanitize_provider_snapshot(session.provider_snapshot_json),
+        "seed_kind": session.seed_kind,
+        "seed_assessment_id": session.seed_assessment_id,
         "created_by": session.created_by,
         "created_at": session.created_at,
         "updated_at": session.updated_at,
@@ -1514,12 +1738,13 @@ def create_chat_user_message(
     *,
     session: AIChatSession,
     content: str,
+    meta_json: dict[str, object] | None = None,
 ) -> AIChatMessage:
     user_message = AIChatMessage(
         session_id=session.id,
         role=AIChatRole.USER.value,
         content=_normalize_required_text(content, field_name="content"),
-        meta_json={},
+        meta_json=dict(meta_json or {}),
     )
     db.add(user_message)
     session.updated_at = utc_now()
@@ -1535,7 +1760,7 @@ def prepare_chat_completion_request(
     session: AIChatSession,
     finding: Finding | None,
 ) -> tuple[dict[str, object], list[dict[str, str]]]:
-    history = list_chat_messages(db, session_id=session.id)
+    history = _chat_history_for_model(list_chat_messages(db, session_id=session.id))
     if session.session_mode == AIChatSessionMode.GENERAL.value:
         messages = _build_general_chat_messages(history=history)
     else:
@@ -1555,23 +1780,109 @@ def prepare_chat_completion_request(
     return snapshot, messages
 
 
+def _chat_history_for_model(history: list[AIChatMessage]) -> list[AIChatMessage]:
+    filtered: list[AIChatMessage] = []
+    for item in history:
+        meta = item.meta_json if isinstance(item.meta_json, dict) else {}
+        if bool(meta.get("exclude_from_model_context")):
+            continue
+        filtered.append(item)
+    return filtered
+
+
 def create_chat_assistant_message(
     db: Session,
     *,
     session: AIChatSession,
     content: str,
     raw_payload: dict[str, object],
+    meta_json: dict[str, object] | None = None,
 ) -> AIChatMessage:
     assistant_message = AIChatMessage(
         session_id=session.id,
         role=AIChatRole.ASSISTANT.value,
         content=content,
-        meta_json={"raw_payload": raw_payload},
+        meta_json={"raw_payload": raw_payload, **dict(meta_json or {})},
     )
     db.add(assistant_message)
     session.updated_at = utc_now()
     db.flush()
     return assistant_message
+
+
+def _resolve_assessment_provider_snapshot(
+    db: Session, *, assessment: FindingAIAssessment
+) -> dict[str, object]:
+    job = db.get(Job, assessment.job_id)
+    payload = job.payload if job is not None and isinstance(job.payload, dict) else {}
+    snapshot = payload.get("provider_snapshot") if isinstance(payload, dict) else None
+    if isinstance(snapshot, dict) and snapshot:
+        return dict(snapshot)
+    raise AppError(
+        code="AI_PROVIDER_SNAPSHOT_MISSING",
+        status_code=409,
+        message="当前 AI 研判缺少 Provider 快照，无法创建承接会话",
+    )
+
+
+def _resolve_assessment_request_messages(
+    db: Session,
+    *,
+    finding: Finding,
+    assessment: FindingAIAssessment,
+    provider_snapshot: dict[str, object],
+) -> list[dict[str, str]]:
+    stored_messages = assessment.request_messages_json
+    if isinstance(stored_messages, list) and stored_messages:
+        normalized_messages: list[dict[str, str]] = []
+        for item in stored_messages:
+            if not isinstance(item, dict):
+                continue
+            role = _normalize_optional_text(item.get("role")) or "user"
+            content = _normalize_optional_text(item.get("content"))
+            if content is None:
+                continue
+            normalized_messages.append({"role": role, "content": content})
+        if normalized_messages:
+            return normalized_messages
+    prompt_bundle = _build_assessment_messages(
+        db,
+        finding=finding,
+        provider_snapshot=_prepare_assessment_provider_snapshot(
+            _inflate_provider_snapshot(provider_snapshot)
+        ),
+    )
+    return prompt_bundle.messages
+
+
+def _render_seed_request_content(request_messages: list[dict[str, str]]) -> str:
+    sections: list[str] = ["以下为本次 AI 研判实际发送内容："]
+    for item in request_messages:
+        role = str(item.get("role") or "user").strip().upper() or "USER"
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        sections.append(f"[{role}]\n{content}")
+    rendered = "\n\n".join(sections).strip()
+    return rendered or "以下为本次 AI 研判实际发送内容：\n[USER]\n(空)"
+
+
+def _render_seed_response_content(assessment: FindingAIAssessment) -> str:
+    response_text = _normalize_optional_text(assessment.response_text)
+    if response_text is not None:
+        return response_text
+    summary = (
+        assessment.summary_json if isinstance(assessment.summary_json, dict) else {}
+    )
+    rendered = json.dumps(summary, ensure_ascii=False, indent=2)
+    return rendered if rendered.strip() else "模型未返回可展示的内容。"
+
+
+def _build_seed_session_title(*, finding: Finding) -> str:
+    return _truncate_text(
+        f"{finding.vuln_type or finding.rule_key or '漏洞'} · AI 研判会话",
+        255,
+    )
 
 
 def initialize_ai_job_steps(db: Session, *, job_id: uuid.UUID) -> list[JobStep]:
@@ -1637,45 +1948,49 @@ def _run_assessment_for_finding(
     ai_job: Job,
     provider_snapshot: dict[str, object],
 ) -> AssessmentRunResult:
-    snapshot = _prepare_assessment_provider_snapshot(
-        _inflate_provider_snapshot(provider_snapshot)
-    )
-    prompt_bundle = _build_assessment_messages(
-        db,
-        finding=finding,
-        provider_snapshot=snapshot,
-    )
-    result = run_provider_chat(
-        provider_snapshot=snapshot, messages=prompt_bundle.messages
-    )
-    summary = _parse_assessment_content(result.content)
-    assessment = db.scalar(
-        select(FindingAIAssessment).where(
-            FindingAIAssessment.finding_id == finding.id,
-            FindingAIAssessment.job_id == ai_job.id,
+    prompt_bundle: AssessmentPromptBundle | None = None
+    try:
+        snapshot = _prepare_assessment_provider_snapshot(
+            _inflate_provider_snapshot(provider_snapshot)
         )
-    )
-    if assessment is None:
-        assessment = FindingAIAssessment(
-            finding_id=finding.id,
-            job_id=ai_job.id,
-            scan_job_id=_safe_uuid(ai_job.payload.get("scan_job_id")),
-            project_id=finding.project_id,
-            version_id=finding.version_id,
-            provider_source=str(provider_snapshot.get("source") or ""),
-            provider_type=str(provider_snapshot.get("provider_type") or ""),
-            provider_label=str(provider_snapshot.get("display_name") or ""),
-            model_name=str(provider_snapshot.get("model") or ""),
-            created_by=ai_job.created_by,
+        prompt_bundle = _build_assessment_messages(
+            db,
+            finding=finding,
+            provider_snapshot=snapshot,
         )
-        db.add(assessment)
-    assessment.status = AIAssessmentStatus.SUCCEEDED.value
-    assessment.summary_json = {**summary, "prompt_meta": prompt_bundle.budget_meta}
-    assessment.response_text = result.content
-    assessment.error_code = None
-    assessment.error_message = None
-    db.flush()
-    return AssessmentRunResult(assessment=assessment, ok=True)
+        result = run_provider_chat(
+            provider_snapshot=snapshot, messages=prompt_bundle.messages
+        )
+        summary = _parse_assessment_content(result.content)
+        assessment = _ensure_finding_ai_assessment_record(
+            db,
+            finding=finding,
+            ai_job=ai_job,
+            provider_snapshot=provider_snapshot,
+        )
+        assessment.status = AIAssessmentStatus.SUCCEEDED.value
+        assessment.summary_json = {**summary, "prompt_meta": prompt_bundle.budget_meta}
+        assessment.request_messages_json = [
+            {"role": item.get("role") or "user", "content": item.get("content") or ""}
+            for item in prompt_bundle.messages
+        ]
+        assessment.context_snapshot_json = prompt_bundle.context_payload
+        assessment.response_text = result.content
+        assessment.error_code = None
+        assessment.error_message = None
+        db.flush()
+        return AssessmentRunResult(assessment=assessment, ok=True)
+    except AppError as exc:
+        assessment = _record_failed_assessment(
+            db,
+            finding=finding,
+            ai_job=ai_job,
+            provider_snapshot=provider_snapshot,
+            error_code=exc.code,
+            error_message=exc.message,
+            prompt_bundle=prompt_bundle,
+        )
+        return AssessmentRunResult(assessment=assessment, ok=False)
 
 
 def _record_failed_assessment(
@@ -1686,6 +2001,42 @@ def _record_failed_assessment(
     provider_snapshot: dict[str, object],
     error_code: str,
     error_message: str,
+    prompt_bundle: AssessmentPromptBundle | None = None,
+) -> FindingAIAssessment:
+    assessment = _ensure_finding_ai_assessment_record(
+        db,
+        finding=finding,
+        ai_job=ai_job,
+        provider_snapshot=provider_snapshot,
+    )
+    assessment.status = AIAssessmentStatus.FAILED.value
+    assessment.summary_json = (
+        {"prompt_meta": prompt_bundle.budget_meta} if prompt_bundle is not None else {}
+    )
+    assessment.request_messages_json = (
+        [
+            {"role": item.get("role") or "user", "content": item.get("content") or ""}
+            for item in prompt_bundle.messages
+        ]
+        if prompt_bundle is not None
+        else []
+    )
+    assessment.context_snapshot_json = (
+        prompt_bundle.context_payload if prompt_bundle is not None else {}
+    )
+    assessment.response_text = None
+    assessment.error_code = error_code
+    assessment.error_message = error_message
+    db.flush()
+    return assessment
+
+
+def _ensure_finding_ai_assessment_record(
+    db: Session,
+    *,
+    finding: Finding,
+    ai_job: Job,
+    provider_snapshot: dict[str, object],
 ) -> FindingAIAssessment:
     assessment = db.scalar(
         select(FindingAIAssessment).where(
@@ -1707,12 +2058,6 @@ def _record_failed_assessment(
             created_by=ai_job.created_by,
         )
         db.add(assessment)
-    assessment.status = AIAssessmentStatus.FAILED.value
-    assessment.summary_json = {}
-    assessment.response_text = None
-    assessment.error_code = error_code
-    assessment.error_message = error_message
-    db.flush()
     return assessment
 
 
@@ -1768,44 +2113,79 @@ def _build_user_provider_snapshot(
     }
 
 
+def _build_system_model_catalog_item(
+    system_ollama: dict[str, object],
+) -> dict[str, object]:
+    published_models = _normalize_model_list(system_ollama.get("published_models"))
+    connection_ok = system_ollama.get("connection_ok")
+    available = bool(system_ollama.get("available")) and bool(published_models)
+    status_label = "可用"
+    status_reason = None
+    if connection_ok is False:
+        status_label = "连接失败"
+        status_reason = "系统 Ollama 当前无法连接"
+    elif not published_models:
+        status_label = "未发布模型"
+        status_reason = "系统 Ollama 尚未发布可用模型"
+    elif not bool(system_ollama.get("available")):
+        status_label = "不可用"
+        status_reason = "系统 Ollama 当前未启用或不满足使用条件"
+
+    return {
+        "provider_source": AI_SOURCE_SYSTEM_OLLAMA,
+        "provider_id": None,
+        "provider_key": SYSTEM_OLLAMA_PROVIDER_KEY,
+        "provider_label": str(system_ollama.get("display_name") or "System Ollama"),
+        "provider_type": str(
+            system_ollama.get("provider_type") or AIProviderType.OLLAMA_LOCAL.value
+        ),
+        "enabled": True,
+        "default_model": _normalize_optional_text(system_ollama.get("default_model")),
+        "available": available,
+        "connection_ok": connection_ok,
+        "model_catalog_ok": bool(published_models),
+        "allow_manual_model_input": False,
+        "source_label": "本地",
+        "status_label": status_label,
+        "status_reason": status_reason,
+        "models": [
+            {
+                "name": model,
+                "label": model,
+                "is_default": model
+                == _normalize_optional_text(system_ollama.get("default_model")),
+                "selectable": available,
+                "details": {},
+            }
+            for model in published_models
+        ],
+    }
+
+
 def _build_user_provider_model_catalog_item(
     provider: UserAIProvider,
 ) -> dict[str, object]:
+    catalog_state = _probe_user_provider_model_catalog(provider)
     models: list[dict[str, object]] = []
-    try:
-        live_models = list_openai_compatible_models(
-            base_url=provider.base_url,
-            api_key=decrypt_secret(provider.api_key_encrypted),
-            timeout_seconds=int(provider.timeout_seconds),
-        )
-        for item in live_models:
-            model_name = _normalize_optional_text(item.get("id") or item.get("name"))
-            if model_name is None:
-                continue
-            models.append(
-                {
-                    "name": model_name,
-                    "label": model_name,
-                    "is_default": model_name == provider.default_model,
-                    "details": {
-                        key: value
-                        for key, value in item.items()
-                        if key not in {"id", "name"}
-                    },
-                }
-            )
-    except AppError:
-        models = []
-
-    if not models:
-        models = [
+    for item in catalog_state.get("live_models") or []:
+        if not isinstance(item, dict):
+            continue
+        model_name = _normalize_optional_text(item.get("id") or item.get("name"))
+        if model_name is None:
+            continue
+        models.append(
             {
-                "name": provider.default_model,
-                "label": provider.default_model,
-                "is_default": True,
-                "details": {"fallback": True},
+                "name": model_name,
+                "label": model_name,
+                "is_default": model_name == provider.default_model,
+                "selectable": bool(catalog_state.get("available")),
+                "details": {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"id", "name"}
+                },
             }
-        ]
+        )
 
     return {
         "provider_source": AI_SOURCE_USER_EXTERNAL,
@@ -1814,8 +2194,85 @@ def _build_user_provider_model_catalog_item(
         "provider_label": provider.display_name,
         "provider_type": provider.provider_type,
         "enabled": provider.enabled,
+        "default_model": provider.default_model,
+        "available": bool(catalog_state.get("available")),
+        "connection_ok": catalog_state.get("connection_ok"),
+        "model_catalog_ok": catalog_state.get("model_catalog_ok"),
+        "allow_manual_model_input": bool(catalog_state.get("allow_manual_model_input")),
+        "source_label": "外部",
+        "status_label": catalog_state.get("status_label"),
+        "status_reason": catalog_state.get("status_reason"),
         "models": models,
     }
+
+
+def _probe_user_provider_model_catalog(provider: UserAIProvider) -> dict[str, object]:
+    api_key = decrypt_secret(provider.api_key_encrypted)
+    try:
+        live_models = list_openai_compatible_models(
+            base_url=provider.base_url,
+            api_key=api_key,
+            timeout_seconds=int(provider.timeout_seconds),
+        )
+        live_model_names = [
+            model_name
+            for item in live_models
+            if isinstance(item, dict)
+            for model_name in [
+                _normalize_optional_text(item.get("id") or item.get("name"))
+            ]
+            if model_name is not None
+        ]
+        allow_manual_model_input = not bool(live_model_names)
+        return {
+            "available": True,
+            "connection_ok": True,
+            "model_catalog_ok": True,
+            "allow_manual_model_input": allow_manual_model_input,
+            "status_label": "可用" if live_model_names else "可用，需手填模型",
+            "status_reason": (
+                None if live_model_names else "模型目录为空，请手动填写调用模型名称。"
+            ),
+            "live_models": live_models,
+            "live_model_names": live_model_names,
+        }
+    except AppError as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        status_code = _to_int(detail.get("status_code"))
+        if exc.code == "AI_PROVIDER_INVALID_RESPONSE" or (
+            exc.code == "AI_PROVIDER_HTTP_ERROR" and status_code in {404, 405}
+        ):
+            return {
+                "available": True,
+                "connection_ok": True,
+                "model_catalog_ok": False,
+                "allow_manual_model_input": True,
+                "status_label": "目录不可用，需手填模型",
+                "status_reason": "模型目录接口不可用，请手动填写调用模型名称。",
+                "live_models": [],
+                "live_model_names": [],
+            }
+        if exc.code == "AI_PROVIDER_HTTP_ERROR" and status_code in {401, 403}:
+            return {
+                "available": False,
+                "connection_ok": False,
+                "model_catalog_ok": False,
+                "allow_manual_model_input": False,
+                "status_label": "认证失败",
+                "status_reason": "外部 Provider 密钥无效或无权访问模型目录。",
+                "live_models": [],
+                "live_model_names": [],
+            }
+        return {
+            "available": False,
+            "connection_ok": False,
+            "model_catalog_ok": False,
+            "allow_manual_model_input": False,
+            "status_label": "连接失败",
+            "status_reason": exc.message,
+            "live_models": [],
+            "live_model_names": [],
+        }
 
 
 def _inflate_provider_snapshot(snapshot: dict[str, object]) -> dict[str, object]:

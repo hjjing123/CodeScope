@@ -8,9 +8,16 @@ import type {
   FindingLabelActionResponse,
   FindingPathListResponse,
   FindingPathNodeContext,
+  ScanResultListParams,
+  ScanResultListResponse,
 } from '../types/finding';
 
 export class FindingService {
+  static async listScanResults(params: ScanResultListParams): Promise<ScanResultListResponse> {
+    const res = await request.get('/scan-results', { params });
+    return res.data;
+  }
+
   static async getProjectResults(
     projectId: string,
     versionId?: string,

@@ -4,7 +4,7 @@ import { EyeOutlined } from '@ant-design/icons';
 import type { TablePaginationConfig } from 'antd/es/table';
 import type { FilterValue, SorterResult } from 'antd/es/table/interface';
 import type { Finding } from '../../types/finding';
-import { formatCompactLocation, formatLocation } from '../../utils/findingLocation';
+import { formatLocation } from '../../utils/findingLocation';
 
 const { Text } = Typography;
 
@@ -20,6 +20,8 @@ interface FindingListTableProps {
     sorter: SorterResult<Finding> | SorterResult<Finding>[]
   ) => void;
   onViewDetail: (record: Finding) => void;
+  onOpenAIReview?: (record: Finding) => void;
+  openingFindingId?: string | null;
 }
 
 const severityColorMap: Record<string, string> = {
@@ -42,14 +44,25 @@ const getVulnDisplayName = (record: Finding) => {
 };
 
 const getEntryDisplay = (record: Finding) => {
+  // If it's a route, show route info (method + path usually)
   const entryDisplay = record.entry_display;
   if (record.entry_kind === 'route' && entryDisplay) {
     return entryDisplay.replace(/^[A-Z]+\s+/, '');
   }
+
+  // For any file path (Config or Code), only show filename:line
+  if (record.file_path) {
+    const filename = record.file_path.split(/[/\\]/).pop() || '';
+    return typeof record.line_start === 'number' && record.line_start > 0
+      ? `${filename}:${record.line_start}`
+      : filename;
+  }
+
+  // Fallback
   if (record.entry_display) {
     return record.entry_display;
   }
-  return formatCompactLocation(record.file_path, record.line_start);
+  return '-';
 };
 
 const getEntryTooltip = (record: Finding) => {
@@ -71,7 +84,45 @@ const FindingListTable: React.FC<FindingListTableProps> = ({
   pageSize,
   onChange,
   onViewDetail,
+  onOpenAIReview,
+  openingFindingId,
 }) => {
+  const renderAIReviewCell = (record: Finding) => {
+    const review = record.ai_review;
+    if (!review?.has_assessment) {
+      return <Text type="secondary">未研判</Text>;
+    }
+
+    if (review.status && review.status !== 'SUCCEEDED') {
+      return <Tag color={review.status === 'FAILED' ? 'red' : 'blue'}>{review.status}</Tag>;
+    }
+
+    const confidence = String(review.confidence || '').toLowerCase();
+    const verdict = String(review.verdict || '').toUpperCase();
+    const color = confidence === 'high' ? 'green' : confidence === 'medium' ? 'gold' : 'default';
+
+    if (!onOpenAIReview) {
+      return <Tag color={color}>{confidence || 'unknown'}{verdict ? ` · ${verdict}` : ''}</Tag>;
+    }
+
+    return (
+      <Button
+        type="link"
+        size="small"
+        style={{ padding: 0 }}
+        loading={openingFindingId === record.id}
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenAIReview(record);
+        }}
+      >
+        <Tag color={color} style={{ marginInlineEnd: 0, cursor: 'pointer' }}>
+          {confidence || 'unknown'}{verdict ? ` · ${verdict}` : ''}
+        </Tag>
+      </Button>
+    );
+  };
+
   const columns = [
     {
       title: 'Severity',
@@ -111,6 +162,12 @@ const FindingListTable: React.FC<FindingListTableProps> = ({
           text={status.replace('_', ' ').toUpperCase()}
         />
       ),
+    },
+    {
+      title: 'AI 研判',
+      key: 'ai_review',
+      width: 160,
+      render: (_: unknown, record: Finding) => renderAIReviewCell(record),
     },
     {
       title: 'Action',

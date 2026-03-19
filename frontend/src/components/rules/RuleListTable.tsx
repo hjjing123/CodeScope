@@ -47,10 +47,7 @@ const RuleListTable: React.FC<RuleListTableProps> = ({
       dataIndex: 'name',
       key: 'name',
       render: (text, record) => (
-        <Space direction="vertical" size={0}>
-          <a onClick={() => onEdit(record)} style={{ fontWeight: 500 }}>{text}</a>
-          <span style={{ fontSize: '12px', color: '#8c8c8c', fontFamily: 'monospace' }}>{record.rule_key}</span>
-        </Space>
+        <a onClick={() => onEdit(record)} style={{ fontWeight: 500 }}>{text}</a>
       ),
     },
     {

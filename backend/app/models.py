@@ -965,6 +965,12 @@ class FindingAIAssessment(Base):
         String(16), nullable=False, default=AIAssessmentStatus.PENDING.value, index=True
     )
     summary_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    request_messages_json: Mapped[list[dict]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    context_snapshot_json: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
     response_text: Mapped[str | None] = mapped_column(Text(), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(1024), nullable=True)
@@ -981,6 +987,13 @@ class FindingAIAssessment(Base):
 
 class AIChatSession(Base):
     __tablename__ = "ai_chat_sessions"
+    __table_args__ = (
+        UniqueConstraint(
+            "created_by",
+            "seed_assessment_id",
+            name="uq_ai_chat_sessions_creator_seed_assessment",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     session_mode: Mapped[str] = mapped_column(
@@ -1005,6 +1018,13 @@ class AIChatSession(Base):
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provider_snapshot_json: Mapped[dict] = mapped_column(
         JSON, nullable=False, default=dict
+    )
+    seed_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    seed_assessment_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("finding_ai_assessments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True

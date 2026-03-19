@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import json
+import time
 import uuid
 from pathlib import Path
 import shutil
@@ -26,6 +28,7 @@ from app.models import (
 )
 from app.schemas.import_job import (
     GitImportRequest,
+    ImportJobProgressPayload,
     GitImportTestPayload,
     GitImportTestRequest,
     ImportJobPayload,
@@ -35,17 +38,22 @@ from app.schemas.task_log import TaskLogEntryPayload, TaskLogPayload
 from app.services.audit_service import append_audit_log
 from app.services.auth_service import AuthPrincipal
 from app.services.import_service import (
+    build_import_progress_payload,
+    build_import_result_summary,
     compute_request_fingerprint,
     create_import_job,
-    dispatch_import_job,
     failure_hint_for_code,
+    dispatch_import_job,
     get_existing_idempotent_import_job,
     mark_import_job_dispatch_failed,
+    normalize_git_auth_settings,
+    serialize_git_auth_payload,
     test_git_source,
 )
 from app.services.task_log_service import (
     build_task_logs_zip_bytes,
     build_task_stage_log_bytes,
+    read_task_log_events,
     read_task_logs,
     sync_task_log_index,
 )
@@ -62,8 +70,14 @@ PUBLIC_IMPORT_PAYLOAD_KEYS = {
     "note",
     "size_bytes",
     "repo_url",
+    "repo_visibility",
+    "auth_type",
     "ref_type",
     "ref_value",
+    "resolved_ref_type",
+    "resolved_ref_value",
+    "resolved_ref",
+    "auto_detected_ref",
     "credential_id",
     "sync",
     "dispatch",
@@ -128,6 +142,8 @@ def _import_job_payload(job: ImportJob) -> ImportJobPayload:
         payload=payload,
         status=job.status,
         stage=job.stage,
+        progress=ImportJobProgressPayload(**build_import_progress_payload(job)),
+        result_summary=build_import_result_summary(job),
         failure_code=job.failure_code,
         failure_hint=failure_hint_for_code(job.failure_code),
         created_by=job.created_by,
@@ -157,6 +173,22 @@ def _normalize_idempotency_key(idempotency_key: str | None) -> str | None:
             message="Idempotency-Key 长度不能超过 128",
         )
     return normalized
+
+
+def _encode_sse_event(
+    *,
+    event: str,
+    data: dict[str, object],
+    event_id: int | None = None,
+) -> str:
+    lines: list[str] = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    for chunk in payload.splitlines() or ["{}"]:
+        lines.append(f"data: {chunk}")
+    return "\n".join(lines) + "\n\n"
 
 
 @router.post("/api/v1/projects/{project_id}/imports/upload")
@@ -289,17 +321,29 @@ def import_git(
     request_id = get_request_id(request)
     normalized_idempotency_key = _normalize_idempotency_key(idempotency_key)
     _ensure_project_importable(db, project_id=project_id)
-    if payload.credential_id is not None and payload.credential_id.strip():
-        raise AppError(
-            code="CREDENTIAL_PROVIDER_NOT_CONFIGURED",
-            status_code=501,
-            message="当前环境未启用凭据提供器，请先使用公开仓库或本地仓路径",
-        )
+    auth_settings = normalize_git_auth_settings(
+        repo_url=payload.repo_url,
+        repo_visibility=payload.repo_visibility,
+        auth_type=payload.auth_type,
+        username=payload.username,
+        access_token=payload.access_token,
+        ssh_private_key=payload.ssh_private_key,
+        ssh_passphrase=payload.ssh_passphrase,
+        credential_id=payload.credential_id,
+    )
+    sanitized_repo_url = str(auth_settings.get("repo_url_display") or payload.repo_url)
+    serialized_auth_payload = serialize_git_auth_payload(auth_settings)
 
     request_fingerprint = compute_request_fingerprint(
         {
             "import_type": ImportType.GIT.value,
             "repo_url": payload.repo_url,
+            "repo_visibility": auth_settings.get("repo_visibility"),
+            "auth_type": auth_settings.get("auth_type"),
+            "username": auth_settings.get("username"),
+            "access_token": auth_settings.get("access_token"),
+            "ssh_private_key": auth_settings.get("ssh_private_key"),
+            "ssh_passphrase": auth_settings.get("ssh_passphrase"),
             "ref_type": payload.ref_type,
             "ref_value": payload.ref_value,
             "version_name": payload.version_name,
@@ -327,7 +371,11 @@ def import_git(
         import_type=ImportType.GIT.value,
         payload={
             "request_id": request_id,
-            "repo_url": payload.repo_url,
+            "repo_url": sanitized_repo_url,
+            "repo_url_internal": str(
+                auth_settings.get("repo_url_internal") or payload.repo_url
+            ),
+            **serialized_auth_payload,
             "ref_type": payload.ref_type,
             "ref_value": payload.ref_value,
             "credential_id": payload.credential_id,
@@ -346,7 +394,7 @@ def import_git(
         resource_type="IMPORT_JOB",
         resource_id=str(job.id),
         project_id=project_id,
-        detail_json={"repo_url": payload.repo_url, "ref_value": payload.ref_value},
+        detail_json={"repo_url": sanitized_repo_url, "ref_value": payload.ref_value},
     )
     db.commit()
 
@@ -375,19 +423,30 @@ def import_git_test(
     _principal: AuthPrincipal = Depends(require_project_action("project:write")),
 ):
     _ensure_project_importable(db, project_id=project_id)
-    if payload.credential_id is not None and payload.credential_id.strip():
-        raise AppError(
-            code="CREDENTIAL_PROVIDER_NOT_CONFIGURED",
-            status_code=501,
-            message="当前环境未启用凭据提供器，请先使用公开仓库或本地仓路径",
-        )
+    auth_settings = normalize_git_auth_settings(
+        repo_url=payload.repo_url,
+        repo_visibility=payload.repo_visibility,
+        auth_type=payload.auth_type,
+        username=payload.username,
+        access_token=payload.access_token,
+        ssh_private_key=payload.ssh_private_key,
+        ssh_passphrase=payload.ssh_passphrase,
+        credential_id=payload.credential_id,
+    )
 
     resolved_ref = test_git_source(
         repo_url=payload.repo_url,
         ref_type=payload.ref_type,
         ref_value=payload.ref_value,
+        git_auth=auth_settings,
     )
-    data = GitImportTestPayload(ok=True, resolved_ref=resolved_ref)
+    data = GitImportTestPayload(
+        ok=True,
+        resolved_ref=str(resolved_ref.get("resolved_ref") or ""),
+        resolved_ref_type=str(resolved_ref.get("resolved_ref_type") or ""),
+        resolved_ref_value=str(resolved_ref.get("resolved_ref_value") or ""),
+        auto_detected=bool(resolved_ref.get("auto_detected")),
+    )
     return success_response(request, data=data.model_dump())
 
 
@@ -511,6 +570,101 @@ def get_import_job_logs(
         items=[TaskLogEntryPayload(**item) for item in items],
     )
     return success_response(request, data=payload.model_dump())
+
+
+@router.get("/api/v1/import-jobs/{job_id}/logs/stream")
+def stream_import_job_logs(
+    request: Request,
+    job_id: uuid.UUID,
+    stage: str | None = Query(default=None),
+    seq: int = Query(default=0, ge=0),
+    poll_interval_ms: int = Query(default=500, ge=100, le=5000),
+    max_wait_seconds: int = Query(default=30, ge=1, le=300),
+    db: Session = Depends(get_db),
+    _principal: AuthPrincipal = Depends(
+        require_project_resource_action(
+            "job:read",
+            resource_type="IMPORT_JOB",
+            resource_id_param="job_id",
+        )
+    ),
+):
+    job = db.get(ImportJob, job_id)
+    if job is None:
+        raise AppError(code="NOT_FOUND", status_code=404, message="导入任务不存在")
+
+    terminal_statuses = {
+        ImportJobStatus.SUCCEEDED.value,
+        ImportJobStatus.FAILED.value,
+        ImportJobStatus.CANCELED.value,
+        ImportJobStatus.TIMEOUT.value,
+    }
+
+    def stream():
+        current_seq = seq
+        started_at = time.monotonic()
+        while True:
+            sync_task_log_index(
+                task_type="IMPORT",
+                task_id=job.id,
+                project_id=job.project_id,
+                db=db,
+            )
+            events = read_task_log_events(
+                task_type="IMPORT",
+                task_id=job.id,
+                stage=stage,
+                after_seq=current_seq,
+                limit=2000,
+            )
+            for event in events:
+                current_seq = int(event["seq"])
+                yield _encode_sse_event(
+                    event="log",
+                    data=event,
+                    event_id=current_seq,
+                )
+
+            db.expire_all()
+            latest_job = db.get(ImportJob, job.id)
+            if latest_job is None:
+                break
+            if latest_job.status in terminal_statuses:
+                yield _encode_sse_event(
+                    event="done",
+                    data={
+                        "seq": current_seq,
+                        "job_id": str(job.id),
+                        "status": latest_job.status,
+                        "stage": latest_job.stage,
+                    },
+                    event_id=current_seq,
+                )
+                break
+            if time.monotonic() - started_at >= max_wait_seconds:
+                yield _encode_sse_event(
+                    event="keepalive",
+                    data={
+                        "seq": current_seq,
+                        "job_id": str(job.id),
+                        "status": latest_job.status,
+                        "stage": latest_job.stage,
+                    },
+                    event_id=current_seq,
+                )
+                break
+            time.sleep(poll_interval_ms / 1000.0)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers=headers,
+    )
 
 
 @router.get("/api/v1/import-jobs/{job_id}/logs/download")

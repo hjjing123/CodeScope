@@ -7,9 +7,11 @@ import uuid
 from sqlalchemy import select
 
 from app.config import get_settings
+from app.core.errors import AppError
 from app.models import (
     AIChatMessage,
     AIChatSession,
+    AIAssessmentStatus,
     Finding,
     FindingAIAssessment,
     FindingPath,
@@ -825,6 +827,14 @@ def test_scan_with_ai_enabled_creates_ai_job_and_assessments(
             raw_payload={"provider": "mock"},
         ),
     )
+    monkeypatch.setattr(
+        "app.services.ai_service.list_openai_compatible_models",
+        lambda **_kwargs: [{"id": "demo-model"}],
+    )
+    monkeypatch.setattr(
+        "app.services.ai_service.list_openai_compatible_models",
+        lambda **_kwargs: [{"id": "demo-model"}],
+    )
 
     response = client.post(
         "/api/v1/scan-jobs",
@@ -859,6 +869,11 @@ def test_scan_with_ai_enabled_creates_ai_job_and_assessments(
     assert assessments
     assert assessments[0].summary_json["verdict"] == "TP"
     assert assessments[0].summary_json["prompt_meta"]["max_context_tokens"] == 32768
+    assert assessments[0].request_messages_json
+    assert assessments[0].context_snapshot_json
+    assert (
+        assessments[0].context_snapshot_json["analysis_focus"]["data_flow_chain"] == []
+    )
 
     response = client.get(f"/api/v1/jobs/{scan_job_id}/ai-enrichment", headers=headers)
     assert response.status_code == 200, response.text
@@ -1001,6 +1016,302 @@ def test_parse_assessment_content_supports_labeled_fallback():
     assert payload["confidence"] == "high"
     assert payload["fix_suggestions"] == ["禁用危险 autoType", "增加目标类型白名单"]
     assert payload["evidence_refs"] == ["trace_summary", "data_flow_chain"]
+
+
+def test_failed_assessment_persists_request_context_and_cannot_seed_chat(
+    client, db_session, monkeypatch
+):
+    user = _create_user(
+        db_session,
+        email="failed-assessment-ai@example.com",
+        password="scan12345",
+        role=SystemRole.USER.value,
+    )
+    project = _create_project(db_session, name="Failed Assessment Project")
+    _add_member(db_session, user_id=user.id, project_id=project.id)
+    version = _create_version(db_session, project_id=project.id)
+    headers = _login(client, email=user.email, password="scan12345")
+
+    provider_response = client.post(
+        "/api/v1/me/ai/providers",
+        headers=headers,
+        json={
+            "display_name": "Failing Provider",
+            "vendor_name": "OpenAI Compatible",
+            "base_url": "https://api.example.com/v1",
+            "api_key": "sk-failed-1234567890",
+            "default_model": "demo-model",
+            "timeout_seconds": 45,
+            "temperature": 0.1,
+            "enabled": True,
+            "is_default": True,
+        },
+    )
+    provider_id = provider_response.json()["data"]["id"]
+
+    monkeypatch.setattr(
+        "app.services.ai_service.list_openai_compatible_models",
+        lambda **_kwargs: [{"id": "demo-model"}],
+    )
+    monkeypatch.setattr(
+        "app.services.ai_service.run_provider_chat",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AppError(
+                code="AI_PROVIDER_UNAVAILABLE",
+                status_code=503,
+                message="provider unavailable",
+            )
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/scan-jobs",
+        headers=headers,
+        json={
+            "project_id": str(project.id),
+            "version_id": str(version.id),
+            "rule_keys": ["any_any_xss"],
+            "ai_enabled": True,
+            "ai_source": "user_external",
+            "ai_provider_id": provider_id,
+            "ai_model": "demo-model",
+        },
+    )
+    assert response.status_code == 202, response.text
+
+    finding = db_session.scalar(select(Finding).where(Finding.version_id == version.id))
+    assert finding is not None
+    assessment = db_session.scalar(
+        select(FindingAIAssessment).where(FindingAIAssessment.finding_id == finding.id)
+    )
+    assert assessment is not None
+    assert assessment.status == AIAssessmentStatus.FAILED.value
+    assert assessment.request_messages_json
+    assert assessment.context_snapshot_json
+    assert assessment.context_snapshot_json["finding_core"]["rule_key"] == "any_any_xss"
+
+    seed_response = client.post(
+        f"/api/v1/findings/{finding.id}/ai/chat/sessions/from-latest-assessment",
+        headers=headers,
+    )
+    assert seed_response.status_code == 409, seed_response.text
+    assert seed_response.json()["error"]["code"] == "AI_ASSESSMENT_NOT_READY"
+
+
+def test_findings_include_latest_ai_review_summary_and_context(
+    client, db_session, monkeypatch
+):
+    user = _create_user(
+        db_session,
+        email="scan-ai-review@example.com",
+        password="scan12345",
+        role=SystemRole.USER.value,
+    )
+    project = _create_project(db_session, name="AI Review Finding Project")
+    _add_member(db_session, user_id=user.id, project_id=project.id)
+    version = _create_version(db_session, project_id=project.id)
+    headers = _login(client, email=user.email, password="scan12345")
+
+    provider_response = client.post(
+        "/api/v1/me/ai/providers",
+        headers=headers,
+        json={
+            "display_name": "My OpenAI Compatible",
+            "vendor_name": "OpenAI Compatible",
+            "base_url": "https://api.example.com/v1",
+            "api_key": "sk-scan-1234567890",
+            "default_model": "demo-model",
+            "timeout_seconds": 45,
+            "temperature": 0.1,
+            "enabled": True,
+            "is_default": True,
+        },
+    )
+    provider_id = provider_response.json()["data"]["id"]
+
+    monkeypatch.setattr(
+        "app.services.ai_service.run_provider_chat",
+        lambda **_kwargs: AIChatResult(
+            content=json.dumps(
+                {
+                    "verdict": "TP",
+                    "confidence": "high",
+                    "summary": "Looks exploitable.",
+                    "risk_reason": "Source reaches sink.",
+                    "false_positive_signals": [],
+                    "fix_suggestions": ["Validate input"],
+                    "evidence_refs": ["trace_summary"],
+                },
+                ensure_ascii=False,
+            ),
+            raw_payload={"provider": "mock"},
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.ai_service.list_openai_compatible_models",
+        lambda **_kwargs: [{"id": "demo-model"}],
+    )
+
+    response = client.post(
+        "/api/v1/scan-jobs",
+        headers=headers,
+        json={
+            "project_id": str(project.id),
+            "version_id": str(version.id),
+            "rule_keys": ["any_any_xss"],
+            "ai_enabled": True,
+            "ai_source": "user_external",
+            "ai_provider_id": provider_id,
+            "ai_model": "demo-model",
+        },
+    )
+    scan_job_id = response.json()["data"]["job_id"]
+
+    finding = db_session.scalar(
+        select(Finding).where(Finding.job_id == uuid.UUID(scan_job_id))
+    )
+    assert finding is not None
+
+    findings_response = client.get(
+        f"/api/v1/findings?job_id={scan_job_id}",
+        headers=headers,
+    )
+    assert findings_response.status_code == 200, findings_response.text
+    item = findings_response.json()["data"]["items"][0]
+    assert item["ai_review"]["has_assessment"] is True
+    assert item["ai_review"]["verdict"] == "TP"
+    assert item["ai_review"]["confidence"] == "high"
+
+    detail_response = client.get(f"/api/v1/findings/{finding.id}", headers=headers)
+    assert detail_response.status_code == 200, detail_response.text
+    assert detail_response.json()["data"]["ai_review"]["confidence"] == "high"
+
+    context_response = client.get(
+        f"/api/v1/findings/{finding.id}/ai/assessment/latest/context",
+        headers=headers,
+    )
+    assert context_response.status_code == 200, context_response.text
+    context_payload = context_response.json()["data"]
+    assert context_payload["request_messages"]
+    assert (
+        context_payload["context_snapshot"]["finding_core"]["rule_key"] == "any_any_xss"
+    )
+
+
+def test_can_create_and_reuse_seeded_assessment_chat_session(
+    client, db_session, monkeypatch
+):
+    user = _create_user(
+        db_session,
+        email="seeded-chat@example.com",
+        password="chat12345",
+        role=SystemRole.USER.value,
+    )
+    project = _create_project(db_session, name="AI Seeded Chat Project")
+    _add_member(db_session, user_id=user.id, project_id=project.id)
+    version = _create_version(db_session, project_id=project.id)
+    headers = _login(client, email=user.email, password="chat12345")
+
+    provider_response = client.post(
+        "/api/v1/me/ai/providers",
+        headers=headers,
+        json={
+            "display_name": "Chat Provider",
+            "vendor_name": "OpenAI Compatible",
+            "base_url": "https://api.example.com/v1",
+            "api_key": "sk-chat-1234567890",
+            "default_model": "chat-model",
+            "timeout_seconds": 45,
+            "temperature": 0.1,
+            "enabled": True,
+            "is_default": True,
+        },
+    )
+    provider_id = provider_response.json()["data"]["id"]
+
+    monkeypatch.setattr(
+        "app.services.ai_service.run_provider_chat",
+        lambda **_kwargs: AIChatResult(
+            content=json.dumps(
+                {
+                    "verdict": "TP",
+                    "confidence": "medium",
+                    "summary": "XSS appears reachable.",
+                    "risk_reason": "Unsanitized data reaches output.",
+                    "false_positive_signals": [],
+                    "fix_suggestions": ["Escape output"],
+                    "evidence_refs": ["data_flow_chain"],
+                },
+                ensure_ascii=False,
+            ),
+            raw_payload={"provider": "mock"},
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.ai_service.list_openai_compatible_models",
+        lambda **_kwargs: [{"id": "chat-model"}],
+    )
+
+    scan_response = client.post(
+        "/api/v1/scan-jobs",
+        headers=headers,
+        json={
+            "project_id": str(project.id),
+            "version_id": str(version.id),
+            "rule_keys": ["any_any_xss"],
+            "ai_enabled": True,
+            "ai_source": "user_external",
+            "ai_provider_id": provider_id,
+            "ai_model": "chat-model",
+        },
+    )
+    scan_job_id = scan_response.json()["data"]["job_id"]
+    finding = db_session.scalar(
+        select(Finding).where(Finding.job_id == uuid.UUID(scan_job_id))
+    )
+    assert finding is not None
+
+    assessment = db_session.scalar(
+        select(FindingAIAssessment).where(FindingAIAssessment.finding_id == finding.id)
+    )
+    assert assessment is not None
+
+    seed_response = client.post(
+        f"/api/v1/findings/{finding.id}/ai/chat/sessions/from-latest-assessment",
+        headers=headers,
+    )
+    assert seed_response.status_code == 200, seed_response.text
+    seed_payload = seed_response.json()["data"]
+    assert seed_payload["assessment_id"] == str(assessment.id)
+    assert seed_payload["idempotent_replay"] is False
+
+    session_id = seed_payload["session_id"]
+    detail_response = client.get(
+        f"/api/v1/ai/chat/sessions/{session_id}", headers=headers
+    )
+    assert detail_response.status_code == 200, detail_response.text
+    session_payload = detail_response.json()["data"]
+    assert session_payload["seed_kind"] == "assessment_review"
+    assert session_payload["seed_assessment_id"] == str(assessment.id)
+    assert len(session_payload["messages"]) == 2
+    assert "本次 AI 研判实际发送内容" in session_payload["messages"][0]["content"]
+    assert (
+        session_payload["messages"][0]["meta_json"]["message_kind"]
+        == "assessment_seed_input"
+    )
+    assert (
+        session_payload["messages"][1]["meta_json"]["message_kind"]
+        == "assessment_seed_output"
+    )
+
+    replay_response = client.post(
+        f"/api/v1/findings/{finding.id}/ai/chat/sessions/from-latest-assessment",
+        headers=headers,
+    )
+    assert replay_response.status_code == 200, replay_response.text
+    replay_payload = replay_response.json()["data"]
+    assert replay_payload["session_id"] == session_id
+    assert replay_payload["idempotent_replay"] is True
 
 
 def test_finding_ai_chat_session_can_send_messages(client, db_session, monkeypatch):
@@ -1479,6 +1790,8 @@ def test_ai_model_catalog_exposes_selectable_models(client, db_session, monkeypa
         item for item in payload["items"] if item["provider_source"] == "system_ollama"
     )
     assert system_item["models"][0]["name"] == "qwen2.5-coder:7b"
+    assert system_item["available"] is True
+    assert system_item["source_label"] == "本地"
     user_item = next(
         item
         for item in payload["items"]
@@ -1486,6 +1799,110 @@ def test_ai_model_catalog_exposes_selectable_models(client, db_session, monkeypa
         and item["provider_id"] == provider_id
     )
     assert user_item["models"][1]["name"] == "deepseek-reasoner"
+    assert user_item["available"] is True
+    assert user_item["connection_ok"] is True
+    assert user_item["model_catalog_ok"] is True
+    assert user_item["allow_manual_model_input"] is False
+
+
+def test_model_catalog_allows_manual_input_when_external_models_unavailable(
+    client, db_session, monkeypatch
+):
+    user = _create_user(
+        db_session,
+        email="manual-model-ai@example.com",
+        password="chat12345",
+        role=SystemRole.USER.value,
+    )
+    headers = _login(client, email=user.email, password="chat12345")
+
+    provider_response = client.post(
+        "/api/v1/me/ai/providers",
+        headers=headers,
+        json={
+            "display_name": "Manual Model Provider",
+            "vendor_name": "OpenAI Compatible",
+            "base_url": "https://api.manual.example.com/v1",
+            "api_key": "sk-manual-1234567890",
+            "default_model": "manual-default",
+            "timeout_seconds": 45,
+            "temperature": 0.1,
+            "enabled": True,
+            "is_default": True,
+        },
+    )
+    assert provider_response.status_code == 201, provider_response.text
+    provider_id = provider_response.json()["data"]["id"]
+
+    def _mock_list_models(**_kwargs):
+        raise AppError(
+            code="AI_PROVIDER_HTTP_ERROR",
+            status_code=502,
+            message="models unsupported",
+            detail={"status_code": 404},
+        )
+
+    monkeypatch.setattr(
+        "app.services.ai_service.list_openai_compatible_models",
+        _mock_list_models,
+    )
+    monkeypatch.setattr(
+        "app.services.ai_service.run_provider_chat",
+        lambda **_kwargs: AIChatResult(
+            content=json.dumps(
+                {
+                    "verdict": "TP",
+                    "confidence": "high",
+                    "summary": "reachable",
+                    "risk_reason": "manual model works",
+                    "false_positive_signals": [],
+                    "fix_suggestions": [],
+                    "evidence_refs": [],
+                },
+                ensure_ascii=False,
+            ),
+            raw_payload={"provider": "mock"},
+        ),
+    )
+
+    catalog_response = client.get("/api/v1/me/ai/model-catalog", headers=headers)
+    assert catalog_response.status_code == 200, catalog_response.text
+    user_item = next(
+        item
+        for item in catalog_response.json()["data"]["items"]
+        if item["provider_id"] == provider_id
+    )
+    assert user_item["available"] is True
+    assert user_item["model_catalog_ok"] is False
+    assert user_item["allow_manual_model_input"] is True
+    assert user_item["models"] == []
+
+    project = _create_project(db_session, name="Manual Model Scan Project")
+    _add_member(db_session, user_id=user.id, project_id=project.id)
+    version = _create_version(db_session, project_id=project.id)
+
+    scan_response = client.post(
+        "/api/v1/scan-jobs",
+        headers=headers,
+        json={
+            "project_id": str(project.id),
+            "version_id": str(version.id),
+            "rule_keys": ["any_any_xss"],
+            "ai_enabled": True,
+            "ai_source": "user_external",
+            "ai_provider_id": provider_id,
+            "ai_model": "manual-chat-model",
+        },
+    )
+    assert scan_response.status_code == 202, scan_response.text
+
+    scan_job = db_session.get(Job, uuid.UUID(scan_response.json()["data"]["job_id"]))
+    assert scan_job is not None
+    ai_payload = scan_job.payload.get("ai")
+    assert isinstance(ai_payload, dict)
+    provider_snapshot = ai_payload.get("provider_snapshot")
+    assert isinstance(provider_snapshot, dict)
+    assert provider_snapshot["model"] == "manual-chat-model"
 
 
 def test_general_chat_session_selection_can_switch_model(

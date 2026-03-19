@@ -1,7 +1,8 @@
 import React from 'react';
-import { Card, Descriptions, Tag, Typography, Empty, Space } from 'antd';
+import { Card, Descriptions, Tag, Typography, Empty, Space, Timeline } from 'antd';
 import { BugOutlined, FileTextOutlined, WarningOutlined } from '@ant-design/icons';
 import type { Finding } from '../../types/finding';
+import type { AIChatSessionPayload, FindingAIAssessmentContextPayload } from '../../types/ai';
 
 const { Text, Title } = Typography;
 
@@ -32,13 +33,27 @@ const toPositiveInt = (value: unknown): number | null => {
 interface FindingContextPanelProps {
   finding?: Finding | null;
   loading?: boolean;
+  assessmentContext?: FindingAIAssessmentContextPayload | null;
+  session?: AIChatSessionPayload | null;
 }
 
-const FindingContextPanel: React.FC<FindingContextPanelProps> = ({ finding, loading }) => {
+const FindingContextPanel: React.FC<FindingContextPanelProps> = ({
+  finding,
+  loading,
+  assessmentContext,
+  session,
+}) => {
   const evidence = toRecord(finding?.evidence_json);
   const codeContext = toRecord(evidence.code_context);
   const focusContext = toRecord(codeContext.focus);
   const llmPayload = toRecord(evidence.llm_payload);
+  const assessmentSummary = toRecord(assessmentContext?.summary_json);
+  const promptMeta = toRecord(assessmentSummary.prompt_meta);
+  const contextSnapshot = toRecord(assessmentContext?.context_snapshot);
+  const analysisFocus = toRecord(contextSnapshot.analysis_focus);
+  const dataFlowChain = Array.isArray(analysisFocus.data_flow_chain)
+    ? (analysisFocus.data_flow_chain as Array<Record<string, unknown>>)
+    : [];
   const lineNumber =
     toPositiveInt(finding?.line_start) ??
     toPositiveInt(finding?.sink_line) ??
@@ -90,8 +105,61 @@ const FindingContextPanel: React.FC<FindingContextPanelProps> = ({ finding, load
           <Descriptions.Item label="行号">
             {lineNumber ? `L${lineNumber}` : '-'}
           </Descriptions.Item>
+          {finding.ai_review?.has_assessment ? (
+            <Descriptions.Item label="AI 研判">
+              <Space wrap>
+                {finding.ai_review.verdict ? <Tag color="purple">{finding.ai_review.verdict}</Tag> : null}
+                {finding.ai_review.confidence ? <Tag color="blue">{finding.ai_review.confidence}</Tag> : null}
+              </Space>
+            </Descriptions.Item>
+          ) : null}
+          {session?.seed_kind ? (
+            <Descriptions.Item label="当前会话">
+              <Tag color="gold">承接自 AI 研判</Tag>
+            </Descriptions.Item>
+          ) : null}
         </Descriptions>
       </Card>
+
+      {assessmentContext ? (
+        <Card size="small" bordered={false} style={{ background: '#fafafa', marginBottom: 16 }}>
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            <Space wrap>
+              {promptMeta.profile ? <Tag color="purple">模板: {String(promptMeta.profile)}</Tag> : null}
+              {promptMeta.input_tokens_estimate ? (
+                <Tag color="blue">
+                  输入预算: {String(promptMeta.input_tokens_estimate)}/{String(promptMeta.max_input_tokens || '-')}
+                </Tag>
+              ) : null}
+            </Space>
+            {analysisFocus.key_path_summary ? (
+              <div>
+                <Text strong>关键路径摘要</Text>
+                <div style={{ marginTop: 6 }}>
+                  <Text>{String(analysisFocus.key_path_summary)}</Text>
+                </div>
+              </div>
+            ) : null}
+            {dataFlowChain.length > 0 ? (
+              <div>
+                <Text strong>数据传播链路</Text>
+                <Timeline
+                  style={{ marginTop: 8 }}
+                  items={dataFlowChain.map((item, index) => ({
+                    children: (
+                      <div>
+                        <Text strong>{String(item.display_name || `步骤 ${index + 1}`)}</Text>
+                        <br />
+                        <Text type="secondary">{String(item.location || '-')}</Text>
+                      </div>
+                    ),
+                  }))}
+                />
+              </div>
+            ) : null}
+          </Space>
+        </Card>
+      ) : null}
 
       <div style={{ marginBottom: 16 }}>
         <Space align="center" style={{ marginBottom: 8 }}>

@@ -97,7 +97,8 @@ export const downloadVersionSnapshot = (versionId: string) => {
 export const triggerGitImport = (projectId: string, data: GitImportRequest) => {
   return request.post<unknown, ApiResponse<ImportJobTriggerResponse>>(
     `/projects/${projectId}/imports/git`,
-    data
+    data,
+    { skipErrorToast: true }
   );
 };
 
@@ -128,6 +129,7 @@ export const uploadImportFile = (
         'Content-Type': 'multipart/form-data',
       },
       timeout: 30 * 60 * 1000,
+      skipErrorToast: true,
       onUploadProgress: options?.onUploadProgress,
     }
   );
@@ -136,7 +138,8 @@ export const uploadImportFile = (
 export const testGitImport = (projectId: string, data: GitImportTestRequest) => {
   return request.post<unknown, ApiResponse<GitImportTestResponse>>(
     `/projects/${projectId}/imports/git/test`,
-    data
+    data,
+    { skipErrorToast: true }
   );
 };
 

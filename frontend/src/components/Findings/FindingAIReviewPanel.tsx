@@ -11,14 +11,17 @@ import {
   Spin,
   Tag,
   Typography,
+  Timeline,
   message,
 } from 'antd';
 import { LinkOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import AIProviderSelectFields from '../AI/AIProviderSelectFields';
 import {
+  createAssessmentSeedChatSession,
   createChatSession,
   getLatestFindingAIAssessment,
+  getLatestFindingAIAssessmentContext,
   getMyAIOptions,
   listFindingChatSessions,
   retryFindingAI,
@@ -27,11 +30,17 @@ import type {
   AIChatSessionPayload,
   AIProviderOptionsPayload,
   AIProviderSelectionRequest,
+  FindingAIAssessmentContextPayload,
   FindingAIAssessmentPayload,
 } from '../../types/ai';
 import type { Finding } from '../../types/finding';
 
 const { Paragraph, Text, Title } = Typography;
+
+const toRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 
 interface FindingAIReviewPanelProps {
   finding: Finding;
@@ -41,6 +50,7 @@ const FindingAIReviewPanel: React.FC<FindingAIReviewPanelProps> = ({ finding }) 
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [assessment, setAssessment] = useState<FindingAIAssessmentPayload | null>(null);
+  const [assessmentContext, setAssessmentContext] = useState<FindingAIAssessmentContextPayload | null>(null);
   const [sessions, setSessions] = useState<AIChatSessionPayload[]>([]);
   const [options, setOptions] = useState<AIProviderOptionsPayload | null>(null);
   const [selection, setSelection] = useState<AIProviderSelectionRequest>({});
@@ -61,6 +71,15 @@ const FindingAIReviewPanel: React.FC<FindingAIReviewPanelProps> = ({ finding }) 
   const fixSuggestions = Array.isArray(assessment?.summary_json?.fix_suggestions)
     ? (assessment?.summary_json?.fix_suggestions as string[])
     : [];
+  const promptMeta = toRecord(assessmentContext?.summary_json?.prompt_meta);
+  const contextSnapshot = toRecord(assessmentContext?.context_snapshot);
+  const analysisFocus = toRecord(contextSnapshot.analysis_focus);
+  const dataFlowChain = Array.isArray(analysisFocus.data_flow_chain)
+    ? (analysisFocus.data_flow_chain as Array<Record<string, unknown>>)
+    : [];
+  const requestMessages = Array.isArray(assessmentContext?.request_messages)
+    ? (assessmentContext?.request_messages as Array<Record<string, unknown>>)
+    : [];
 
   const refresh = async () => {
     setLoading(true);
@@ -70,7 +89,11 @@ const FindingAIReviewPanel: React.FC<FindingAIReviewPanelProps> = ({ finding }) 
         listFindingChatSessions(finding.id),
         getMyAIOptions(),
       ]);
+      const latestContext = latest
+        ? await getLatestFindingAIAssessmentContext(finding.id).catch(() => null)
+        : null;
       setAssessment(latest);
+      setAssessmentContext(latestContext);
       setSessions(chatSessions.items);
       setOptions(providerOptions);
       setSelection({
@@ -92,6 +115,13 @@ const FindingAIReviewPanel: React.FC<FindingAIReviewPanelProps> = ({ finding }) 
   const openChatSession = async () => {
     setSubmitting(true);
     try {
+      if (assessment?.id && assessment.status === 'SUCCEEDED') {
+        const seeded = await createAssessmentSeedChatSession(finding.id);
+        message.success(seeded.idempotent_replay ? '已打开承接会话' : '已创建承接会话');
+        setActionModal(null);
+        navigate(`/ai-center?tab=workspace&finding_id=${finding.id}&session_id=${seeded.session_id}`);
+        return;
+      }
       const session = await createChatSession(finding.id, {
         ...selection,
         title: `${finding.vuln_display_name || finding.vuln_type || finding.rule_key} · AI 会话`,
@@ -193,6 +223,82 @@ const FindingAIReviewPanel: React.FC<FindingAIReviewPanelProps> = ({ finding }) 
 
             {assessment.error_code ? (
               <Alert type="error" showIcon message={assessment.error_code} description={assessment.error_message} />
+            ) : null}
+
+            {assessmentContext ? (
+              <Card size="small" title="研判输入与链路快照" bordered={false} style={{ background: '#fafafa' }}>
+                <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                  <Space wrap>
+                    {promptMeta.profile ? <Tag color="purple">模板: {String(promptMeta.profile)}</Tag> : null}
+                    {promptMeta.input_tokens_estimate ? (
+                      <Tag color="blue">
+                        输入预算: {String(promptMeta.input_tokens_estimate)}/{String(promptMeta.max_input_tokens || '-')}
+                      </Tag>
+                    ) : null}
+                    {promptMeta.rule_hint_applied ? <Tag color="gold">规则专项增强</Tag> : null}
+                  </Space>
+
+                  {analysisFocus.key_path_summary ? (
+                    <div>
+                      <Text strong>关键路径摘要</Text>
+                      <Paragraph style={{ marginBottom: 0, marginTop: 6 }}>
+                        {String(analysisFocus.key_path_summary)}
+                      </Paragraph>
+                    </div>
+                  ) : null}
+
+                  {dataFlowChain.length > 0 ? (
+                    <div>
+                      <Text strong>数据传播链路</Text>
+                      <Timeline
+                        style={{ marginTop: 8 }}
+                        items={dataFlowChain.map((item, index) => ({
+                          children: (
+                            <div>
+                              <Text strong>{String(item.display_name || `步骤 ${index + 1}`)}</Text>
+                              <br />
+                              <Text type="secondary">{String(item.location || '-')}</Text>
+                              {item.edge_to_next ? (
+                                <div style={{ marginTop: 4 }}>
+                                  <Tag>{String(item.edge_to_next)}</Tag>
+                                </div>
+                              ) : null}
+                            </div>
+                          ),
+                        }))}
+                      />
+                    </div>
+                  ) : null}
+
+                  {requestMessages.length > 0 ? (
+                    <div>
+                      <Text strong>实际发送内容</Text>
+                      <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 8 }}>
+                        {requestMessages.map((item, index) => (
+                          <Card
+                            key={`${item.role || 'role'}-${index}`}
+                            size="small"
+                            title={String(item.role || 'user').toUpperCase()}
+                          >
+                            <Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }} copyable>
+                              {String(item.content || '')}
+                            </Paragraph>
+                          </Card>
+                        ))}
+                      </Space>
+                    </div>
+                  ) : null}
+
+                  {assessmentContext.response_text ? (
+                    <div>
+                      <Text strong>模型原始返回</Text>
+                      <Paragraph style={{ marginBottom: 0, marginTop: 6, whiteSpace: 'pre-wrap' }} copyable>
+                        {assessmentContext.response_text}
+                      </Paragraph>
+                    </div>
+                  ) : null}
+                </Space>
+              </Card>
             ) : null}
           </Space>
         </Card>

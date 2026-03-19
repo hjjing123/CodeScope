@@ -1,6 +1,7 @@
 import request from '../utils/request';
 import { openSseStream, type SseEventPayload } from '../utils/sse';
 import type {
+  AIAssessmentChatSessionTriggerPayload,
   AIChatSessionDeletePayload,
   AIChatMessageCreateRequest,
   AIChatSessionCreateRequest,
@@ -10,6 +11,7 @@ import type {
   AIProviderOptionsPayload,
   AIProviderSelectionRequest,
   AIProviderTestPayload,
+  FindingAIAssessmentContextPayload,
   FindingAIAssessmentPayload,
   OllamaModelPayload,
   SystemOllamaConfigPayload,
@@ -97,10 +99,18 @@ export const listFindingAIAssessments = async (findingId: string) =>
 export const getLatestFindingAIAssessment = async (findingId: string) =>
   unwrap<FindingAIAssessmentPayload | null>(request.get(`/findings/${findingId}/ai/assessment/latest`));
 
+export const getLatestFindingAIAssessmentContext = async (findingId: string) =>
+  unwrap<FindingAIAssessmentContextPayload>(request.get(`/findings/${findingId}/ai/assessment/latest/context`));
+
 export const retryFindingAI = async (
   findingId: string,
   data: AIProviderSelectionRequest
 ) => unwrap<JobTriggerPayload>(request.post(`/findings/${findingId}/ai/retry`, data));
+
+export const createAssessmentSeedChatSession = async (findingId: string) =>
+  unwrap<AIAssessmentChatSessionTriggerPayload>(
+    request.post(`/findings/${findingId}/ai/chat/sessions/from-latest-assessment`)
+  );
 
 export const listMyChatSessions = async (findingId?: string) =>
   unwrap<{ items: AIChatSessionPayload[]; total: number }>(
