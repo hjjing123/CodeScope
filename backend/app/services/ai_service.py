@@ -45,6 +45,10 @@ from app.services.ai_client_service import (
     test_ollama_connection,
     test_openai_compatible_connection,
 )
+from app.services.assessment_context_service import (
+    build_assessment_extraction,
+    resolve_assessment_profile,
+)
 from app.services.audit_service import append_audit_log
 from app.services.path_graph_service import edge_display_label
 from app.services.rule_file_service import get_rules_by_keys
@@ -168,9 +172,45 @@ ASSESSMENT_PROFILE_HINTS: dict[str, str] = {
         "重点检查跳转目标是否被外部输入控制，是否限制站内跳转、白名单域名或协议，"
         "不要把固定路由跳转误判为开放重定向。"
     ),
+    "JNDII": (
+        "重点检查 JNDI lookup 参数是否可控、是否限制协议或命名空间，"
+        "以及运行时是否已禁用远程代码库加载。"
+    ),
+    "LDAPI": (
+        "重点检查 LDAP filter 或查询条件是否由外部输入拼接，是否做特殊字符转义、"
+        "搜索基准限制与权限隔离。"
+    ),
+    "HPE": (
+        "重点检查资源访问是否同时包含用户或租户约束，以及是否存在显式权限校验，"
+        "不要把仅有身份认证误判为通过授权。"
+    ),
+    "CORS": (
+        "重点检查是否反射或通配 Origin、是否允许凭证、以及策略是否应用在敏感接口上，"
+        "不要忽略代理层和环境差异。"
+    ),
+    "MISCONFIG": (
+        "重点检查危险配置是否在生产环境真实生效，是否受鉴权、IP 白名单或网关限制，"
+        "不要只凭配置项命中就直接判定可利用。"
+    ),
     "INFOLEAK": (
         "重点检查敏感信息是否真实对外暴露，关注错误信息、调试接口、配置泄露、凭据明文、"
         "以及是否仅在开发环境或受限边界内可见。"
+    ),
+    "HARDCODE_SECRET": (
+        "重点检查命中字面量是否为真实凭据、是否进入运行时代码与生产构建，"
+        "以及是否可以通过环境变量或密钥中心替换。"
+    ),
+    "WEAK_PASSWORD": (
+        "重点检查弱口令是否对应默认账号或生产环境配置，是否能被 profile、环境变量或"
+        "部署参数覆盖。"
+    ),
+    "WEAK_HASH": (
+        "重点检查 MD5/SHA-1 等弱哈希的用途，区分密码、签名等安全关键场景与"
+        "仅用于兼容性或非安全校验的场景。"
+    ),
+    "COOKIE_FLAGS": (
+        "重点检查敏感 Cookie 是否设置 HttpOnly、Secure、SameSite，"
+        "以及是否仅在 HTTPS 场景下发送。"
     ),
 }
 
@@ -2291,6 +2331,7 @@ def _build_assessment_messages(
 ) -> AssessmentPromptBundle:
     context_payload = _build_assessment_context_payload(db, finding=finding)
     prompt_context = json.loads(json.dumps(context_payload, ensure_ascii=False))
+    _prepare_assessment_prompt_context(prompt_context)
     prompt_hint_meta = _resolve_assessment_prompt_hint(context_payload=prompt_context)
     budget_meta = _build_assessment_budget(provider_snapshot=provider_snapshot)
 
@@ -2331,6 +2372,16 @@ def _prepare_assessment_provider_snapshot(
     return payload
 
 
+def _prepare_assessment_prompt_context(context_payload: dict[str, object]) -> None:
+    extraction = (
+        context_payload.get("extraction")
+        if isinstance(context_payload.get("extraction"), dict)
+        else None
+    )
+    if extraction is not None:
+        extraction.pop("expanded_code_context", None)
+
+
 def _build_assessment_context_payload(
     db: Session, *, finding: Finding
 ) -> dict[str, object]:
@@ -2366,6 +2417,33 @@ def _build_assessment_context_payload(
         if isinstance(llm_payload.get("code_context"), dict)
         else {}
     )
+    stored_extraction = (
+        evidence.get("assessment_extraction")
+        if isinstance(evidence.get("assessment_extraction"), dict)
+        else {}
+    )
+    extraction = build_assessment_extraction(
+        rule_key=finding.rule_key,
+        vuln_type=(
+            finding.vuln_type
+            or (rule_meta.vuln_type if rule_meta is not None else None)
+        ),
+        source=source,
+        sink=sink,
+        trace_summary=trace_summary,
+        code_context=code_context,
+        evidence=evidence,
+        data_flow_chain=(
+            path_payload.get("data_flow_chain")
+            if isinstance(path_payload.get("data_flow_chain"), list)
+            else []
+        ),
+        source_highlights=(
+            stored_extraction.get("source_highlights")
+            if isinstance(stored_extraction.get("source_highlights"), list)
+            else []
+        ),
+    )
 
     return {
         "finding_core": {
@@ -2397,6 +2475,7 @@ def _build_assessment_context_payload(
         },
         "evidence_preview": _string_list(llm_payload.get("evidence_preview")),
         "code_context": _sanitize_code_context_payload(code_context),
+        "extraction": extraction,
     }
 
 
@@ -2619,33 +2698,9 @@ def _resolve_assessment_prompt_hint(
 
 
 def _resolve_assessment_profile_key(*, vuln_type: str, rule_key: str) -> str:
-    aliases = {
-        "OPEN_REDIRECT": "REDIRECT",
-        "URLREDIRECT": "REDIRECT",
-        "PATH_TRAVERSAL": "PATHTRAVERSAL",
-        "FILE_UPLOAD": "UPLOAD",
-        "RCE": "CODEI",
-        "INFO_LEAK": "INFOLEAK",
-    }
-    normalized = aliases.get(vuln_type, vuln_type)
-    if normalized in ASSESSMENT_PROFILE_HINTS:
-        return normalized
-    for token, profile in (
-        ("deserialization", "DESERIALIZATION"),
-        ("sqli", "SQLI"),
-        ("xss", "XSS"),
-        ("ssrf", "SSRF"),
-        ("xxe", "XXE"),
-        ("cmdi", "CMDI"),
-        ("codei", "CODEI"),
-        ("ssti", "SSTI"),
-        ("pathtraver", "PATHTRAVERSAL"),
-        ("upload", "UPLOAD"),
-        ("redirect", "REDIRECT"),
-        ("infoleak", "INFOLEAK"),
-    ):
-        if token in rule_key:
-            return profile
+    profile = resolve_assessment_profile(vuln_type=vuln_type, rule_key=rule_key)
+    if profile in ASSESSMENT_PROFILE_HINTS:
+        return profile
     return "GENERIC"
 
 
@@ -2684,12 +2739,19 @@ def _render_assessment_user_prompt(
 ) -> tuple[str, dict[str, object]]:
     prompt = _render_assessment_prompt_text(context_payload)
     input_tokens = _estimate_text_tokens(prompt)
+    shrink_rounds = 0
     while input_tokens > int(budget_meta["max_input_tokens"]):
+        if shrink_rounds >= 256:
+            break
         changed = _shrink_assessment_context_payload(context_payload)
         if not changed:
             break
-        prompt = _render_assessment_prompt_text(context_payload)
+        next_prompt = _render_assessment_prompt_text(context_payload)
+        if next_prompt == prompt:
+            break
+        prompt = next_prompt
         input_tokens = _estimate_text_tokens(prompt)
+        shrink_rounds += 1
     return prompt, {
         **budget_meta,
         "input_tokens_estimate": input_tokens,
@@ -2721,6 +2783,57 @@ def _render_assessment_prompt_text(context_payload: dict[str, object]) -> str:
 
 
 def _shrink_assessment_context_payload(context_payload: dict[str, object]) -> bool:
+    extraction = (
+        context_payload.get("extraction")
+        if isinstance(context_payload.get("extraction"), dict)
+        else None
+    )
+    if extraction is not None:
+        expanded = (
+            extraction.get("expanded_code_context")
+            if isinstance(extraction.get("expanded_code_context"), dict)
+            else None
+        )
+        if expanded is not None:
+            for key in ("sink", "source", "focus"):
+                value = _normalize_optional_text(expanded.get(key))
+                if value and len(value) > 240:
+                    expanded[key] = _truncate_text(value, max(240, len(value) // 2))
+                    return True
+                if value:
+                    expanded.pop(key, None)
+                    return True
+            path_steps = expanded.get("path_steps")
+            if isinstance(path_steps, list) and path_steps:
+                expanded["path_steps"] = path_steps[:-1]
+                if not expanded["path_steps"]:
+                    expanded.pop("path_steps", None)
+                return True
+            if not expanded:
+                extraction.pop("expanded_code_context", None)
+                return True
+        source_highlights = extraction.get("source_highlights")
+        if isinstance(source_highlights, list):
+            for item in source_highlights:
+                if not isinstance(item, dict):
+                    continue
+                snippet = _normalize_optional_text(item.get("snippet"))
+                if snippet and len(snippet) > 260:
+                    item["snippet"] = _truncate_text(
+                        snippet, max(260, len(snippet) // 2)
+                    )
+                    return True
+            if len(source_highlights) > 2:
+                extraction["source_highlights"] = source_highlights[:-1]
+                return True
+        filter_points = extraction.get("filter_points")
+        if isinstance(filter_points, list) and len(filter_points) > 1:
+            extraction["filter_points"] = filter_points[:-1]
+            return True
+        missing_evidence = extraction.get("missing_evidence")
+        if isinstance(missing_evidence, list) and len(missing_evidence) > 1:
+            extraction["missing_evidence"] = missing_evidence[:-1]
+            return True
     for section_key in ("code_context", "evidence_preview", "analysis_focus"):
         section = context_payload.get(section_key)
         if section_key == "code_context" and isinstance(section, dict):
@@ -2737,7 +2850,7 @@ def _shrink_assessment_context_payload(context_payload: dict[str, object]) -> bo
             return True
         if section_key == "analysis_focus" and isinstance(section, dict):
             chain = section.get("data_flow_chain")
-            if isinstance(chain, list) and len(chain) > 3:
+            if isinstance(chain, list) and chain:
                 section["data_flow_chain"] = chain[:-1]
                 section["key_path_summary"] = _build_data_flow_summary(
                     section["data_flow_chain"]

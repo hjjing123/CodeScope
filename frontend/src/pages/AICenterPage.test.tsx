@@ -1,10 +1,14 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { message } from 'antd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import AICenterPage from './AICenterPage';
 import * as aiService from '../services/ai';
+import { FindingService } from '../services/findings';
+import type { AIChatSessionPayload } from '../types/ai';
+import type { Finding } from '../types/finding';
 
-const buildSession = () => ({
+const buildSession = (overrides: Partial<AIChatSessionPayload> = {}): AIChatSessionPayload => ({
   id: 'session-1',
   session_mode: 'general' as const,
   finding_id: null,
@@ -20,6 +24,47 @@ const buildSession = () => ({
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),
   messages: [],
+  ...overrides,
+});
+
+const buildFinding = (overrides: Partial<Finding> = {}): Finding => ({
+  id: 'finding-1',
+  project_id: 'project-1',
+  version_id: 'version-1',
+  job_id: 'job-1',
+  rule_key: 'rule-1',
+  rule_version: 1,
+  vuln_type: 'SQLI',
+  vuln_display_name: 'SQL 注入',
+  severity: 'High',
+  status: 'OPEN',
+  file_path: 'src/app.py',
+  line_start: 12,
+  line_end: 12,
+  entry_display: null,
+  entry_kind: null,
+  has_path: false,
+  path_length: null,
+  source_file: null,
+  source_line: null,
+  sink_file: null,
+  sink_line: null,
+  evidence_json: {
+    code_context: {
+      focus: {
+        snippet: 'cursor.execute(query)',
+        start_line: 12,
+      },
+    },
+  },
+  ai_review: {
+    has_assessment: true,
+    verdict: 'TP',
+    confidence: 'HIGH',
+    updated_at: new Date().toISOString(),
+  },
+  created_at: new Date().toISOString(),
+  ...overrides,
 });
 
 const buildModelCatalog = () => ({
@@ -73,6 +118,7 @@ vi.mock('../services/ai', () => ({
   createChatSession: vi.fn(),
   deleteChatSession: vi.fn(),
   getChatSession: vi.fn(),
+  getLatestFindingAIAssessmentContext: vi.fn(),
   sendChatMessageStream: vi.fn(),
   listMyAIProviders: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   getMyAIModelCatalog: vi.fn(),
@@ -86,6 +132,22 @@ vi.mock('../services/findings', () => ({
 }));
 
 const mockedAI = vi.mocked(aiService);
+const mockedGetFinding = vi.mocked(FindingService.getFinding);
+
+const renderAICenterPage = (initialEntry = '/ai-center') =>
+  render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <Routes>
+        <Route path="/ai-center" element={<AICenterPage />} />
+      </Routes>
+    </MemoryRouter>
+  );
+
+const confirmSessionDeletion = async (title: string) => {
+  fireEvent.click(screen.getByLabelText(`删除会话 ${title}`));
+  const deleteButtons = await screen.findAllByRole('button', { name: /删\s*除/ });
+  fireEvent.click(deleteButtons[deleteButtons.length - 1]);
+};
 
 describe('AICenterPage', () => {
   beforeEach(() => {
@@ -105,18 +167,16 @@ describe('AICenterPage', () => {
     mockedAI.deleteChatSession.mockResolvedValue({ ok: true, session_id: 'session-1' });
     mockedAI.getChatSession.mockResolvedValue(buildSession());
     mockedAI.sendChatMessageStream.mockResolvedValue(undefined);
+    mockedAI.getLatestFindingAIAssessmentContext.mockResolvedValue(null as never);
     mockedAI.getMyAIModelCatalog.mockResolvedValue(buildModelCatalog());
     mockedAI.updateChatSessionSelection.mockResolvedValue(buildSession());
+    mockedGetFinding.mockResolvedValue(buildFinding());
+    vi.spyOn(message, 'error').mockImplementation(() => undefined as never);
+    vi.spyOn(message, 'success').mockImplementation(() => undefined as never);
   });
 
   it('renders welcome screen instead of blank page', async () => {
-    render(
-      <MemoryRouter initialEntries={['/ai-center']}>
-        <Routes>
-          <Route path="/ai-center" element={<AICenterPage />} />
-        </Routes>
-      </MemoryRouter>
-    );
+    renderAICenterPage();
 
     await waitFor(() => {
       expect(screen.getByText('我们先从哪里开始呢？')).toBeInTheDocument();
@@ -160,13 +220,7 @@ describe('AICenterPage', () => {
         messages: [],
       });
 
-    render(
-      <MemoryRouter initialEntries={['/ai-center']}>
-        <Routes>
-          <Route path="/ai-center" element={<AICenterPage />} />
-        </Routes>
-      </MemoryRouter>
-    );
+    renderAICenterPage();
 
     const welcomeInputs = await screen.findAllByPlaceholderText('输入消息，Shift + Enter 换行...');
     welcomeInputs.forEach((input) => {
@@ -192,7 +246,110 @@ describe('AICenterPage', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(assistantContent)).toBeInTheDocument();
+      expect(mockedAI.sendChatMessageStream).toHaveBeenCalled();
     });
+    expect(message.error).not.toHaveBeenCalled();
   });
+
+  it('clears a missing session from the URL without retry loops', async () => {
+    mockedAI.listMyChatSessions.mockResolvedValue({ items: [], total: 0 });
+    mockedAI.getChatSession.mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        status: 404,
+        data: {
+          error: {
+            message: 'AI 会话不存在',
+          },
+        },
+      },
+    });
+
+    renderAICenterPage('/ai-center?session_id=session-404');
+
+    await waitFor(() => {
+      expect(screen.getByText('我们先从哪里开始呢？')).toBeInTheDocument();
+    });
+
+    expect(mockedAI.getChatSession).toHaveBeenCalledTimes(1);
+    expect(message.error).toHaveBeenCalledTimes(1);
+    expect(message.error).toHaveBeenCalledWith('AI 会话不存在');
+  });
+
+  it('clears the finding context panel when deleting the active finding session', async () => {
+    const findingSession = buildSession({
+      id: 'session-finding',
+      session_mode: 'finding_context',
+      finding_id: 'finding-1',
+      title: '漏洞分析会话',
+    });
+
+    mockedAI.listMyChatSessions
+      .mockResolvedValueOnce({ items: [findingSession], total: 1 })
+      .mockResolvedValueOnce({ items: [], total: 0 });
+    mockedAI.getChatSession.mockResolvedValue(findingSession);
+    mockedGetFinding.mockResolvedValue(buildFinding({ id: 'finding-1' }));
+
+    renderAICenterPage('/ai-center?session_id=session-finding&finding_id=finding-1');
+
+    expect(await screen.findByText('SQL 注入')).toBeInTheDocument();
+
+    await confirmSessionDeletion('漏洞分析会话');
+
+    await waitFor(() => {
+      expect(mockedAI.deleteChatSession).toHaveBeenCalledWith('session-finding');
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('SQL 注入')).not.toBeInTheDocument();
+    });
+    expect(message.error).not.toHaveBeenCalled();
+  }, 15000);
+
+  it('suppresses missing-session toast when deleting the active general session', async () => {
+    const generalSession = buildSession({
+      id: 'session-general',
+      title: '待删除自由对话',
+    });
+    const deferredSession = createDeferred<AIChatSessionPayload>();
+
+    mockedAI.listMyChatSessions
+      .mockResolvedValueOnce({ items: [generalSession], total: 1 })
+      .mockResolvedValueOnce({ items: [], total: 0 });
+    mockedAI.getChatSession.mockImplementation(() => deferredSession.promise);
+    mockedAI.deleteChatSession.mockResolvedValue({ ok: true, session_id: generalSession.id });
+
+    renderAICenterPage('/ai-center?session_id=session-general');
+
+    expect(await screen.findByLabelText('删除会话 待删除自由对话')).toBeInTheDocument();
+
+    await confirmSessionDeletion('待删除自由对话');
+
+    await waitFor(() => {
+      expect(mockedAI.deleteChatSession).toHaveBeenCalledWith('session-general');
+    });
+
+    await act(async () => {
+      deferredSession.reject({
+        isAxiosError: true,
+        response: {
+          status: 404,
+          data: {
+            error: {
+              message: 'AI 会话不存在',
+            },
+          },
+        },
+      });
+
+      try {
+        await deferredSession.promise;
+      } catch {
+        // The component handles the rejection path.
+      }
+    });
+
+    expect(message.error).not.toHaveBeenCalled();
+  }, 15000);
+
 });

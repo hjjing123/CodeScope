@@ -39,6 +39,10 @@ from app.models import (
     VersionStatus,
     utc_now,
 )
+from app.services.assessment_context_service import (
+    build_assessment_extraction,
+    resolve_assessment_profile,
+)
 from app.services.path_graph_service import normalize_path_graph
 from app.services.audit_service import append_audit_log
 from app.services.ai_service import (
@@ -54,19 +58,875 @@ from app.services.scan_runtime_service import (
     acquire_scan_runtime_slot,
     release_scan_runtime_slot,
 )
-from app.services.source_location_service import normalize_graph_location
 from app.services.scan_external import run_external_scan as run_external_scan_pipeline
 from app.services.scan_external.builtin import cleanup_ephemeral_runtime_resources
 from app.services.scan_external.context import resolve_external_path
 from app.services.scan_external.neo4j_runner import drop_database_if_exists
 from app.services.scan_external.runtime_metadata import load_runtime_metadata
-from app.services.snapshot_storage_service import read_snapshot_file_context
+from app.services.snapshot_storage_service import (
+    read_snapshot_file,
+    read_snapshot_file_context,
+)
 from app.services.task_log_service import append_task_log, delete_task_logs
 from app.services.trace_repair_service import (
     normalize_external_finding_candidate,
     process_external_finding_candidate,
     repair_external_finding_candidate,
 )
+
+
+PROFILE_SOURCE_HIGHLIGHT_DEFINITIONS: dict[str, list[dict[str, object]]] = {
+    "CMDI": [
+        {
+            "kind": "command_execution",
+            "tokens": [
+                "Runtime.getRuntime().exec",
+                "ProcessBuilder",
+                ".exec(",
+                ".start(",
+                "executeCommand",
+                "commandExecutor",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "command_construction",
+            "tokens": [
+                "String.format",
+                "command =",
+                "cmd =",
+                "args =",
+                "sh",
+                "bash",
+                "cmd /c",
+                "powershell",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "command_guard",
+            "tokens": [
+                "allowlist",
+                "whitelist",
+                "allowedCommands",
+                "matches(",
+                "replaceAll(",
+                "sanitize",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "CODEI": [
+        {
+            "kind": "expression_execution",
+            "tokens": [
+                "parseExpression",
+                "getValue(",
+                "createValueExpression",
+                "ScriptEngine",
+                ".eval(",
+                "GroovyShell",
+                "JShell",
+                "BeanShell",
+                "Class.forName",
+                "Method.invoke",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "expression_context",
+            "tokens": [
+                "StandardEvaluationContext",
+                "SimpleEvaluationContext",
+                "TemplateParserContext",
+                "TypeLocator",
+                "setVariable",
+                "setRootObject",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "expression_source",
+            "tokens": [
+                "request.getParameter",
+                "requestBody",
+                "expression",
+                "spel",
+                "ognl",
+                "script",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "JNDII": [
+        {
+            "kind": "jndi_lookup",
+            "tokens": [
+                "InitialContext.lookup",
+                "Context.lookup",
+                "JndiTemplate",
+                ".lookup(",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "jndi_target",
+            "tokens": [
+                "ldap://",
+                "rmi://",
+                "dns://",
+                "request.getParameter",
+                "jndiName",
+                "lookupName",
+                "providerUrl",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "jndi_guard",
+            "tokens": [
+                "java:comp/env",
+                "allowlist",
+                "whitelist",
+                "trustURLCodebase",
+                "egress",
+                "firewall",
+                "proxy",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "DESERIALIZATION": [
+        {
+            "kind": "deserialization_sink",
+            "tokens": [
+                "readObject(",
+                "XMLDecoder",
+                "JSON.parseObject",
+                "ObjectMapper.readValue",
+                "Yaml.load",
+                "XStream",
+                "Hessian",
+                "deserialize(",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "deserialization_source",
+            "tokens": [
+                "request.getInputStream",
+                "request.getBody",
+                "ObjectInputStream",
+                "InputStream",
+                "Socket",
+                "message.getBody",
+                "body =",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "deserialization_guard",
+            "tokens": [
+                "ObjectInputFilter",
+                "safeMode",
+                "autoType",
+                "acceptList",
+                "allowlist",
+                "whitelist",
+                "setAutoTypeSupport",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "SQLI": [
+        {
+            "kind": "sql_execution",
+            "tokens": [
+                "prepareStatement",
+                "executeQuery",
+                "executeUpdate",
+                "execute(",
+                "PreparedStatement",
+                "Statement",
+            ],
+            "before": 2,
+            "after": 3,
+        },
+        {
+            "kind": "sql_construction",
+            "tokens": [
+                "select ",
+                "update ",
+                "delete ",
+                "insert ",
+                "String.format",
+                "${",
+                "#{",
+                ".apply(",
+                ".last(",
+                ".inSql(",
+                "order by",
+                "@Select",
+                "@Update",
+                "<select",
+                "<update",
+            ],
+            "before": 2,
+            "after": 3,
+        },
+        {
+            "kind": "sql_binding",
+            "tokens": [
+                "setString(",
+                "setInt(",
+                "setLong(",
+                "setObject(",
+                "bind(",
+                "#{",
+            ],
+            "before": 2,
+            "after": 2,
+        },
+    ],
+    "SSRF": [
+        {
+            "kind": "network_sink",
+            "tokens": [
+                "new URL(",
+                "openStream(",
+                "openConnection(",
+                "RestTemplate",
+                "WebClient",
+                "HttpClient",
+                "OkHttp",
+                "Socket.connect",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "request_target",
+            "tokens": [
+                "request.getParameter",
+                "url =",
+                "uri =",
+                "host =",
+                "169.254.169.254",
+                "file://",
+                "gopher://",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "network_guard",
+            "tokens": [
+                "allowlist",
+                "whitelist",
+                "InetAddress.getByName",
+                "isSiteLocalAddress",
+                "isLoopbackAddress",
+                "setInstanceFollowRedirects",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "UPLOAD": [
+        {
+            "kind": "upload_sink",
+            "tokens": [
+                "transferTo",
+                "putObject",
+                "uploadFile",
+                "FileOutputStream",
+                "Files.write",
+                "FileWriter",
+                "copy(",
+            ],
+            "before": 2,
+            "after": 3,
+        },
+        {
+            "kind": "upload_filename",
+            "tokens": [
+                "getOriginalFilename",
+                "objectKey",
+                "fileName",
+                "UUID",
+                "randomUUID",
+                "rename",
+                "timestamp",
+            ],
+            "before": 2,
+            "after": 2,
+        },
+        {
+            "kind": "upload_access",
+            "tokens": [
+                "public-read",
+                "presigned",
+                "static/",
+                "public/",
+                "webroot",
+                "contentDisposition",
+                "Content-Disposition",
+            ],
+            "before": 2,
+            "after": 3,
+        },
+    ],
+    "PATHTRAVERSAL": [
+        {
+            "kind": "path_access",
+            "tokens": [
+                "FileInputStream",
+                "FileReader",
+                "Files.readAllBytes",
+                "Files.readString",
+                "readBytes(",
+                "readString(",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "path_construction",
+            "tokens": [
+                "Paths.get(",
+                "new File(",
+                "baseDir",
+                "fileName",
+                "../",
+                "..\\",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "path_guard",
+            "tokens": [
+                "normalize(",
+                "getCanonicalPath",
+                "toRealPath",
+                "startsWith(baseDir",
+                "reject",
+                'contains("..")',
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "HPE": [
+        {
+            "kind": "resource_query",
+            "tokens": [
+                "selectById",
+                "findById",
+                "getById",
+                "where id",
+                "@Select",
+                "<select",
+                "repository",
+                "mapper",
+            ],
+            "before": 2,
+            "after": 3,
+        },
+        {
+            "kind": "authorization_check",
+            "tokens": [
+                "checkPermission",
+                "@PreAuthorize",
+                "@PostAuthorize",
+                "hasRole",
+                "owner",
+                "tenantId",
+                "userId",
+            ],
+            "before": 2,
+            "after": 3,
+        },
+        {
+            "kind": "identity_scope",
+            "tokens": [
+                "currentUser",
+                "SecurityContext",
+                "tenantId",
+                "userId",
+                "ownerId",
+                "loginUser",
+            ],
+            "before": 2,
+            "after": 3,
+        },
+    ],
+    "MISCONFIG": [
+        {
+            "kind": "config_block",
+            "tokens": [
+                "management.",
+                "management:",
+                "actuator",
+                "swagger",
+                "knife4j",
+                "web-allow-others",
+                "druid",
+                "StatViewServlet",
+                "exposure:",
+                "loginUsername",
+                "loginPassword",
+            ],
+            "before": 3,
+            "after": 5,
+            "block_mode": "config",
+        },
+        {
+            "kind": "security_block",
+            "tokens": [
+                "SecurityFilterChain",
+                "authorizeHttpRequests",
+                "requestMatchers",
+                "permitAll",
+                "csrf",
+                "cors",
+            ],
+            "before": 3,
+            "after": 6,
+        },
+        {
+            "kind": "profile_block",
+            "tokens": [
+                "spring.profiles",
+                "@Profile",
+                "profiles.active",
+                "dev",
+                "prod",
+                "exposure.include",
+            ],
+            "before": 3,
+            "after": 5,
+            "block_mode": "config",
+        },
+    ],
+    "XSS": [
+        {
+            "kind": "output_sink",
+            "tokens": [
+                "response.getWriter",
+                "getWriter()",
+                "PrintWriter",
+                ".println(",
+                ".printf(",
+                ".write(",
+                "th:utext",
+                "out.print",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "output_encoding",
+            "tokens": [
+                "escapeHtml",
+                "StringEscapeUtils",
+                "HtmlUtils",
+                "Encode.forHtml",
+                "th:text",
+                "autoescape",
+                "Content-Security-Policy",
+            ],
+            "before": 2,
+            "after": 3,
+        },
+        {
+            "kind": "output_data_source",
+            "tokens": [
+                "request.getParameter",
+                "model.addAttribute",
+                "repository",
+                "findBy",
+                "persist",
+                "database",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "SSTI": [
+        {
+            "kind": "template_render",
+            "tokens": [
+                "templateEngine.process",
+                "StringTemplateLoader.putTemplate",
+                "FreeMarker",
+                "Velocity",
+                "Template.process",
+                "mergeTemplate",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "template_source",
+            "tokens": [
+                "templateContent",
+                "templateRepository",
+                "request.getParameter",
+                "putTemplate",
+                "saveTemplate",
+                "findTemplate",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "template_guard",
+            "tokens": [
+                "TemplateClassResolver",
+                "setNewBuiltinClassResolver",
+                "sandbox",
+                "restricted",
+                "safe mode",
+                "SpringEL",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "REDIRECT": [
+        {
+            "kind": "redirect_sink",
+            "tokens": [
+                "sendRedirect",
+                "redirect:",
+                "setLocation",
+                "HttpHeaders.setLocation",
+                "response.sendRedirect",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "redirect_target",
+            "tokens": [
+                "request.getParameter",
+                "targetUrl",
+                "redirectUrl",
+                "returnUrl",
+                "callback",
+                "redirect_uri",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "redirect_guard",
+            "tokens": [
+                'startsWith("/")',
+                "allowedHost",
+                "allowedDomain",
+                "allowlist",
+                "URI.create",
+                "relative",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "LDAPI": [
+        {
+            "kind": "ldap_search",
+            "tokens": [
+                "DirContext.search",
+                "InitialDirContext.search",
+                "LdapTemplate",
+                ".search(",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "ldap_filter",
+            "tokens": [
+                "uid=",
+                "cn=",
+                "filter =",
+                "request.getParameter",
+                "String.format",
+                "(&(",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "ldap_guard",
+            "tokens": [
+                "LdapEncoder",
+                "escape",
+                "SearchControls",
+                "baseDn",
+                "searchBase",
+                "filterArgs",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "CORS": [
+        {
+            "kind": "cors_header",
+            "tokens": [
+                "Access-Control-Allow-Origin",
+                "setHeader",
+                "addHeader",
+                "CorsRegistry",
+                "CorsConfiguration",
+                "CorsConfigurationSource",
+            ],
+            "before": 2,
+            "after": 4,
+            "block_mode": "function",
+        },
+        {
+            "kind": "origin_reflection",
+            "tokens": [
+                'request.getHeader("Origin")',
+                'getHeader("Origin")',
+                'allowedOrigins("*")',
+                "allowedOriginPatterns",
+                "origin",
+            ],
+            "before": 2,
+            "after": 4,
+            "block_mode": "function",
+        },
+        {
+            "kind": "cors_credentials",
+            "tokens": [
+                "allowCredentials(true)",
+                "Access-Control-Allow-Credentials",
+                "setAllowCredentials",
+                "SecurityFilterChain",
+            ],
+            "before": 2,
+            "after": 4,
+            "block_mode": "function",
+        },
+    ],
+    "INFOLEAK": [
+        {
+            "kind": "exception_source",
+            "tokens": [
+                "getStackTrace",
+                "printStackTrace",
+                "getMessage(",
+                "Throwable",
+                "Exception",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "exception_sink",
+            "tokens": [
+                "response.getWriter",
+                "sendError",
+                "model.addAttribute",
+                "addAttribute",
+                ".println(",
+                ".write(",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "exception_handler",
+            "tokens": [
+                "@ControllerAdvice",
+                "@ExceptionHandler",
+                "include-stacktrace",
+                "include-message",
+                "logger.error",
+                "log.error",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "HARDCODE_SECRET": [
+        {
+            "kind": "secret_literal",
+            "tokens": [
+                "setPassword(",
+                "setSecretKey(",
+                "apiKey =",
+                "secretKey =",
+                "token =",
+                "password =",
+                "accessKey",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "secret_usage",
+            "tokens": [
+                "getConnection(",
+                "connect(",
+                "setPassword(",
+                "setSecretKey(",
+                "SecretKeySpec",
+                "Authorization",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "secret_injection_guard",
+            "tokens": [
+                "System.getenv",
+                "@Value",
+                "vault",
+                "configService",
+                "secretManager",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "WEAK_HASH": [
+        {
+            "kind": "hash_selection",
+            "tokens": [
+                'MessageDigest.getInstance("MD5"',
+                'MessageDigest.getInstance("SHA-1"',
+                "DigestUtils.md5",
+                "DigestUtils.sha1",
+                "MD5",
+                "SHA-1",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "hash_usage",
+            "tokens": [
+                "digest(",
+                "update(",
+                "password",
+                "credential",
+                "signature",
+                "token",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "hash_guard",
+            "tokens": [
+                "salt",
+                "PBKDF2",
+                "BCrypt",
+                "legacy",
+                "compat",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+    "COOKIE_FLAGS": [
+        {
+            "kind": "cookie_creation",
+            "tokens": [
+                "new Cookie(",
+                "ResponseCookie.from(",
+                "addCookie(",
+                "setCookie(",
+                "cookie.set",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "cookie_flags",
+            "tokens": [
+                "setHttpOnly(",
+                "setSecure(",
+                "SameSite",
+                "httpOnly(",
+                "secure(",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+        {
+            "kind": "cookie_usage",
+            "tokens": [
+                "JSESSIONID",
+                "session",
+                "token",
+                "jwt",
+                "auth",
+            ],
+            "before": 2,
+            "after": 3,
+            "block_mode": "function",
+        },
+    ],
+}
 
 
 RETRYABLE_SCAN_STATUSES = {
@@ -1651,11 +2511,15 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
             rule_meta_by_key=rule_meta_by_key,
         )
         finding_drafts = _attach_code_contexts(job=job, finding_drafts=finding_drafts)
+        llm_enriched_drafts = _attach_ai_payloads(
+            version_id=job.version_id,
+            finding_drafts=finding_drafts,
+        )
         code_context_ready = sum(
             1 for item in finding_drafts if isinstance(item.get("code_context"), dict)
         )
         if engine_mode != "external":
-            for draft in finding_drafts:
+            for draft in llm_enriched_drafts:
                 session.add(_create_finding_model_from_draft(job=job, draft=draft))
         if len(finding_drafts) < len(execution.findings):
             _append_scan_log(
@@ -1675,7 +2539,6 @@ def run_scan_job(*, job_id: uuid.UUID, db: Session | None = None) -> None:
             commit=True,
         )
         _mark_scan_stage_started(session, job=job, stage=JobStage.AI.value)
-        llm_enriched_drafts = _attach_ai_payloads(finding_drafts)
         execution.result_summary["finding_drafts"] = llm_enriched_drafts
         execution.result_summary["normalized_finding_count"] = len(finding_drafts)
         execution.result_summary["ai_summary"] = {
@@ -2300,6 +3163,14 @@ def _create_finding_model_from_draft(*, job: Job, draft: dict[str, object]) -> F
         evidence_payload.setdefault("trace_summary", draft.get("trace_summary"))
     if isinstance(draft.get("code_context"), dict):
         evidence_payload.setdefault("code_context", draft.get("code_context"))
+    if draft.get("assessment_profile"):
+        evidence_payload.setdefault(
+            "assessment_profile", draft.get("assessment_profile")
+        )
+    if isinstance(draft.get("assessment_extraction"), dict):
+        evidence_payload.setdefault(
+            "assessment_extraction", draft.get("assessment_extraction")
+        )
     llm_payload = _build_llm_payload(draft)
     evidence_payload.setdefault("llm_payload", llm_payload)
     evidence_payload.setdefault(
@@ -2485,6 +3356,7 @@ def _persist_external_finding_live(
     if not drafts:
         return None
     draft = _attach_code_contexts(job=job, finding_drafts=[drafts[0]])[0]
+    draft = _attach_ai_payloads(version_id=job.version_id, finding_drafts=[draft])[0]
     paths = (
         normalized_finding.get("paths")
         if isinstance(normalized_finding.get("paths"), list)
@@ -2614,8 +3486,14 @@ def _normalize_finding_drafts(
         evidence = _normalize_evidence_payload(
             finding_data.get("evidence") or finding_data.get("evidence_json")
         )
+        paths = (
+            list(finding_data.get("paths"))
+            if isinstance(finding_data.get("paths"), list)
+            else []
+        )
         draft: dict[str, object] = {
             "rule_key": rule_key,
+            "rule_enabled": bool(meta.enabled) if meta is not None else True,
             "rule_version": _to_int(
                 finding_data.get("rule_version"),
                 default=meta.active_version if meta is not None else None,
@@ -2643,6 +3521,7 @@ def _normalize_finding_drafts(
             ),
             "has_path": bool(finding_data.get("has_path", False)),
             "path_length": _to_int(finding_data.get("path_length")),
+            "paths": paths,
         }
         if _is_valid_finding_draft(draft):
             drafts.append(draft)
@@ -2911,17 +3790,418 @@ def _build_stub_finding(
 
 
 def _attach_ai_payloads(
+    *,
+    version_id: uuid.UUID | None,
     finding_drafts: list[dict[str, object]],
 ) -> list[dict[str, object]]:
     enriched: list[dict[str, object]] = []
     for draft in finding_drafts:
         copied = dict(draft)
+        data_flow_chain = _build_draft_data_flow_chain(
+            version_id=version_id,
+            paths=draft.get("paths") if isinstance(draft.get("paths"), list) else [],
+        )
+        assessment_profile = resolve_assessment_profile(
+            vuln_type=str(draft.get("vuln_type") or "").strip() or None,
+            rule_key=str(draft.get("rule_key") or "").strip() or None,
+        )
+        source_highlights = _build_profile_source_highlights(
+            version_id=version_id,
+            draft=draft,
+            profile=assessment_profile,
+            data_flow_chain=data_flow_chain,
+        )
+        copied["assessment_profile"] = assessment_profile
+        copied["assessment_extraction"] = build_assessment_extraction(
+            rule_key=str(draft.get("rule_key") or "").strip() or None,
+            vuln_type=str(draft.get("vuln_type") or "").strip() or None,
+            source=draft.get("source") if isinstance(draft.get("source"), dict) else {},
+            sink=draft.get("sink") if isinstance(draft.get("sink"), dict) else {},
+            trace_summary=str(draft.get("trace_summary") or "").strip() or None,
+            code_context=(
+                draft.get("code_context")
+                if isinstance(draft.get("code_context"), dict)
+                else {}
+            ),
+            evidence=_normalize_evidence_payload(draft.get("evidence")),
+            data_flow_chain=data_flow_chain,
+            source_highlights=source_highlights,
+        )
         llm_payload = _build_llm_payload(draft)
         copied["llm_payload"] = llm_payload
         copied["llm_prompt_block"] = _build_llm_prompt_block(llm_payload)
         copied["ai_fingerprint"] = _build_ai_fingerprint(llm_payload)
         enriched.append(copied)
     return enriched
+
+
+def _build_draft_data_flow_chain(
+    *, version_id: uuid.UUID | None, paths: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    if version_id is None or not paths:
+        return []
+    for path_index, path_item in enumerate(paths):
+        if not isinstance(path_item, dict):
+            continue
+        normalized_path = _normalize_finding_path_graph(
+            version_id=version_id,
+            path_item=path_item,
+            path_index=path_index,
+        )
+        if normalized_path is None:
+            continue
+        steps = normalized_path.get("steps") or []
+        edges = normalized_path.get("edges") or []
+        if not isinstance(steps, list) or not steps:
+            continue
+        edge_by_from: dict[int, dict[str, object]] = {}
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            from_step_id = _to_int(edge.get("from_step_id"))
+            if from_step_id is None or from_step_id in edge_by_from:
+                continue
+            edge_by_from[from_step_id] = edge
+        chain: list[dict[str, object]] = []
+        for index, step in enumerate(steps[:8]):
+            if not isinstance(step, dict):
+                continue
+            line = _to_int(step.get("line"))
+            file_path = str(step.get("file") or "").strip()
+            location = file_path or "-"
+            if file_path and line is not None:
+                location = f"{file_path}:{line}"
+            edge = edge_by_from.get(index)
+            chain.append(
+                {
+                    "step_order": _to_int(step.get("step_id"), default=index) or index,
+                    "location": location,
+                    "display_name": str(
+                        step.get("display_name") or f"step-{index}"
+                    ).strip(),
+                    "node_kind": str(step.get("node_kind") or "").strip() or None,
+                    "code_snippet": str(step.get("code_snippet") or "").strip() or None,
+                    "edge_to_next": (
+                        str(edge.get("label") or edge.get("edge_type") or "").strip()
+                        or None
+                    )
+                    if isinstance(edge, dict)
+                    else None,
+                }
+            )
+        if chain:
+            return chain
+    return []
+
+
+def _build_profile_source_highlights(
+    *,
+    version_id: uuid.UUID | None,
+    draft: dict[str, object],
+    profile: str,
+    data_flow_chain: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    definitions = PROFILE_SOURCE_HIGHLIGHT_DEFINITIONS.get(profile)
+    if version_id is None or not definitions:
+        return []
+    if draft.get("rule_enabled") is False:
+        return []
+    file_candidates = _collect_profile_candidate_files(
+        draft=draft,
+        data_flow_chain=data_flow_chain,
+    )
+    highlights: list[dict[str, object]] = []
+    seen: set[tuple[str, str]] = set()
+    for file_path, anchor_lines in file_candidates:
+        lines = _read_snapshot_lines(version_id=version_id, file_path=file_path)
+        if not lines:
+            continue
+        for definition in definitions:
+            matched_lines = _find_highlight_match_lines(
+                lines=lines,
+                anchor_lines=anchor_lines,
+                tokens=definition.get("tokens")
+                if isinstance(definition.get("tokens"), list)
+                else [],
+            )
+            if not matched_lines:
+                continue
+            line_no = matched_lines[0]
+            block_mode = str(definition.get("block_mode") or "").strip()
+            if block_mode == "config":
+                start_line, end_line, snippet = _extract_config_highlight_snippet(
+                    lines=lines,
+                    line_no=line_no,
+                )
+            elif block_mode == "function":
+                start_line, end_line, snippet = _extract_function_highlight_snippet(
+                    lines=lines,
+                    line_no=line_no,
+                    before=_to_int(definition.get("before"), default=2) or 2,
+                    after=_to_int(definition.get("after"), default=2) or 2,
+                )
+            else:
+                start_line, end_line, snippet = _extract_highlight_snippet(
+                    lines=lines,
+                    line_no=line_no,
+                    before=_to_int(definition.get("before"), default=2) or 2,
+                    after=_to_int(definition.get("after"), default=2) or 2,
+                )
+            if not snippet:
+                continue
+            location = f"{file_path}:{start_line}"
+            if end_line > start_line:
+                location = f"{file_path}:{start_line}-{end_line}"
+            key = (str(definition.get("kind") or "highlight"), location)
+            if key in seen:
+                continue
+            seen.add(key)
+            highlights.append(
+                {
+                    "kind": str(definition.get("kind") or "highlight").strip()
+                    or "highlight",
+                    "location": location,
+                    "snippet": snippet,
+                }
+            )
+            if len(highlights) >= 4:
+                return highlights
+    return highlights
+
+
+def _collect_profile_candidate_files(
+    *, draft: dict[str, object], data_flow_chain: list[dict[str, object]]
+) -> list[tuple[str, list[int]]]:
+    ordered: dict[str, list[int]] = {}
+
+    def add(file_path: object, line: object) -> None:
+        normalized = str(file_path or "").strip()
+        if not normalized:
+            return
+        bucket = ordered.setdefault(normalized, [])
+        line_no = _to_int(line)
+        if line_no is not None and line_no > 0 and line_no not in bucket:
+            bucket.append(line_no)
+
+    add(draft.get("file_path"), draft.get("line_start"))
+    source = draft.get("source") if isinstance(draft.get("source"), dict) else {}
+    sink = draft.get("sink") if isinstance(draft.get("sink"), dict) else {}
+    add(source.get("file"), source.get("line"))
+    add(sink.get("file"), sink.get("line"))
+    for item in data_flow_chain[:6]:
+        if not isinstance(item, dict):
+            continue
+        file_path, line_no = _parse_chain_location(item.get("location"))
+        add(file_path, line_no)
+    return [(file_path, lines) for file_path, lines in ordered.items()]
+
+
+def _parse_chain_location(value: object) -> tuple[str | None, int | None]:
+    location = str(value or "").strip()
+    if not location:
+        return None, None
+    head, sep, tail = location.rpartition(":")
+    if sep and tail.isdigit():
+        return head or None, int(tail)
+    return location, None
+
+
+def _read_snapshot_lines(*, version_id: uuid.UUID, file_path: str) -> list[str] | None:
+    resolved_path = _resolve_snapshot_relative_path(
+        version_id=version_id, raw_path=file_path
+    )
+    if not resolved_path:
+        return None
+    try:
+        content, _truncated, _total_lines = read_snapshot_file(
+            version_id=version_id,
+            path=resolved_path,
+            full=True,
+        )
+    except AppError:
+        return None
+    return content.splitlines()
+
+
+def _find_highlight_match_lines(
+    *,
+    lines: list[str],
+    anchor_lines: list[int],
+    tokens: list[object],
+) -> list[int]:
+    normalized_tokens = [str(token).lower() for token in tokens if str(token).strip()]
+    if not normalized_tokens:
+        return []
+    ranked: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    anchors = [line for line in anchor_lines if line > 0]
+    for index, raw_line in enumerate(lines, start=1):
+        lowered = raw_line.lower()
+        if not any(token in lowered for token in normalized_tokens):
+            continue
+        if index in seen:
+            continue
+        seen.add(index)
+        distance = min((abs(index - anchor) for anchor in anchors), default=0)
+        ranked.append((distance, index))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [line_no for _distance, line_no in ranked[:2]]
+
+
+def _extract_highlight_snippet(
+    *, lines: list[str], line_no: int, before: int, after: int
+) -> tuple[int, int, str | None]:
+    if line_no <= 0 or line_no > len(lines):
+        return line_no, line_no, None
+    start_line = max(1, line_no - max(0, before))
+    end_line = min(len(lines), line_no + max(0, after))
+    return (
+        start_line,
+        end_line,
+        _format_code_snippet(lines[start_line - 1 : end_line], start_line),
+    )
+
+
+def _extract_function_highlight_snippet(
+    *, lines: list[str], line_no: int, before: int, after: int
+) -> tuple[int, int, str | None]:
+    if line_no <= 0 or line_no > len(lines):
+        return line_no, line_no, None
+    signature_index = _locate_function_signature_index(lines=lines, line_no=line_no)
+    if signature_index is None:
+        return _extract_highlight_snippet(
+            lines=lines,
+            line_no=line_no,
+            before=max(before, 3),
+            after=max(after, 4),
+        )
+    start = signature_index
+    while start > 0 and lines[start - 1].strip().startswith("@"):
+        start -= 1
+    end = _locate_function_end_index(lines=lines, signature_index=signature_index)
+    if end is None:
+        return _extract_highlight_snippet(
+            lines=lines,
+            line_no=line_no,
+            before=max(before, 3),
+            after=max(after, 4),
+        )
+    if end - start > 60:
+        end = start + 60
+    start_line = start + 1
+    end_line = end + 1
+    return (
+        start_line,
+        end_line,
+        _format_code_snippet(lines[start : end + 1], start_line),
+    )
+
+
+def _locate_function_signature_index(*, lines: list[str], line_no: int) -> int | None:
+    start_index = max(0, line_no - 1)
+    for index in range(start_index, max(-1, start_index - 60), -1):
+        candidate = lines[index].strip()
+        if not candidate:
+            continue
+        if _looks_like_function_signature(candidate):
+            return index
+    return None
+
+
+def _locate_function_end_index(*, lines: list[str], signature_index: int) -> int | None:
+    brace_balance = 0
+    opened = False
+    for index in range(signature_index, min(len(lines), signature_index + 120)):
+        line = lines[index]
+        for char in line:
+            if char == "{":
+                brace_balance += 1
+                opened = True
+            elif char == "}":
+                if opened:
+                    brace_balance -= 1
+                    if brace_balance <= 0:
+                        return index
+        if opened and brace_balance <= 0:
+            return index
+    return None
+
+
+def _looks_like_function_signature(value: str) -> bool:
+    if not value:
+        return False
+    lowered = value.lower()
+    if lowered.startswith(
+        (
+            "if ",
+            "if(",
+            "for ",
+            "for(",
+            "while ",
+            "while(",
+            "switch ",
+            "switch(",
+            "catch ",
+            "catch(",
+            "return ",
+        )
+    ):
+        return False
+    if re.match(
+        r"^(public|private|protected|static|final|synchronized|abstract|native|default|@\w[\w.]*\s+|\s)+.*\([^;]*\)\s*\{?\s*$",
+        value,
+    ):
+        return True
+    if re.match(r"^def\s+\w+\s*\(.*\)\s*:\s*$", value):
+        return True
+    if re.match(r"^function\s+\w+\s*\(.*\)\s*\{?\s*$", value):
+        return True
+    return False
+
+
+def _extract_config_highlight_snippet(
+    *, lines: list[str], line_no: int
+) -> tuple[int, int, str | None]:
+    if line_no <= 0 or line_no > len(lines):
+        return line_no, line_no, None
+    index = line_no - 1
+    start = index
+    end = index
+    anchor_indent = _line_indent(lines[index])
+    steps = 0
+    while start > 0 and steps < 6:
+        previous = lines[start - 1]
+        if not previous.strip():
+            break
+        prev_indent = _line_indent(previous)
+        if prev_indent <= anchor_indent or previous.strip().endswith(":"):
+            start -= 1
+            steps += 1
+            continue
+        break
+    steps = 0
+    while end + 1 < len(lines) and steps < 8:
+        current = lines[end + 1]
+        if not current.strip():
+            break
+        current_indent = _line_indent(current)
+        if current_indent >= anchor_indent or current.strip().endswith(":"):
+            end += 1
+            steps += 1
+            continue
+        break
+    start_line = start + 1
+    end_line = end + 1
+    return (
+        start_line,
+        end_line,
+        _format_code_snippet(lines[start : end + 1], start_line),
+    )
+
+
+def _line_indent(value: str) -> int:
+    match = re.match(r"\s*", value)
+    return len(match.group(0)) if match else 0
 
 
 def _build_llm_payload(draft: dict[str, object]) -> dict[str, object]:

@@ -963,6 +963,28 @@ def _version_path(rules_dir: Path, rule_key: str, version: int) -> Path:
 
 def _infer_vuln_type(rule_key: str) -> str:
     key = rule_key.lower()
+    if "weekpass" in key or "weakpass" in key:
+        return "WEAK_PASSWORD"
+    if "weekhash" in key or "weakhash" in key:
+        return "WEAK_HASH"
+    if "cookiesecure" in key or key.startswith("cookie_"):
+        return "COOKIE_FLAGS"
+    if "hardcode" in key:
+        return "HARDCODE_SECRET"
+    if "alloworigin" in key or "cors" in key:
+        return "CORS"
+    if any(
+        token in key for token in ["misconfig", "actuator", "swagger", "druid", "_h2_"]
+    ):
+        return "MISCONFIG"
+    if "infoleak" in key:
+        return "INFOLEAK"
+    if "hpe" in key or "idor" in key:
+        return "HPE"
+    if "ldapi" in key or "ldap" in key:
+        return "LDAPI"
+    if "jndii" in key or "jndi" in key:
+        return "JNDII"
     if "sqli" in key or key.endswith("_sql"):
         return "SQLI"
     if "xss" in key:
@@ -975,8 +997,10 @@ def _infer_vuln_type(rule_key: str) -> str:
         return "UPLOAD"
     if "pathtraver" in key or "travers" in key:
         return "PATH_TRAVERSAL"
-    if "cmdi" in key or "codei" in key:
-        return "RCE"
+    if "cmdi" in key:
+        return "CMDI"
+    if "codei" in key:
+        return "CODEI"
     if "deserialization" in key:
         return "DESERIALIZATION"
     if "redirect" in key:
@@ -986,10 +1010,24 @@ def _infer_vuln_type(rule_key: str) -> str:
 
 def _infer_severity(rule_key: str) -> str:
     key = rule_key.lower()
-    if any(token in key for token in ["rce", "cmdi", "deserialization", "sqli", "xxe"]):
+    if any(
+        token in key
+        for token in ["rce", "cmdi", "codei", "deserialization", "sqli", "xxe", "jndi"]
+    ):
         return "HIGH"
     if any(
-        token in key for token in ["xss", "ssrf", "upload", "pathtraver", "redirect"]
+        token in key
+        for token in [
+            "xss",
+            "ssrf",
+            "upload",
+            "pathtraver",
+            "redirect",
+            "ldapi",
+            "hpe",
+            "alloworigin",
+            "cookiesecure",
+        ]
     ):
         return "MED"
     return "LOW"

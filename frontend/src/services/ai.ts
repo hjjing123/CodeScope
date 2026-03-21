@@ -131,7 +131,9 @@ export const createChatSession = async (
 ) => unwrap<AIChatSessionPayload>(request.post(`/findings/${findingId}/ai/chat/sessions`, data));
 
 export const getChatSession = async (sessionId: string) =>
-  unwrap<AIChatSessionPayload>(request.get(`/ai/chat/sessions/${sessionId}`));
+  unwrap<AIChatSessionPayload>(
+    request.get(`/ai/chat/sessions/${sessionId}`, { skipErrorToast: true })
+  );
 
 export const deleteChatSession = async (sessionId: string) =>
   unwrap<AIChatSessionDeletePayload>(request.delete(`/ai/chat/sessions/${sessionId}`));

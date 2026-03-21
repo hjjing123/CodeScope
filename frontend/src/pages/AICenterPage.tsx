@@ -78,6 +78,15 @@ const AICenterPage: React.FC = () => {
     sessionId: string;
     message: AIChatMessagePayload;
   } | null>(null);
+  const removedSessionsRef = useRef(new Map<string, {
+    findingId: string | null;
+    clearFindingContext: boolean;
+  }>());
+  const searchParamsRef = useRef(searchParams);
+
+  useEffect(() => {
+    searchParamsRef.current = searchParams;
+  }, [searchParams]);
 
   // Initial Data Fetch
   const refreshSessions = useCallback(async () => {
@@ -85,7 +94,7 @@ const AICenterPage: React.FC = () => {
     try {
       const res = await listMyChatSessions();
       setSessions(res.items);
-    } catch (error) {
+    } catch {
       message.error('加载会话列表失败');
     } finally {
       setLoadingSessions(false);
@@ -104,18 +113,25 @@ const AICenterPage: React.FC = () => {
       setFinding(null);
       setAssessmentContext(null);
       pendingInitialMessageRef.current = null;
+      setLoadingChat(false);
       return;
     }
+
+    let active = true;
+    const requestedSessionId = currentSessionId;
 
     const loadSession = async () => {
       setLoadingChat(true);
       try {
-        const session = await getChatSession(currentSessionId);
+        const session = await getChatSession(requestedSessionId);
+        if (!active) {
+          return;
+        }
         setCurrentSession(session);
         const sessionMessages = session.messages ?? [];
         const pendingInitialMessage = pendingInitialMessageRef.current;
         if (
-          pendingInitialMessage?.sessionId === currentSessionId &&
+          pendingInitialMessage?.sessionId === requestedSessionId &&
           sessionMessages.length === 0
         ) {
           setMessages((prev) => {
@@ -127,14 +143,14 @@ const AICenterPage: React.FC = () => {
         } else {
           setMessages((prev) => {
             const belongsToCurrentSession =
-              prev.length > 0 && prev.every((item) => item.session_id === currentSessionId);
+              prev.length > 0 && prev.every((item) => item.session_id === requestedSessionId);
             if (belongsToCurrentSession && prev.length > sessionMessages.length) {
               return prev;
             }
             return sessionMessages;
           });
           if (
-            pendingInitialMessage?.sessionId === currentSessionId &&
+            pendingInitialMessage?.sessionId === requestedSessionId &&
             sessionMessages.length > 0
           ) {
             pendingInitialMessageRef.current = null;
@@ -147,7 +163,10 @@ const AICenterPage: React.FC = () => {
             ? session.provider_snapshot
             : {};
         setModelSelection({
-          ai_source: (String(providerSnapshot.source || session.provider_source || '') || undefined) as any,
+          ai_source: (() => {
+            const source = String(providerSnapshot.source || session.provider_source || '').trim();
+            return source === 'system_ollama' || source === 'user_external' ? source : undefined;
+          })(),
           ai_provider_id:
             typeof providerSnapshot.provider_id === 'string' ? providerSnapshot.provider_id : undefined,
           ai_model: session.model_name,
@@ -160,35 +179,136 @@ const AICenterPage: React.FC = () => {
               FindingService.getFinding(session.finding_id),
               getLatestFindingAIAssessmentContext(session.finding_id).catch(() => null),
             ]);
+            if (!active) {
+              return;
+            }
             setFinding(f);
             setAssessmentContext(latestContext);
-          } catch (e) {
-            console.error(e);
+          } catch (findingError) {
+            console.error(findingError);
           } finally {
-            setLoadingFinding(false);
+            if (active) {
+              setLoadingFinding(false);
+            }
           }
         } else {
           setFinding(null);
           setAssessmentContext(null);
         }
       } catch (error) {
-        message.error('加载会话详情失败');
+        if (!active) {
+          return;
+        }
+        const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+        const backendMessage = axios.isAxiosError(error)
+          ? error.response?.data?.error?.message || error.response?.data?.message
+          : undefined;
+        let removedSession = removedSessionsRef.current.get(requestedSessionId) ?? null;
+        const sessionWasDeleted = Boolean(removedSession);
+
+        if (status === 404) {
+          if (!removedSession) {
+            removedSession = {
+              findingId: null,
+              clearFindingContext: false,
+            };
+            removedSessionsRef.current.set(requestedSessionId, removedSession);
+          }
+
+          const nextParams = new URLSearchParams(searchParamsRef.current);
+          let changed = false;
+
+          if (nextParams.get('session_id') === requestedSessionId) {
+            nextParams.delete('session_id');
+            changed = true;
+          }
+
+          if (
+            removedSession?.clearFindingContext &&
+            removedSession.findingId &&
+            nextParams.get('finding_id') === removedSession.findingId
+          ) {
+            nextParams.delete('finding_id');
+            changed = true;
+          }
+
+          if (changed) {
+            setSearchParams(nextParams, { replace: true });
+          }
+          if (!sessionWasDeleted) {
+            message.error(
+              typeof backendMessage === 'string' && backendMessage.trim()
+                ? backendMessage
+                : 'AI 会话不存在'
+            );
+          }
+        } else {
+          message.error('加载会话详情失败');
+        }
         setCurrentSession(null);
+        setMessages([]);
+        setFinding(null);
         setAssessmentContext(null);
         pendingInitialMessageRef.current = null;
-        setCurrentSessionId(null);
+        setCurrentSessionId((prev) => (prev === requestedSessionId ? null : prev));
       } finally {
-        setLoadingChat(false);
+        if (active) {
+          setLoadingChat(false);
+        }
       }
     };
 
-    loadSession();
-  }, [currentSessionId]);
+    void loadSession();
+    return () => {
+      active = false;
+    };
+  }, [currentSessionId, setSearchParams]);
 
   // Handle URL params
   useEffect(() => {
     const sid = searchParams.get('session_id');
     const findingId = searchParams.get('finding_id');
+    const removedSession = sid ? removedSessionsRef.current.get(sid) ?? null : null;
+
+    if (sid && removedSession) {
+      const nextParams = new URLSearchParams(searchParams);
+      let changed = false;
+
+      if (nextParams.get('session_id') === sid) {
+        nextParams.delete('session_id');
+        changed = true;
+      }
+
+      if (
+        removedSession.clearFindingContext &&
+        removedSession.findingId &&
+        nextParams.get('finding_id') === removedSession.findingId
+      ) {
+        nextParams.delete('finding_id');
+        changed = true;
+      }
+
+      if (changed) {
+        setSearchParams(nextParams, { replace: true });
+      }
+
+      if (currentSessionId === sid) {
+        setCurrentSessionId(null);
+      }
+      setCurrentSession(null);
+      setMessages([]);
+      pendingInitialMessageRef.current = null;
+      setLoadingChat(false);
+
+      if (removedSession.clearFindingContext) {
+        setFinding(null);
+        setAssessmentContext(null);
+        setLoadingFinding(false);
+      }
+
+      return;
+    }
+
     if (sid && sid !== currentSessionId) {
       setCurrentSessionId(sid);
     }
@@ -214,8 +334,8 @@ const AICenterPage: React.FC = () => {
           ]);
           setFinding(loadedFinding);
           setAssessmentContext(latestContext);
-        } catch (error) {
-          console.error(error);
+        } catch (findingContextError) {
+          console.error(findingContextError);
           setFinding(null);
           setAssessmentContext(null);
         } finally {
@@ -224,8 +344,9 @@ const AICenterPage: React.FC = () => {
       };
 
       void loadFindingContext();
+      return;
     }
-  }, [searchParams, currentSessionId]);
+  }, [searchParams, currentSessionId, setSearchParams]);
 
   const handleSelectSession = (session: AIChatSessionPayload) => {
     setViewMode('chat');
@@ -257,7 +378,7 @@ const AICenterPage: React.FC = () => {
       } else {
         setSearchParams({ session_id: session.id });
       }
-    } catch (error) {
+    } catch {
       message.error('创建会话失败，请先确认可用模型或 AI Provider 配置');
     }
   };
@@ -456,7 +577,7 @@ const AICenterPage: React.FC = () => {
       };
       setMessages([tempMsg]);
       await streamChatMessage(session.id, content, tempMsg.id);
-    } catch (error) {
+    } catch {
       message.error('创建会话失败，请先确认可用模型或 AI Provider 配置');
     }
   };
@@ -474,28 +595,61 @@ const AICenterPage: React.FC = () => {
   };
 
   const handleDeleteSession = async (session: AIChatSessionPayload) => {
+    const currentUrlSessionId = searchParams.get('session_id');
+    const deletingActiveSession =
+      currentUrlSessionId === session.id ||
+      currentSessionId === session.id ||
+      currentSession?.id === session.id;
+    const shouldClearFindingContext = Boolean(session.finding_id) && deletingActiveSession;
+
     try {
       setDeletingSessionId(session.id);
+      removedSessionsRef.current.set(session.id, {
+        findingId: session.finding_id,
+        clearFindingContext: shouldClearFindingContext,
+      });
+      
       await deleteChatSession(session.id);
 
-      if (currentSessionId === session.id) {
+      setSearchParams((prevParams) => {
+        const nextParams = new URLSearchParams(prevParams);
+        let changed = false;
+        
+        if (nextParams.get('session_id') === session.id) {
+          nextParams.delete('session_id');
+          changed = true;
+        }
+        
+        if (
+          shouldClearFindingContext &&
+          session.finding_id &&
+          nextParams.get('finding_id') === session.finding_id
+        ) {
+          nextParams.delete('finding_id');
+          changed = true;
+        }
+        
+        return changed ? nextParams : prevParams;
+      }, { replace: true });
+
+      if (deletingActiveSession) {
         setCurrentSessionId(null);
         setCurrentSession(null);
         setMessages([]);
+        pendingInitialMessageRef.current = null;
+        setLoadingChat(false);
+      }
+
+      if (shouldClearFindingContext) {
         setFinding(null);
         setAssessmentContext(null);
-
-        const nextParams = new URLSearchParams(searchParams);
-        nextParams.delete('session_id');
-        if (session.finding_id) {
-          nextParams.set('finding_id', session.finding_id);
-        }
-        setSearchParams(nextParams);
+        setLoadingFinding(false);
       }
 
       await refreshSessions();
       message.success('会话已删除');
-    } catch (error) {
+    } catch {
+      removedSessionsRef.current.delete(session.id);
       message.error('删除会话失败');
     } finally {
       setDeletingSessionId(null);
@@ -562,7 +716,7 @@ const AICenterPage: React.FC = () => {
       try {
         await updateChatSessionSelection(currentSessionId, value);
         message.success(`已切换模型为 ${value.ai_model}`);
-      } catch (error) {
+      } catch {
         message.error('切换模型失败');
         // Revert selection? Or just let it stay as per UI state?
         // Ideally reload session details to sync back

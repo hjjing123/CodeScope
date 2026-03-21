@@ -871,9 +871,16 @@ def test_scan_with_ai_enabled_creates_ai_job_and_assessments(
     assert assessments[0].summary_json["prompt_meta"]["max_context_tokens"] == 32768
     assert assessments[0].request_messages_json
     assert assessments[0].context_snapshot_json
+    assert assessments[0].context_snapshot_json["extraction"]["profile"] == "XSS"
     assert (
         assessments[0].context_snapshot_json["analysis_focus"]["data_flow_chain"] == []
     )
+
+    finding = db_session.scalar(select(Finding).where(Finding.job_id == scan_job.id))
+    assert finding is not None
+    assert finding.evidence_json["assessment_profile"] == "XSS"
+    assert finding.evidence_json["assessment_extraction"]["profile"] == "XSS"
+    assert finding.evidence_json["assessment_extraction"]["filter_points"]
 
     response = client.get(f"/api/v1/jobs/{scan_job_id}/ai-enrichment", headers=headers)
     assert response.status_code == 200, response.text
@@ -924,7 +931,16 @@ def test_assessment_prompt_includes_key_flow_and_respects_budget(db_session):
                 "source": "String body = request.getBody();" * 20,
                 "sink": "return JSON.parseObject(body, clazz);" * 20,
             },
-        }
+        },
+        "assessment_extraction": {
+            "source_highlights": [
+                {
+                    "kind": "deserialization_guard",
+                    "location": "src/main/java/com/demo/FastjsonService.java:88-89",
+                    "snippet": "88: return JSON.parseObject(body, clazz);\n89: // no safeMode enabled",
+                }
+            ]
+        },
     }
     db_session.commit()
 
@@ -988,8 +1004,19 @@ def test_assessment_prompt_includes_key_flow_and_respects_budget(db_session):
         bundle.budget_meta["input_tokens_estimate"]
         <= bundle.budget_meta["max_input_tokens"]
     )
+    assert bundle.context_payload["extraction"]["profile"] == "DESERIALIZATION"
+    assert (
+        bundle.context_payload["extraction"]["structured_facts"][
+            "deserializes_untrusted_input"
+        ]
+        == "yes"
+    )
+    assert bundle.context_payload["extraction"]["filter_points"]
+    assert bundle.context_payload["extraction"]["source_highlights"]
     assert "Fastjson" in bundle.messages[0]["content"]
     assert "data_flow_chain" in bundle.messages[1]["content"]
+    assert "structured_facts" in bundle.messages[1]["content"]
+    assert "source_highlights" in bundle.messages[1]["content"]
     assert "JSON.parseObject" in bundle.messages[1]["content"]
     assert "跨函数参数传递" in bundle.messages[1]["content"]
 
@@ -1196,6 +1223,7 @@ def test_findings_include_latest_ai_review_summary_and_context(
     assert (
         context_payload["context_snapshot"]["finding_core"]["rule_key"] == "any_any_xss"
     )
+    assert context_payload["context_snapshot"]["extraction"]["profile"] == "XSS"
 
 
 def test_can_create_and_reuse_seeded_assessment_chat_session(

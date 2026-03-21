@@ -34,7 +34,9 @@ def test_attach_code_contexts_and_ai_payloads_use_snapshot_source(
         "class Main {\n"
         '  String input = request.getParameter("id");\n'
         '  String sql = "select * from user where id=" + input;\n'
-        "  statement.executeQuery(sql);\n"
+        "  PreparedStatement ps = connection.prepareStatement(sql);\n"
+        "  ps.setString(1, input);\n"
+        "  ps.executeQuery();\n"
         "}\n",
         encoding="utf-8",
     )
@@ -48,13 +50,60 @@ def test_attach_code_contexts_and_ai_payloads_use_snapshot_source(
                 "vuln_type": "SQLI",
                 "file_path": "src/Main.java",
                 "line_start": 3,
-                "line_end": 4,
+                "line_end": 6,
                 "source": {"file": "src/Main.java", "line": 2},
-                "sink": {"file": "src/Main.java", "line": 4},
-                "evidence": {"items": ["request.id", "executeQuery"]},
-                "trace_summary": "request -> sql -> executeQuery",
+                "sink": {"file": "src/Main.java", "line": 6},
+                "evidence": {"items": ["request.id", "prepareStatement", "setString"]},
+                "trace_summary": "request -> sql -> prepareStatement -> setString -> executeQuery",
                 "has_path": True,
-                "path_length": 3,
+                "path_length": 5,
+                "paths": [
+                    {
+                        "steps": [
+                            {
+                                "file": "src/Main.java",
+                                "line": 2,
+                                "display_name": "request.id",
+                                "node_kind": "Param",
+                                "code_snippet": 'request.getParameter("id")',
+                            },
+                            {
+                                "file": "src/Main.java",
+                                "line": 3,
+                                "display_name": "sql",
+                                "node_kind": "Var",
+                                "code_snippet": 'String sql = "select * from user where id=" + input;',
+                            },
+                            {
+                                "file": "src/Main.java",
+                                "line": 4,
+                                "display_name": "prepareStatement",
+                                "node_kind": "Call",
+                                "code_snippet": "PreparedStatement ps = connection.prepareStatement(sql);",
+                            },
+                            {
+                                "file": "src/Main.java",
+                                "line": 5,
+                                "display_name": "setString",
+                                "node_kind": "Call",
+                                "code_snippet": "ps.setString(1, input);",
+                            },
+                            {
+                                "file": "src/Main.java",
+                                "line": 6,
+                                "display_name": "executeQuery",
+                                "node_kind": "Call",
+                                "code_snippet": "ps.executeQuery();",
+                            },
+                        ],
+                        "edges": [
+                            {"from_step_id": 0, "to_step_id": 1, "edge_type": "REF"},
+                            {"from_step_id": 1, "to_step_id": 2, "edge_type": "ARG"},
+                            {"from_step_id": 2, "to_step_id": 3, "edge_type": "ARG"},
+                            {"from_step_id": 3, "to_step_id": 4, "edge_type": "CALLS"},
+                        ],
+                    }
+                ],
             }
         ]
 
@@ -65,12 +114,47 @@ def test_attach_code_contexts_and_ai_payloads_use_snapshot_source(
         assert enriched[0]["code_context"]["focus"]["file_path"] == "src/Main.java"
         assert "3:   String sql" in enriched[0]["code_context"]["focus"]["snippet"]
 
-        llm_enriched = scan_service_module._attach_ai_payloads(enriched)
+        llm_enriched = scan_service_module._attach_ai_payloads(
+            version_id=version_id,
+            finding_drafts=enriched,
+        )
         payload = llm_enriched[0]["llm_payload"]
+        assert llm_enriched[0]["assessment_profile"] == "SQLI"
+        assert llm_enriched[0]["assessment_extraction"]["profile"] == "SQLI"
+        assert (
+            llm_enriched[0]["assessment_extraction"]["general_facts"]["path_available"]
+            == "yes"
+        )
+        assert (
+            llm_enriched[0]["assessment_extraction"]["structured_facts"][
+                "sql_string_contains_user_input"
+            ]
+            == "yes"
+        )
+        assert llm_enriched[0]["assessment_extraction"]["expanded_code_context"][
+            "path_steps"
+        ]
+        assert llm_enriched[0]["assessment_extraction"]["source_highlights"]
+        assert {
+            item["kind"]
+            for item in llm_enriched[0]["assessment_extraction"]["source_highlights"]
+        } & {"sql_execution", "sql_binding", "sql_construction"}
+        assert llm_enriched[0]["assessment_extraction"]["filter_points"]
         assert payload["why_flagged"]
         assert payload["code_context"]["focus"]
         assert "Code:" in llm_enriched[0]["llm_prompt_block"]
         assert "Reason:" in llm_enriched[0]["llm_prompt_block"]
+
+        finding_model = scan_service_module._create_finding_model_from_draft(
+            job=SimpleNamespace(
+                id=uuid.uuid4(),
+                project_id=uuid.uuid4(),
+                version_id=version_id,
+            ),
+            draft=llm_enriched[0],
+        )
+        assert finding_model.evidence_json["assessment_profile"] == "SQLI"
+        assert finding_model.evidence_json["assessment_extraction"]["profile"] == "SQLI"
     finally:
         settings.snapshot_storage_root = old_snapshot_root
 
@@ -129,6 +213,412 @@ def test_attach_code_contexts_supports_relative_snapshot_root_without_cwd_resolv
         shutil.rmtree(backend_root / relative_root, ignore_errors=True)
 
     assert enriched[0]["code_context"]["focus"]["file_path"] == "src/Main.java"
+
+
+@pytest.mark.parametrize(
+    ("profile", "file_path", "content", "draft", "expected_kind", "expected_text"),
+    [
+        (
+            "CMDI",
+            "src/CommandController.java",
+            "class CommandController {\n"
+            "  public String runCommand(String path) {\n"
+            '    String command = String.format("ls %s", path);\n'
+            '    ProcessBuilder pb = new ProcessBuilder("sh", "-c", command);\n'
+            "    return pb.start().toString();\n"
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/CommandController.java",
+                "line_start": 4,
+                "source": {"file": "src/CommandController.java", "line": 2},
+                "sink": {"file": "src/CommandController.java", "line": 5},
+            },
+            "command_execution",
+            "public String runCommand",
+        ),
+        (
+            "CODEI",
+            "src/ExpressionController.java",
+            "class ExpressionController {\n"
+            "  public Object evaluate(String expr) {\n"
+            "    StandardEvaluationContext context = new StandardEvaluationContext();\n"
+            "    return new SpelExpressionParser().parseExpression(expr).getValue(context);\n"
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/ExpressionController.java",
+                "line_start": 4,
+                "source": {"file": "src/ExpressionController.java", "line": 2},
+                "sink": {"file": "src/ExpressionController.java", "line": 4},
+            },
+            "expression_execution",
+            "public Object evaluate",
+        ),
+        (
+            "JNDII",
+            "src/JndiController.java",
+            "class JndiController {\n"
+            "  public Object lookup(String name) throws Exception {\n"
+            "    InitialContext ctx = new InitialContext();\n"
+            "    return ctx.lookup(name);\n"
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/JndiController.java",
+                "line_start": 4,
+                "source": {"file": "src/JndiController.java", "line": 2},
+                "sink": {"file": "src/JndiController.java", "line": 4},
+            },
+            "jndi_lookup",
+            "public Object lookup",
+        ),
+        (
+            "DESERIALIZATION",
+            "src/FastjsonService.java",
+            "class FastjsonService {\n"
+            "  public Object parse(String body) {\n"
+            "    ParserConfig.getGlobalInstance().setSafeMode(false);\n"
+            "    return JSON.parseObject(body, UserDto.class);\n"
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/FastjsonService.java",
+                "line_start": 4,
+                "source": {"file": "src/FastjsonService.java", "line": 2},
+                "sink": {"file": "src/FastjsonService.java", "line": 4},
+            },
+            "deserialization_sink",
+            "public Object parse",
+        ),
+        (
+            "HARDCODE_SECRET",
+            "src/SecretConfig.java",
+            "class SecretConfig {\n"
+            "  public DataSource build() throws Exception {\n"
+            '    dataSource.setPassword("p@ssw0rd");\n'
+            '    return DriverManager.getConnection(url, "admin", "p@ssw0rd");\n'
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/SecretConfig.java",
+                "line_start": 4,
+                "source": {"file": "src/SecretConfig.java", "line": 3},
+                "sink": {"file": "src/SecretConfig.java", "line": 4},
+            },
+            "secret_literal",
+            "public DataSource build",
+        ),
+        (
+            "XSS",
+            "src/ViewController.java",
+            "class ViewController {\n"
+            "  public void render(HttpServletResponse response, String name) throws Exception {\n"
+            "    response.getWriter().println(name);\n"
+            '    response.setHeader("Content-Security-Policy", "default-src \'self\'");\n'
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/ViewController.java",
+                "line_start": 3,
+                "source": {"file": "src/ViewController.java", "line": 2},
+                "sink": {"file": "src/ViewController.java", "line": 3},
+            },
+            "output_sink",
+            "public void render",
+        ),
+        (
+            "SSTI",
+            "src/TemplateController.java",
+            "class TemplateController {\n"
+            "  public String preview(String templateContent) throws Exception {\n"
+            '    stringTemplateLoader.putTemplate("preview", templateContent);\n'
+            '    return templateEngine.process("preview", context);\n'
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/TemplateController.java",
+                "line_start": 4,
+                "source": {"file": "src/TemplateController.java", "line": 2},
+                "sink": {"file": "src/TemplateController.java", "line": 4},
+            },
+            "template_render",
+            "public String preview",
+        ),
+        (
+            "REDIRECT",
+            "src/LoginController.java",
+            "class LoginController {\n"
+            "  public void redirect(HttpServletRequest request, HttpServletResponse response) throws Exception {\n"
+            '    String targetUrl = request.getParameter("returnUrl");\n'
+            "    response.sendRedirect(targetUrl);\n"
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/LoginController.java",
+                "line_start": 4,
+                "source": {"file": "src/LoginController.java", "line": 3},
+                "sink": {"file": "src/LoginController.java", "line": 4},
+            },
+            "redirect_sink",
+            "public void redirect",
+        ),
+        (
+            "LDAPI",
+            "src/LdapController.java",
+            "class LdapController {\n"
+            "  public Object search(String uid) throws Exception {\n"
+            '    String filter = String.format("(uid=%s)", uid);\n'
+            "    return dirContext.search(baseDn, filter, controls);\n"
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/LdapController.java",
+                "line_start": 4,
+                "source": {"file": "src/LdapController.java", "line": 2},
+                "sink": {"file": "src/LdapController.java", "line": 4},
+            },
+            "ldap_search",
+            "public Object search",
+        ),
+        (
+            "WEAK_HASH",
+            "src/HashService.java",
+            "class HashService {\n"
+            "  public String hash(String password) throws Exception {\n"
+            '    MessageDigest md = MessageDigest.getInstance("MD5");\n'
+            "    return Hex.encodeHexString(md.digest(password.getBytes()));\n"
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/HashService.java",
+                "line_start": 4,
+                "source": {"file": "src/HashService.java", "line": 2},
+                "sink": {"file": "src/HashService.java", "line": 4},
+            },
+            "hash_selection",
+            "public String hash",
+        ),
+        (
+            "CORS",
+            "src/WebConfig.java",
+            "class WebConfig {\n"
+            "  public void addCorsMappings(CorsRegistry registry) {\n"
+            '    registry.addMapping("/**").allowedOrigins("*").allowCredentials(true);\n'
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/WebConfig.java",
+                "line_start": 3,
+                "source": {},
+                "sink": {},
+            },
+            "cors_header",
+            "public void addCorsMappings",
+        ),
+        (
+            "INFOLEAK",
+            "src/ErrorController.java",
+            "class ErrorController {\n"
+            "  public void handle(Exception ex, HttpServletResponse response) throws Exception {\n"
+            "    response.getWriter().println(ex.getMessage());\n"
+            "    ex.printStackTrace();\n"
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/ErrorController.java",
+                "line_start": 3,
+                "source": {"file": "src/ErrorController.java", "line": 2},
+                "sink": {"file": "src/ErrorController.java", "line": 3},
+            },
+            "exception_sink",
+            "public void handle",
+        ),
+        (
+            "COOKIE_FLAGS",
+            "src/AuthController.java",
+            "class AuthController {\n"
+            "  public void login(HttpServletResponse response) {\n"
+            '    Cookie cookie = new Cookie("JSESSIONID", token);\n'
+            "    response.addCookie(cookie);\n"
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/AuthController.java",
+                "line_start": 4,
+                "source": {"file": "src/AuthController.java", "line": 2},
+                "sink": {"file": "src/AuthController.java", "line": 4},
+            },
+            "cookie_creation",
+            "public void login",
+        ),
+        (
+            "SSRF",
+            "src/ProxyController.java",
+            "class ProxyController {\n"
+            "  public String proxy(String url) throws Exception {\n"
+            "    URL target = new URL(url);\n"
+            "    return target.openStream().toString();\n"
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/ProxyController.java",
+                "line_start": 4,
+                "source": {"file": "src/ProxyController.java", "line": 2},
+                "sink": {"file": "src/ProxyController.java", "line": 4},
+            },
+            "network_sink",
+            "public String proxy",
+        ),
+        (
+            "UPLOAD",
+            "src/UploadController.java",
+            "class UploadController {\n"
+            "  String fileName = file.getOriginalFilename();\n"
+            '  String key = UUID.randomUUID() + "-" + fileName;\n'
+            "  String url = client.presignedGetObject(bucket, key);\n"
+            "  client.putObject(bucket, key, file.getInputStream(), meta);\n"
+            "}\n",
+            {
+                "file_path": "src/UploadController.java",
+                "line_start": 4,
+                "source": {"file": "src/UploadController.java", "line": 2},
+                "sink": {"file": "src/UploadController.java", "line": 5},
+            },
+            "upload_sink",
+            "client.putObject",
+        ),
+        (
+            "PATHTRAVERSAL",
+            "src/FileController.java",
+            "class FileController {\n"
+            "  public byte[] readFile(String fileName) throws Exception {\n"
+            "    Path path = Paths.get(baseDir, fileName).normalize();\n"
+            "    return Files.readAllBytes(path);\n"
+            "  }\n"
+            "}\n",
+            {
+                "file_path": "src/FileController.java",
+                "line_start": 4,
+                "source": {"file": "src/FileController.java", "line": 2},
+                "sink": {"file": "src/FileController.java", "line": 4},
+            },
+            "path_access",
+            "public byte[] readFile",
+        ),
+        (
+            "HPE",
+            "src/OrderService.java",
+            "class OrderService {\n"
+            '  Long orderId = Long.valueOf(request.getParameter("orderId"));\n'
+            "  Long currentUserId = auth.getCurrentUserId();\n"
+            "  checkPermission(currentUserId, orderId);\n"
+            "  return orderMapper.selectById(orderId);\n"
+            "}\n",
+            {
+                "file_path": "src/OrderService.java",
+                "line_start": 5,
+                "source": {"file": "src/OrderService.java", "line": 2},
+                "sink": {"file": "src/OrderService.java", "line": 5},
+            },
+            "authorization_check",
+            "checkPermission",
+        ),
+        (
+            "MISCONFIG",
+            "application.yml",
+            "management:\n"
+            "  endpoints:\n"
+            "    web:\n"
+            "      exposure:\n"
+            "        include: '*'\n"
+            "spring:\n"
+            "  profiles:\n"
+            "    active: dev\n",
+            {
+                "file_path": "application.yml",
+                "line_start": 1,
+                "source": {},
+                "sink": {},
+            },
+            "config_block",
+            "management:",
+        ),
+    ],
+)
+def test_build_profile_source_highlights_for_priority_profiles(
+    tmp_path: Path,
+    profile: str,
+    file_path: str,
+    content: str,
+    draft: dict[str, object],
+    expected_kind: str,
+    expected_text: str,
+) -> None:
+    settings = get_settings()
+    old_snapshot_root = settings.snapshot_storage_root
+    version_id = uuid.uuid4()
+    target = tmp_path / str(version_id) / "source" / Path(file_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+
+    settings.snapshot_storage_root = str(tmp_path)
+    try:
+        highlights = scan_service_module._build_profile_source_highlights(
+            version_id=version_id,
+            draft={
+                "rule_key": f"test_{profile.lower()}",
+                "vuln_type": profile,
+                **draft,
+            },
+            profile=profile,
+            data_flow_chain=[],
+        )
+    finally:
+        settings.snapshot_storage_root = old_snapshot_root
+
+    assert highlights
+    assert expected_kind in {item["kind"] for item in highlights}
+    assert any(expected_text in item["snippet"] for item in highlights)
+
+
+def test_build_profile_source_highlights_skips_disabled_rules(
+    tmp_path: Path,
+) -> None:
+    settings = get_settings()
+    old_snapshot_root = settings.snapshot_storage_root
+    version_id = uuid.uuid4()
+    target = tmp_path / str(version_id) / "source" / "src" / "FastjsonService.java"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "class FastjsonService {\n"
+        "  public Object parse(String body) {\n"
+        "    return JSON.parseObject(body, UserDto.class);\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    settings.snapshot_storage_root = str(tmp_path)
+    try:
+        highlights = scan_service_module._build_profile_source_highlights(
+            version_id=version_id,
+            draft={
+                "rule_key": "any_fastjson_deserialization",
+                "rule_enabled": False,
+                "vuln_type": "DESERIALIZATION",
+                "file_path": "src/FastjsonService.java",
+                "line_start": 3,
+                "source": {"file": "src/FastjsonService.java", "line": 2},
+                "sink": {"file": "src/FastjsonService.java", "line": 3},
+            },
+            profile="DESERIALIZATION",
+            data_flow_chain=[],
+        )
+    finally:
+        settings.snapshot_storage_root = old_snapshot_root
+
+    assert highlights == []
 
 
 def test_run_stub_scan_emits_snapshot_location_when_source_exists(

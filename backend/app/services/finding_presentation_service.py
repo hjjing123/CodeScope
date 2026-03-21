@@ -15,7 +15,23 @@ VULN_TYPE_DISPLAY: dict[str, str] = {
     "SSRF": "Server-Side Request Forgery",
     "XXE": "XML External Entity",
     "RCE": "Remote Code Execution",
+    "CMDI": "Command Injection",
+    "CODEI": "Code or Expression Injection",
     "UPLOAD": "Arbitrary File Upload",
+    "PATH_TRAVERSAL": "Path Traversal",
+    "OPEN_REDIRECT": "Open Redirect",
+    "DESERIALIZATION": "Unsafe Deserialization",
+    "SSTI": "Server-Side Template Injection",
+    "JNDII": "JNDI Injection",
+    "LDAPI": "LDAP Injection",
+    "HPE": "Horizontal Privilege Escalation",
+    "CORS": "Insecure CORS Configuration",
+    "MISCONFIG": "Security Misconfiguration",
+    "INFOLEAK": "Information Disclosure",
+    "HARDCODE_SECRET": "Hardcoded Secret",
+    "WEAK_PASSWORD": "Weak Password",
+    "WEAK_HASH": "Weak Hash Algorithm",
+    "COOKIE_FLAGS": "Insecure Cookie Flags",
 }
 
 RULE_KEY_DISPLAY: dict[str, str] = {
