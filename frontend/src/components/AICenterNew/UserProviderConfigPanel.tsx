@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import axios from 'axios';
 import { 
   Card, 
   Typography, 
@@ -28,13 +29,22 @@ import {
   createMyAIProvider, 
   updateMyAIProvider, 
   deleteMyAIProvider, 
-  testMyAIProvider 
+  testMyAIProvider,
+  testMyAIProviderDraft,
 } from '../../services/ai';
 import type { 
+  AIProviderDraftTestPayload,
+  AIProviderModelVerificationPayload,
   UserAIProviderPayload, 
   UserAIProviderCreateRequest, 
   UserAIProviderUpdateRequest 
 } from '../../types/ai';
+import {
+  DEFAULT_PROVIDER_VENDOR,
+  USER_PROVIDER_PRESETS,
+  buildProviderPresetPatch,
+  getUserProviderPreset,
+} from './providerPresets';
 
 const { Title, Text } = Typography;
 
@@ -43,27 +53,58 @@ interface UserProviderConfigPanelProps {
 }
 
 interface ProviderFormValues {
-  display_name: string;
   vendor_name: string;
   base_url: string;
   api_key?: string;
   default_model: string;
 }
 
+interface SavedProviderTestDetail {
+  model_count?: number;
+  status_reason?: string | null;
+  selected_model_verification?: AIProviderModelVerificationPayload | null;
+}
+
+const getProviderRequestErrorMessage = (error: unknown, fallback: string) => {
+  if (axios.isAxiosError(error)) {
+    const backendMessage = error.response?.data?.error?.message || error.response?.data?.message;
+    if (typeof backendMessage === 'string' && backendMessage.trim()) {
+      return backendMessage;
+    }
+    if (!error.response) {
+      return '网络错误，请检查服务状态或稍后重试';
+    }
+  }
+  return fallback;
+};
+
 const UserProviderConfigPanel: React.FC<UserProviderConfigPanelProps> = ({ onBack }) => {
   const [providers, setProviders] = useState<UserAIProviderPayload[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [testingDraft, setTestingDraft] = useState(false);
+  const [verifyingModel, setVerifyingModel] = useState(false);
   const [editingProvider, setEditingProvider] = useState<UserAIProviderPayload | null>(null);
+  const [lastPresetVendor, setLastPresetVendor] = useState<string>(DEFAULT_PROVIDER_VENDOR);
+  const [draftTestResult, setDraftTestResult] = useState<AIProviderDraftTestPayload | null>(null);
+  const [modelVerification, setModelVerification] = useState<AIProviderModelVerificationPayload | null>(null);
   
   const [form] = Form.useForm<ProviderFormValues>();
+  const selectedVendorName = Form.useWatch('vendor_name', form);
+  const selectedPreset = getUserProviderPreset(selectedVendorName);
+  const selectedModelName = Form.useWatch('default_model', form);
+  const discoveredModels = draftTestResult?.models ?? [];
+  const normalizedSelectedModelName = typeof selectedModelName === 'string' ? selectedModelName.trim() : '';
+  const isCurrentModelVerified = Boolean(
+    modelVerification?.ok && modelVerification.model === normalizedSelectedModelName
+  );
 
   const loadProviders = async () => {
     setLoading(true);
     try {
       const res = await listMyAIProviders();
       setProviders(res.items);
-    } catch (error) {
+    } catch {
       message.error('加载 Provider 列表失败');
     } finally {
       setLoading(false);
@@ -76,8 +117,10 @@ const UserProviderConfigPanel: React.FC<UserProviderConfigPanelProps> = ({ onBac
 
   const handleEdit = (record: UserAIProviderPayload) => {
     setEditingProvider(record);
+    setLastPresetVendor(record.vendor_name || DEFAULT_PROVIDER_VENDOR);
+    setDraftTestResult(null);
+    setModelVerification(null);
     form.setFieldsValue({
-      display_name: record.display_name,
       vendor_name: record.vendor_name,
       base_url: record.base_url,
       api_key: '', // Don't show existing key
@@ -87,10 +130,25 @@ const UserProviderConfigPanel: React.FC<UserProviderConfigPanelProps> = ({ onBac
 
   const handleReset = () => {
     setEditingProvider(null);
+    setLastPresetVendor(DEFAULT_PROVIDER_VENDOR);
+    setDraftTestResult(null);
+    setModelVerification(null);
     form.resetFields();
     form.setFieldsValue({
-      vendor_name: 'OpenAI Compatible',
+      vendor_name: DEFAULT_PROVIDER_VENDOR,
     });
+  };
+
+  const handleVendorChange = (nextVendorName: string) => {
+    const currentValues = form.getFieldsValue();
+    form.setFieldsValue(
+      buildProviderPresetPatch({
+        nextVendorName,
+        previousVendorName: lastPresetVendor,
+        currentValues,
+      })
+    );
+    setLastPresetVendor(nextVendorName);
   };
 
   const handleDelete = async (id: string) => {
@@ -101,7 +159,7 @@ const UserProviderConfigPanel: React.FC<UserProviderConfigPanelProps> = ({ onBac
         handleReset();
       }
       loadProviders();
-    } catch (error) {
+    } catch {
       message.error('删除失败');
     }
   };
@@ -109,20 +167,135 @@ const UserProviderConfigPanel: React.FC<UserProviderConfigPanelProps> = ({ onBac
   const handleTest = async (id: string) => {
     try {
       const res = await testMyAIProvider(id);
-      const modelCount = typeof res.detail.model_count === 'number' ? res.detail.model_count : 0;
+      const detail = res.detail as SavedProviderTestDetail;
+      const modelCount = typeof detail.model_count === 'number' ? detail.model_count : 0;
+      const verification = detail.selected_model_verification;
+      if (verification && verification.ok === false) {
+        message.error(verification.message || '默认模型验证失败，请更换可用模型');
+        return;
+      }
+      if (verification?.ok && verification.model) {
+        message.success(`测试成功，默认模型 ${verification.model} 可用，共发现 ${modelCount} 个模型`);
+        return;
+      }
+      const allowManualModelInput = Boolean(
+        (res.detail as Record<string, unknown>).allow_manual_model_input
+      );
+      const statusReason = typeof detail.status_reason === 'string' ? detail.status_reason : '';
+      if (!res.ok) {
+        message.error(statusReason || '测试失败，请检查配置或网络');
+        return;
+      }
+      if (allowManualModelInput) {
+        message.success(statusReason || '连接成功，请手动填写模型名称');
+        return;
+      }
       message.success(`测试成功，发现 ${modelCount} 个模型`);
     } catch (error) {
-      message.error('测试请求失败，请检查配置或网络');
+      message.error(getProviderRequestErrorMessage(error, '测试请求失败，请检查配置或网络'));
+    }
+  };
+
+  const handleDraftTest = async () => {
+    try {
+      const values = await form.validateFields(['vendor_name', 'base_url']);
+      const apiKey = form.getFieldValue('api_key')?.trim() || '';
+      if (!apiKey) {
+        message.warning('请输入 API Key 后再测试');
+        return;
+      }
+
+      setTestingDraft(true);
+      const res = await testMyAIProviderDraft({
+        vendor_name: values.vendor_name,
+        base_url: values.base_url,
+        api_key: apiKey,
+        timeout_seconds: 60,
+      });
+      setDraftTestResult(res);
+      setModelVerification(null);
+
+      if (res.models.length > 0) {
+        const currentModel = form.getFieldValue('default_model')?.trim();
+        const hasCurrentModel = res.models.some((item) => item.name === currentModel);
+        if (!hasCurrentModel) {
+          form.setFieldsValue({ default_model: undefined });
+        }
+      } else if (!editingProvider) {
+        form.setFieldsValue({ default_model: undefined });
+      }
+
+      if (!res.connection_ok) {
+        message.error(res.status_reason || '测试失败，请检查配置或网络');
+        return;
+      }
+      if (res.model_count > 0) {
+        message.success(`测试成功，发现 ${res.model_count} 个模型`);
+        return;
+      }
+      if (res.allow_manual_model_input) {
+        message.success(res.status_reason || '连接成功，请手动填写模型名称');
+        return;
+      }
+      message.error(res.status_reason || '当前未发现可用模型');
+    } catch (error) {
+      console.error(error);
+      message.error(getProviderRequestErrorMessage(error, '测试请求失败，请检查配置或网络'));
+    } finally {
+      setTestingDraft(false);
+    }
+  };
+
+  const handleVerifySelectedModel = async () => {
+    try {
+      const values = await form.validateFields(['vendor_name', 'base_url', 'default_model']);
+      const apiKey = form.getFieldValue('api_key')?.trim() || '';
+      if (!apiKey) {
+        message.warning('请输入 API Key 后再验证模型');
+        return;
+      }
+
+      setVerifyingModel(true);
+      const res = await testMyAIProviderDraft({
+        vendor_name: values.vendor_name,
+        base_url: values.base_url,
+        api_key: apiKey,
+        timeout_seconds: 60,
+        selected_model: values.default_model.trim(),
+        verify_selected_model: true,
+      });
+      setDraftTestResult(res);
+      setModelVerification(res.selected_model_verification ?? null);
+
+      if (res.selected_model_verification?.ok) {
+        message.success(`模型 ${res.selected_model_verification.model} 验证成功`);
+        return;
+      }
+      message.error(res.selected_model_verification?.message || '模型验证失败，请更换模型');
+    } catch (error) {
+      console.error(error);
+      message.error(getProviderRequestErrorMessage(error, '模型验证失败，请检查配置或网络'));
+    } finally {
+      setVerifyingModel(false);
     }
   };
 
   const handleSubmit = async () => {
     try {
+      if (!editingProvider && !draftTestResult) {
+        message.warning('请先测试并获取模型');
+        return;
+      }
       const values = await form.validateFields();
+      if (!editingProvider) {
+        if (!isCurrentModelVerified) {
+          message.warning('请先验证当前模型可用性');
+          return;
+        }
+      }
       setSaving(true);
       if (editingProvider) {
         const payload: UserAIProviderUpdateRequest = {
-          display_name: values.display_name,
           vendor_name: values.vendor_name,
           base_url: values.base_url,
           default_model: values.default_model,
@@ -134,7 +307,6 @@ const UserProviderConfigPanel: React.FC<UserProviderConfigPanelProps> = ({ onBac
         message.success('更新成功');
       } else {
         const payload: UserAIProviderCreateRequest = {
-          display_name: values.display_name,
           vendor_name: values.vendor_name,
           base_url: values.base_url,
           api_key: values.api_key?.trim() || '',
@@ -157,12 +329,27 @@ const UserProviderConfigPanel: React.FC<UserProviderConfigPanelProps> = ({ onBac
     }
   };
 
+  const handleFormValuesChange = (changedValues: Partial<ProviderFormValues>) => {
+    const changedKeys = Object.keys(changedValues);
+    if (changedKeys.some((key) => ['vendor_name', 'base_url', 'api_key'].includes(key))) {
+      setDraftTestResult(null);
+      setModelVerification(null);
+      if (!editingProvider) {
+        form.setFieldsValue({ default_model: undefined });
+      }
+      return;
+    }
+    if (changedKeys.includes('default_model')) {
+      setModelVerification(null);
+    }
+  };
+
   const handleToggleEnabled = async (record: UserAIProviderPayload, checked: boolean) => {
     try {
       await updateMyAIProvider(record.id, { enabled: checked });
       message.success(checked ? '已启用' : '已禁用');
       loadProviders();
-    } catch (error) {
+    } catch {
       message.error('状态切换失败');
     }
   };
@@ -172,7 +359,7 @@ const UserProviderConfigPanel: React.FC<UserProviderConfigPanelProps> = ({ onBac
       await updateMyAIProvider(record.id, { is_default: checked });
       message.success(checked ? '已设为默认' : '已取消默认');
       loadProviders();
-    } catch (error) {
+    } catch {
       message.error('设置默认失败');
     }
   };
@@ -252,34 +439,77 @@ const UserProviderConfigPanel: React.FC<UserProviderConfigPanelProps> = ({ onBac
               bordered={true} 
               style={{ height: '100%' }}
             >
-              <Form form={form} layout="vertical" onFinish={handleSubmit} initialValues={{ vendor_name: 'OpenAI Compatible' }}>
-                <Form.Item name="display_name" label="显示名称" rules={[{ required: true, message: '请输入名称' }]}>
-                  <Input placeholder="例如: 我的 DeepSeek" />
-                </Form.Item>
+              <Form
+                form={form}
+                layout="vertical"
+                onFinish={handleSubmit}
+                onValuesChange={handleFormValuesChange}
+                initialValues={{ vendor_name: DEFAULT_PROVIDER_VENDOR }}
+              >
                 <Form.Item name="vendor_name" label="厂商类型" rules={[{ required: true }]}>
                   <Select
-                    options={[
-                      { label: 'OpenAI Compatible', value: 'OpenAI Compatible' },
-                      { label: 'DeepSeek', value: 'DeepSeek' },
-                      { label: 'OpenRouter', value: 'OpenRouter' },
-                      { label: 'Azure OpenAI', value: 'Azure OpenAI' },
-                      { label: 'Anthropic', value: 'Anthropic' },
-                    ]}
+                    options={USER_PROVIDER_PRESETS.map((item) => ({
+                      label: item.label,
+                      value: item.value,
+                    }))}
+                    onChange={handleVendorChange}
                   />
                 </Form.Item>
-                <Form.Item name="base_url" label="API Base URL" rules={[{ required: true, message: '请输入 Base URL' }]}>
-                  <Input placeholder="例如: https://api.deepseek.com/v1" />
+                <Form.Item
+                  name="base_url"
+                  label="API Base URL"
+                  rules={[{ required: true, message: '请输入 Base URL' }]}
+                >
+                  <Input placeholder={selectedPreset.baseUrlPlaceholder} />
                 </Form.Item>
                 <Form.Item 
                   name="api_key" 
                   label="API Key" 
                   rules={[{ required: !editingProvider, message: '请输入 API Key' }]}
-                  extra={editingProvider ? "留空则保持原有 Key 不变" : undefined}
                 >
-                  <Input.Password placeholder="sk-..." />
+                  <Input.Password
+                    placeholder={
+                      editingProvider ? '留空则保持原有 Key 不变' : selectedPreset.apiKeyPlaceholder
+                    }
+                  />
                 </Form.Item>
-                <Form.Item name="default_model" label="默认模型名称" rules={[{ required: true, message: '请输入模型名称' }]}>
-                  <Input placeholder="例如: deepseek-chat" />
+                <div style={{ marginBottom: 16, display: 'flex', gap: 12 }}>
+                  <Button onClick={handleDraftTest} loading={testingDraft} block>
+                    测试并获取模型
+                  </Button>
+                  <Button
+                    onClick={handleVerifySelectedModel}
+                    loading={verifyingModel}
+                    disabled={!normalizedSelectedModelName || isCurrentModelVerified}
+                    block
+                  >
+                    {isCurrentModelVerified ? '当前模型已验证' : '验证当前模型'}
+                  </Button>
+                </div>
+                <Form.Item
+                  name="default_model"
+                  label="默认模型名称"
+                  rules={[{ required: true, message: '请输入模型名称' }]}
+                >
+                  {discoveredModels.length > 0 ? (
+                    <Select
+                      showSearch
+                      placeholder="请选择要调用的模型"
+                      options={discoveredModels.map((item) => ({
+                        label: item.label,
+                        value: item.name,
+                      }))}
+                    />
+                  ) : (
+                    <Input
+                      placeholder={
+                        !editingProvider && !draftTestResult
+                          ? '请先测试并获取模型'
+                          : selectedPreset.defaultModelPlaceholder
+                      }
+                      disabled={!editingProvider && !draftTestResult}
+                    />
+                  )}
                 </Form.Item>
 
                 <div style={{ marginTop: 24, display: 'flex', gap: 12 }}>

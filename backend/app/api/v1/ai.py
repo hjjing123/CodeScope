@@ -31,6 +31,8 @@ from app.schemas.ai import (
     AIModelCatalogPayload,
     AIProviderOptionsPayload,
     AIProviderSelectionRequest,
+    AIProviderDraftTestPayload,
+    AIProviderDraftTestRequest,
     AIProviderTestPayload,
     FindingAIAssessmentListPayload,
     FindingAIAssessmentPayload,
@@ -65,6 +67,7 @@ from app.services.ai_service import (
     create_chat_assistant_message,
     create_chat_user_message,
     create_user_ai_provider,
+    probe_user_ai_provider_draft,
     delete_chat_session,
     delete_system_ollama_model_by_name,
     delete_user_ai_provider,
@@ -557,6 +560,47 @@ def create_my_ai_provider(
     db.refresh(provider)
     data = UserAIProviderPayload(**build_user_ai_provider_payload(provider))
     return success_response(request, data=data.model_dump(), status_code=201)
+
+
+@router.post("/api/v1/me/ai/providers/test-draft")
+def test_my_ai_provider_draft(
+    request: Request,
+    payload: AIProviderDraftTestRequest,
+    db: Session = Depends(get_db),
+    principal: AuthPrincipal = Depends(get_current_principal),
+):
+    result = AIProviderDraftTestPayload(
+        **probe_user_ai_provider_draft(
+            db,
+            user_id=principal.user.id,
+            vendor_name=payload.vendor_name,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+            timeout_seconds=payload.timeout_seconds,
+            selected_model=payload.selected_model,
+            verify_selected_model=payload.verify_selected_model,
+        )
+    )
+    append_audit_log(
+        db,
+        request_id=get_request_id(request),
+        operator_user_id=principal.user.id,
+        action="user.ai.provider.draft_tested",
+        resource_type="USER_AI_PROVIDER_DRAFT",
+        resource_id=None,
+        detail_json={
+            "vendor_name": result.vendor_name,
+            "base_url": result.base_url,
+            "model_count": result.model_count,
+            "selected_model_verification": (
+                result.selected_model_verification.model_dump()
+                if result.selected_model_verification is not None
+                else None
+            ),
+        },
+    )
+    db.commit()
+    return success_response(request, data=result.model_dump())
 
 
 @router.get("/api/v1/me/ai/providers/{provider_id}")

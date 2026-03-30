@@ -146,7 +146,8 @@ def trigger_system_ollama_pull_job(
         base_url=provider.base_url,
         timeout_seconds=int(provider.timeout_seconds),
     )
-    if _model_exists(models, normalized_name):
+    resolved_model_name = _resolve_model_name(models, normalized_name)
+    if resolved_model_name is not None:
         job = _create_pull_job(
             db,
             provider=provider,
@@ -158,7 +159,7 @@ def trigger_system_ollama_pull_job(
             db,
             job=job,
             provider=provider,
-            model_name=normalized_name,
+            model_name=resolved_model_name,
             request_id=request_id,
             pull_result={
                 "event_count": 0,
@@ -298,7 +299,8 @@ def run_system_ollama_pull_job(
             base_url=provider.base_url,
             timeout_seconds=int(provider.timeout_seconds),
         )
-        if _model_exists(existing_models, model_name):
+        resolved_existing_model_name = _resolve_model_name(existing_models, model_name)
+        if resolved_existing_model_name is not None:
             _set_pull_job_running(
                 session, job=job, stage=SystemOllamaPullJobStage.VERIFY.value
             )
@@ -316,7 +318,7 @@ def run_system_ollama_pull_job(
                 session,
                 job=job,
                 provider=provider,
-                model_name=model_name,
+                model_name=resolved_existing_model_name,
                 request_id=request_id,
                 pull_result={
                     "event_count": 0,
@@ -370,7 +372,8 @@ def run_system_ollama_pull_job(
             base_url=provider.base_url,
             timeout_seconds=int(provider.timeout_seconds),
         )
-        if not _model_exists(models, model_name):
+        resolved_model_name = _resolve_model_name(models, model_name)
+        if resolved_model_name is None:
             raise AppError(
                 code="OLLAMA_PULL_VERIFY_FAILED",
                 status_code=502,
@@ -388,7 +391,7 @@ def run_system_ollama_pull_job(
             session,
             job=job,
             provider=provider,
-            model_name=model_name,
+            model_name=resolved_model_name,
             request_id=request_id,
             pull_result={
                 "event_count": pull_result.event_count,
@@ -723,8 +726,15 @@ def _append_pull_log(*, job: SystemOllamaPullJob, stage: str, message: str) -> N
 
 
 def _model_exists(models: list[dict[str, object]], model_name: str) -> bool:
-    target = _normalize_model_name(model_name)
-    return any(name == target for name in _model_names(models))
+    return _resolve_model_name(models, model_name) is not None
+
+
+def _resolve_model_name(models: list[dict[str, object]], model_name: str) -> str | None:
+    target = _canonicalize_model_name(model_name)
+    for candidate in _model_names(models):
+        if _canonicalize_model_name(candidate) == target:
+            return candidate
+    return None
 
 
 def _model_names(models: list[dict[str, object]]) -> list[str]:
@@ -745,6 +755,16 @@ def _normalize_model_name(value: object) -> str:
             message="模型名称不能为空",
         )
     return normalized
+
+
+def _canonicalize_model_name(value: object) -> str:
+    normalized = _normalize_model_name(value)
+    if "@" in normalized:
+        return normalized
+    tail = normalized.rsplit("/", 1)[-1]
+    if ":" in tail:
+        return normalized
+    return f"{normalized}:latest"
 
 
 def _normalized_model_list(values: object) -> list[str]:

@@ -92,6 +92,13 @@ _AUDIT_ACTION_META: dict[str, AuditActionMeta] = {
         "rule_set.bind_rules", "绑定规则集规则", "rule_set"
     ),
     "finding.label": AuditActionMeta("finding.label", "标记漏洞", "finding"),
+    "report.triggered": AuditActionMeta("report.triggered", "触发报告生成", "report"),
+    "report.generated": AuditActionMeta("report.generated", "生成报告", "report"),
+    "report.failed": AuditActionMeta("report.failed", "报告生成失败", "report"),
+    "report.dispatch.failed": AuditActionMeta(
+        "report.dispatch.failed", "报告派发失败", "report"
+    ),
+    "report.downloaded": AuditActionMeta("report.downloaded", "下载报告", "report"),
     "user.update": AuditActionMeta("user.update", "更新用户信息", "user"),
     "log.delete": AuditActionMeta("log.delete", "删除日志", "log"),
 }

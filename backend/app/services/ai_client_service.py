@@ -158,7 +158,7 @@ def stream_ollama_model_pull(
             detail={
                 "status_code": exc.response.status_code,
                 "url": url,
-                "body": exc.response.text[:1000],
+                "body": _safe_response_body(exc.response),
             },
         ) from exc
     except httpx.ReadTimeout as exc:
@@ -200,13 +200,46 @@ def stream_ollama_model_pull(
 def delete_ollama_model(
     *, base_url: str, name: str, timeout_seconds: int
 ) -> dict[str, object]:
-    return _request_json(
-        method="DELETE",
-        url=f"{normalize_base_url(base_url)}/api/delete",
-        timeout_seconds=timeout_seconds,
-        json_payload={"name": str(name).strip()},
-        connect_timeout_seconds=2.0,
-        trust_env=False,
+    normalized_name = _normalize_model_name(name)
+    models = list_ollama_models(base_url=base_url, timeout_seconds=timeout_seconds)
+    delete_url = f"{normalize_base_url(base_url)}/api/delete"
+    last_not_found_error: AppError | None = None
+
+    for candidate_name in _build_ollama_delete_candidates(models, normalized_name):
+        try:
+            _request_json(
+                method="DELETE",
+                url=delete_url,
+                timeout_seconds=timeout_seconds,
+                json_payload={"name": candidate_name},
+                connect_timeout_seconds=2.0,
+                trust_env=False,
+                allow_empty_response=True,
+                empty_response_payload={"ok": True, "name": candidate_name},
+            )
+            return {"ok": True, "name": candidate_name}
+        except AppError as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            status_code = detail.get("status_code")
+            if exc.code == "AI_PROVIDER_HTTP_ERROR" and status_code == 404:
+                last_not_found_error = exc
+                continue
+            raise
+
+    models_after = list_ollama_models(
+        base_url=base_url, timeout_seconds=timeout_seconds
+    )
+    if _resolve_ollama_model_name(models_after, normalized_name) is None:
+        return {"ok": True, "name": normalized_name, "already_absent": True}
+
+    if last_not_found_error is not None:
+        raise last_not_found_error
+
+    raise AppError(
+        code="AI_PROVIDER_HTTP_ERROR",
+        status_code=502,
+        message="AI Provider 请求失败",
+        detail={"url": delete_url, "status_code": 404},
     )
 
 
@@ -352,7 +385,7 @@ def _iter_ollama_chat_stream(
             detail={
                 "status_code": exc.response.status_code,
                 "url": url,
-                "body": exc.response.text[:1000],
+                "body": _safe_response_body(exc.response),
             },
         ) from exc
     except httpx.ReadTimeout as exc:
@@ -462,7 +495,7 @@ def _iter_openai_compatible_chat_stream(
             detail={
                 "status_code": exc.response.status_code,
                 "url": url,
-                "body": exc.response.text[:1000],
+                "body": _safe_response_body(exc.response),
             },
         ) from exc
     except httpx.ReadTimeout as exc:
@@ -498,6 +531,8 @@ def _request_json(
     json_payload: dict[str, Any] | None = None,
     connect_timeout_seconds: float = 5.0,
     trust_env: bool = True,
+    allow_empty_response: bool = False,
+    empty_response_payload: dict[str, object] | None = None,
 ) -> dict[str, object]:
     try:
         timeout = httpx.Timeout(
@@ -522,7 +557,7 @@ def _request_json(
             detail={
                 "status_code": exc.response.status_code,
                 "url": url,
-                "body": exc.response.text[:1000],
+                "body": _safe_response_body(exc.response),
             },
         ) from exc
     except httpx.HTTPError as exc:
@@ -534,8 +569,12 @@ def _request_json(
         ) from exc
 
     try:
+        if allow_empty_response and not response.content:
+            return dict(empty_response_payload or {})
         payload = response.json()
     except ValueError as exc:
+        if allow_empty_response:
+            return dict(empty_response_payload or {})
         raise AppError(
             code="AI_PROVIDER_INVALID_RESPONSE",
             status_code=502,
@@ -543,6 +582,91 @@ def _request_json(
             detail={"url": url, "body": response.text[:1000]},
         ) from exc
     return payload if isinstance(payload, dict) else {"data": payload}
+
+
+def _safe_response_body(response: httpx.Response, limit: int = 1000) -> str:
+    try:
+        return response.text[:limit]
+    except httpx.ResponseNotRead:
+        try:
+            response.read()
+            return response.text[:limit]
+        except Exception:
+            return ""
+
+
+def _normalize_model_name(value: object) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise AppError(
+            code="INVALID_ARGUMENT",
+            status_code=422,
+            message="模型名称不能为空",
+        )
+    return normalized
+
+
+def _canonicalize_ollama_model_name(value: object) -> str:
+    normalized = _normalize_model_name(value)
+    if "@" in normalized:
+        return normalized
+    tail = normalized.rsplit("/", 1)[-1]
+    if ":" in tail:
+        return normalized
+    return f"{normalized}:latest"
+
+
+def _resolve_ollama_model_name(
+    models: list[dict[str, object]], model_name: str
+) -> str | None:
+    target = _canonicalize_ollama_model_name(model_name)
+    for item in models:
+        for candidate in _ollama_model_identifiers(item):
+            if _canonicalize_ollama_model_name(candidate) == target:
+                return candidate
+    return None
+
+
+def _build_ollama_delete_candidates(
+    models: list[dict[str, object]], model_name: str
+) -> list[str]:
+    normalized_name = _normalize_model_name(model_name)
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(candidate: str | None) -> None:
+        if candidate is None:
+            return
+        normalized_candidate = str(candidate).strip()
+        if not normalized_candidate or normalized_candidate in seen:
+            return
+        seen.add(normalized_candidate)
+        candidates.append(normalized_candidate)
+
+    target = _canonicalize_ollama_model_name(normalized_name)
+    for item in models:
+        identifiers = _ollama_model_identifiers(item)
+        if any(
+            _canonicalize_ollama_model_name(value) == target for value in identifiers
+        ):
+            for value in identifiers:
+                _add(value)
+
+    _add(normalized_name)
+    if normalized_name.endswith(":latest"):
+        _add(normalized_name[: -len(":latest")])
+    else:
+        _add(f"{normalized_name}:latest")
+    return candidates
+
+
+def _ollama_model_identifiers(item: dict[str, object]) -> list[str]:
+    values: list[str] = []
+    for key in ("name", "model"):
+        value = str(item.get(key) or "").strip()
+        if value and value not in values:
+            values.append(value)
+    return values
 
 
 def _parse_json_object_line(

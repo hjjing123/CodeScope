@@ -87,6 +87,23 @@ export interface AIProviderTestPayload {
   detail: Record<string, unknown>;
 }
 
+export interface AIProviderDraftTestRequest {
+  vendor_name: string;
+  base_url: string;
+  api_key: string;
+  timeout_seconds?: number;
+  selected_model?: string;
+  verify_selected_model?: boolean;
+}
+
+export interface AIProviderModelVerificationPayload {
+  model?: string | null;
+  ok: boolean;
+  message?: string | null;
+  error_code?: string | null;
+  response_preview?: string | null;
+}
+
 export interface UserAIProviderPayload {
   id: string;
   user_id: string;
@@ -106,7 +123,7 @@ export interface UserAIProviderPayload {
 }
 
 export interface UserAIProviderCreateRequest {
-  display_name: string;
+  display_name?: string;
   vendor_name: string;
   base_url: string;
   api_key: string;
@@ -151,6 +168,22 @@ export interface AISelectableModelPayload {
   is_default: boolean;
   selectable?: boolean;
   details: Record<string, unknown>;
+}
+
+export interface AIProviderDraftTestPayload {
+  ok: boolean;
+  provider_type: string;
+  provider_label: string;
+  base_url: string;
+  vendor_name: string;
+  connection_ok: boolean;
+  model_catalog_ok: boolean;
+  allow_manual_model_input: boolean;
+  status_label?: string | null;
+  status_reason?: string | null;
+  model_count: number;
+  models: AISelectableModelPayload[];
+  selected_model_verification?: AIProviderModelVerificationPayload | null;
 }
 
 export interface AIModelCatalogProviderPayload {

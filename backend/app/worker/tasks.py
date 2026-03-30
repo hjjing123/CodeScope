@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from app.models import TaskLogType
 from app.services.ai_service import run_ai_job
 from app.services.import_service import run_import_job
+from app.services.report_service import run_report_job
 from app.services.runtime_log_service import append_runtime_log
 from app.services.rule_stats_service import run_rule_stats_aggregation
 from app.services.scan_service import run_scan_job
@@ -30,6 +31,8 @@ def _task_context_from_kwargs(
 ) -> tuple[str | None, uuid.UUID | None]:
     if "ai_job_id" in kwargs:
         return TaskLogType.AI.value, _coerce_uuid(kwargs.get("ai_job_id"))
+    if "report_job_id" in kwargs:
+        return TaskLogType.REPORT.value, _coerce_uuid(kwargs.get("report_job_id"))
     if "job_id" in kwargs:
         return TaskLogType.SCAN.value, _coerce_uuid(kwargs.get("job_id"))
     if "import_job_id" in kwargs:
@@ -193,6 +196,14 @@ def _run_ai(ai_job_id: str, db_bind: Any | None = None) -> None:
     _run_with_bind(db_bind, _run_ai_bound, ai_job_id=uuid.UUID(ai_job_id))
 
 
+def _run_report_bound(*, report_job_id: uuid.UUID, db: Any | None = None) -> None:
+    run_report_job(job_id=report_job_id, db=db)
+
+
+def _run_report(report_job_id: str, db_bind: Any | None = None) -> None:
+    _run_with_bind(db_bind, _run_report_bound, report_job_id=uuid.UUID(report_job_id))
+
+
 def _run_import(import_job_id: str, db_bind: Any | None = None) -> None:
     _run_with_bind(db_bind, run_import_job, import_job_id=uuid.UUID(import_job_id))
 
@@ -223,6 +234,10 @@ if celery_app is not None:
     def run_ai_job_task(ai_job_id: str) -> None:
         _run_ai(ai_job_id, None)
 
+    @celery_app.task(name="report.run_report_job")
+    def run_report_job_task(report_job_id: str) -> None:
+        _run_report(report_job_id, None)
+
     @celery_app.task(name="import.run_import_job")
     def run_import_job_task(import_job_id: str) -> None:
         _run_import(import_job_id, None)
@@ -246,6 +261,9 @@ else:
 
     def run_ai_job_task(ai_job_id: str) -> None:
         _run_ai(ai_job_id, None)
+
+    def run_report_job_task(report_job_id: str) -> None:
+        _run_report(report_job_id, None)
 
     def run_import_job_task(import_job_id: str) -> None:
         _run_import(import_job_id, None)
@@ -275,6 +293,17 @@ def enqueue_ai_job(*, ai_job_id: uuid.UUID, db_bind: Any | None = None) -> str |
         task = run_ai_job_task.delay(str(ai_job_id))
         return str(task.id)
     return _submit_local_async(_run_ai, str(ai_job_id), db_bind)
+
+
+def enqueue_report_job(
+    *, report_job_id: uuid.UUID, db_bind: Any | None = None
+) -> str | None:
+    if celery_app is not None:
+        if bool(celery_app.conf.task_always_eager):
+            return _submit_local_async(_run_report, str(report_job_id), db_bind)
+        task = run_report_job_task.delay(str(report_job_id))
+        return str(task.id)
+    return _submit_local_async(_run_report, str(report_job_id), db_bind)
 
 
 def enqueue_import_job(

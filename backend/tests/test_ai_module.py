@@ -4,6 +4,8 @@ import json
 import time
 import uuid
 
+import httpx
+import pytest
 from sqlalchemy import select
 
 from app.config import get_settings
@@ -38,6 +40,8 @@ from app.services.ai_client_service import (
     AIChatResult,
     AIChatStreamChunk,
     OllamaPullStreamResult,
+    delete_ollama_model,
+    run_provider_chat,
 )
 from app.services.ai_service import (
     _build_assessment_messages,
@@ -383,6 +387,139 @@ def test_system_ollama_auto_probe_falls_back_to_docker_alias(
         settings.ai_system_ollama_base_url = old_base_url
 
 
+def test_delete_ollama_model_resolves_latest_name_and_accepts_empty_response(
+    monkeypatch,
+):
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class _FakeResponse:
+        def __init__(self, *, method: str, url: str, payload: dict[str, object] | None):
+            self.status_code = 200
+            self.request = httpx.Request(method, url, json=payload)
+            if url.endswith("/api/tags"):
+                self.content = json.dumps(
+                    {
+                        "models": [
+                            {
+                                "name": "phi4-mini:latest",
+                                "model": "phi4-mini:latest",
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+                self.text = self.content.decode("utf-8")
+            else:
+                self.content = b""
+                self.text = ""
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            if not self.content:
+                raise ValueError("empty body")
+            return json.loads(self.text)
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def request(self, method: str, url: str, headers=None, json=None):
+            requests.append((method, url, json))
+            return _FakeResponse(method=method, url=url, payload=json)
+
+    monkeypatch.setattr("app.services.ai_client_service.httpx.Client", _FakeClient)
+
+    result = delete_ollama_model(
+        base_url="http://127.0.0.1:11434",
+        name="phi4-mini",
+        timeout_seconds=60,
+    )
+
+    assert result == {"ok": True, "name": "phi4-mini:latest"}
+    assert requests == [
+        ("GET", "http://127.0.0.1:11434/api/tags", None),
+        (
+            "DELETE",
+            "http://127.0.0.1:11434/api/delete",
+            {"name": "phi4-mini:latest"},
+        ),
+    ]
+
+
+def test_run_provider_chat_handles_unread_stream_error_response(monkeypatch):
+    class _FakeStreamResponse:
+        def __init__(self, url: str):
+            self.status_code = 429
+            self.request = httpx.Request("POST", url)
+            self._body = b'{"error":{"message":"quota exceeded"}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self) -> None:
+            raise httpx.HTTPStatusError(
+                "429 Too Many Requests",
+                request=self.request,
+                response=self,
+            )
+
+        def iter_lines(self):
+            return iter(())
+
+        def read(self) -> bytes:
+            self._content = self._body
+            return self._content
+
+        @property
+        def text(self) -> str:
+            if not hasattr(self, "_content"):
+                raise httpx.ResponseNotRead()
+            return self._content.decode("utf-8")
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method: str, url: str, headers=None, json=None):
+            return _FakeStreamResponse(url)
+
+    monkeypatch.setattr("app.services.ai_client_service.httpx.Client", _FakeClient)
+
+    with pytest.raises(AppError) as exc_info:
+        run_provider_chat(
+            provider_snapshot={
+                "provider_type": "openai_compatible",
+                "display_name": "Gemini",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                "model": "models/gemini-2.0-flash",
+                "api_key": "test-key",
+                "timeout_seconds": 30,
+                "temperature": 0.0,
+            },
+            messages=[{"role": "user", "content": "ping"}],
+        )
+
+    assert exc_info.value.code == "AI_PROVIDER_HTTP_ERROR"
+    assert exc_info.value.detail["status_code"] == 429
+    assert "quota exceeded" in str(exc_info.value.detail["body"])
+
+
 def test_admin_can_pull_system_ollama_model_with_progress(
     client, db_session, monkeypatch
 ):
@@ -590,6 +727,141 @@ def test_system_ollama_pull_does_not_publish_model_when_verify_fails(
     assert provider.default_model is None
 
 
+def test_system_ollama_pull_accepts_latest_tag_for_untagged_request(
+    client, db_session, monkeypatch
+):
+    admin = _create_user(
+        db_session,
+        email="admin-pull-latest-tag@example.com",
+        password="admin1234",
+        role=SystemRole.ADMIN.value,
+    )
+    headers = _login(client, email=admin.email, password="admin1234")
+
+    configure_resp = client.patch(
+        "/api/v1/system/ai/ollama",
+        headers=headers,
+        json={
+            "display_name": "System Ollama",
+            "base_url": "http://127.0.0.1:11434",
+            "enabled": True,
+            "default_model": None,
+            "published_models": [],
+            "timeout_seconds": 90,
+            "temperature": 0.2,
+        },
+    )
+    assert configure_resp.status_code == 200, configure_resp.text
+
+    requested_model = "phi4-mini"
+    resolved_model = "phi4-mini:latest"
+    calls = {"count": 0}
+
+    def _mock_list_ollama_models(*, base_url: str, timeout_seconds: int):
+        assert base_url == "http://127.0.0.1:11434"
+        assert timeout_seconds > 0
+        calls["count"] += 1
+        if calls["count"] < 3:
+            return []
+        return [{"name": resolved_model}]
+
+    def _mock_stream_ollama_pull(
+        *, base_url: str, name: str, timeout_seconds: int, on_event
+    ):
+        assert base_url == "http://127.0.0.1:11434"
+        assert name == requested_model
+        assert timeout_seconds >= 300
+        event = {
+            "status": "success",
+            "completed": 100,
+            "total": 100,
+            "percent": 100,
+            "digest": "sha256:phi4-mini",
+            "raw": {
+                "status": "success",
+                "completed": 100,
+                "total": 100,
+                "digest": "sha256:phi4-mini",
+            },
+        }
+        on_event(event)
+        return OllamaPullStreamResult(
+            event_count=1,
+            success_status_received=True,
+            last_event=event,
+        )
+
+    monkeypatch.setattr(
+        "app.services.system_ollama_pull_service.list_ollama_models",
+        _mock_list_ollama_models,
+    )
+    monkeypatch.setattr(
+        "app.services.system_ollama_pull_service.stream_ollama_model_pull",
+        _mock_stream_ollama_pull,
+    )
+
+    response = client.post(
+        "/api/v1/system/ai/ollama/pull",
+        headers=headers,
+        json={"name": requested_model},
+    )
+    assert response.status_code == 202, response.text
+
+    pull_job_id = response.json()["data"]["pull_job_id"]
+    final_job = _wait_for_pull_job_terminal(client, headers, pull_job_id)
+    assert final_job["status"] == "SUCCEEDED"
+    assert final_job["result_summary"]["verification"]["available_models"] == [
+        resolved_model
+    ]
+
+    provider = db_session.scalar(select(SystemAIProvider).limit(1))
+    assert provider is not None
+    assert provider.published_models_json == [resolved_model]
+    assert provider.default_model == resolved_model
+
+
+def test_admin_can_delete_system_ollama_model_and_rotate_default(
+    client, db_session, monkeypatch
+):
+    admin = _create_user(
+        db_session,
+        email="admin-delete-ai@example.com",
+        password="admin1234",
+        role=SystemRole.ADMIN.value,
+    )
+    headers = _login(client, email=admin.email, password="admin1234")
+
+    provider = SystemAIProvider(
+        provider_key="system_ollama",
+        display_name="System Ollama",
+        provider_type="ollama_local",
+        base_url="http://127.0.0.1:11434",
+        enabled=True,
+        default_model="phi4-mini:latest",
+        published_models_json=["phi4-mini:latest", "qwen2.5-coder:7b"],
+        timeout_seconds=90,
+        temperature=0.2,
+    )
+    db_session.add(provider)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.ai_service.delete_ollama_model",
+        lambda **_kwargs: {"ok": True, "name": "phi4-mini:latest"},
+    )
+
+    response = client.delete(
+        "/api/v1/system/ai/ollama/models/phi4-mini%3Alatest",
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["ok"] is True
+
+    db_session.refresh(provider)
+    assert provider.published_models_json == ["qwen2.5-coder:7b"]
+    assert provider.default_model == "qwen2.5-coder:7b"
+
+
 def test_system_ollama_pull_replays_same_model_and_rejects_other_running_model(
     client, db_session
 ):
@@ -736,7 +1008,6 @@ def test_user_can_manage_and_test_external_ai_provider(client, db_session, monke
         "/api/v1/me/ai/providers",
         headers=headers,
         json={
-            "display_name": "My DeepSeek",
             "vendor_name": "DeepSeek",
             "base_url": "https://api.example.com/v1",
             "api_key": "sk-test-1234567890",
@@ -749,6 +1020,7 @@ def test_user_can_manage_and_test_external_ai_provider(client, db_session, monke
     )
     assert response.status_code == 201, response.text
     provider_id = response.json()["data"]["id"]
+    assert response.json()["data"]["display_name"] == "deepseek-chat"
     assert response.json()["data"]["api_key_masked"]
     assert "api_key" not in response.json()["data"]
 
@@ -775,6 +1047,252 @@ def test_user_can_manage_and_test_external_ai_provider(client, db_session, monke
     response = client.get("/api/v1/me/ai/options", headers=headers)
     assert response.status_code == 200, response.text
     assert response.json()["data"]["user_providers"][0]["id"] == provider_id
+
+    response = client.patch(
+        f"/api/v1/me/ai/providers/{provider_id}",
+        headers=headers,
+        json={"default_model": "deepseek-reasoner"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["display_name"] == "deepseek-reasoner"
+
+
+def test_user_can_probe_provider_draft_and_verify_selected_model(
+    client, db_session, monkeypatch
+):
+    user = _create_user(
+        db_session,
+        email="draft-probe-ai@example.com",
+        password="user12345",
+        role=SystemRole.USER.value,
+    )
+    headers = _login(client, email=user.email, password="user12345")
+
+    monkeypatch.setattr(
+        "app.services.ai_service.list_openai_compatible_models",
+        lambda **_kwargs: [
+            {"id": "gemini-2.5-flash"},
+            {"id": "gemini-2.5-pro"},
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.ai_service.run_provider_chat",
+        lambda **kwargs: AIChatResult(
+            content=f"OK from {kwargs['provider_snapshot']['model']}",
+            raw_payload={"provider": "mock"},
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.ai_service.run_provider_chat",
+        lambda **kwargs: AIChatResult(
+            content=f"OK from {kwargs['provider_snapshot']['model']}",
+            raw_payload={"provider": "mock"},
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/me/ai/providers/test-draft",
+        headers=headers,
+        json={
+            "vendor_name": "Google Gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "api_key": "gemini-test-key",
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()["data"]
+    assert payload["ok"] is True
+    assert payload["model_count"] == 2
+    assert payload["models"][0]["name"] == "gemini-2.5-flash"
+    assert payload["selected_model_verification"] is None
+
+    verify_response = client.post(
+        "/api/v1/me/ai/providers/test-draft",
+        headers=headers,
+        json={
+            "vendor_name": "Google Gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "api_key": "gemini-test-key",
+            "selected_model": "gemini-2.5-flash",
+            "verify_selected_model": True,
+        },
+    )
+    assert verify_response.status_code == 200, verify_response.text
+    verify_payload = verify_response.json()["data"]
+    assert verify_payload["ok"] is True
+    assert verify_payload["selected_model_verification"]["ok"] is True
+    assert verify_payload["selected_model_verification"]["model"] == "gemini-2.5-flash"
+
+
+def test_user_can_detect_unusable_selected_model_in_provider_draft_probe(
+    client, db_session, monkeypatch
+):
+    user = _create_user(
+        db_session,
+        email="draft-probe-fail-ai@example.com",
+        password="user12345",
+        role=SystemRole.USER.value,
+    )
+    headers = _login(client, email=user.email, password="user12345")
+
+    monkeypatch.setattr(
+        "app.services.ai_service.list_openai_compatible_models",
+        lambda **_kwargs: [
+            {"id": "gemini-2.5-flash"},
+            {"id": "gemini-2.5-pro"},
+        ],
+    )
+
+    def _mock_run_provider_chat(**kwargs):
+        if kwargs["provider_snapshot"]["model"] == "gemini-2.5-pro":
+            raise AppError(
+                code="AI_PROVIDER_HTTP_ERROR",
+                status_code=502,
+                message="所选模型当前不可用",
+                detail={"status_code": 404},
+            )
+        return AIChatResult(content="OK", raw_payload={"provider": "mock"})
+
+    monkeypatch.setattr(
+        "app.services.ai_service.run_provider_chat",
+        _mock_run_provider_chat,
+    )
+
+    response = client.post(
+        "/api/v1/me/ai/providers/test-draft",
+        headers=headers,
+        json={
+            "vendor_name": "Google Gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "api_key": "gemini-test-key",
+            "selected_model": "gemini-2.5-pro",
+            "verify_selected_model": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()["data"]
+    assert payload["ok"] is False
+    assert payload["model_count"] == 2
+    assert payload["selected_model_verification"]["ok"] is False
+    assert (
+        payload["selected_model_verification"]["error_code"] == "AI_PROVIDER_HTTP_ERROR"
+    )
+    assert payload["selected_model_verification"]["model"] == "gemini-2.5-pro"
+
+
+def test_user_can_test_gemini_provider_via_openai_compatible_flow(
+    client, db_session, monkeypatch
+):
+    user = _create_user(
+        db_session,
+        email="user-gemini@example.com",
+        password="user12345",
+        role=SystemRole.USER.value,
+    )
+    headers = _login(client, email=user.email, password="user12345")
+
+    response = client.post(
+        "/api/v1/me/ai/providers",
+        headers=headers,
+        json={
+            "display_name": "My Gemini",
+            "vendor_name": "Google Gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "api_key": "gemini-test-key",
+            "default_model": "gemini-2.5-flash",
+            "timeout_seconds": 45,
+            "temperature": 0.1,
+            "enabled": True,
+            "is_default": True,
+        },
+    )
+    assert response.status_code == 201, response.text
+    provider_id = response.json()["data"]["id"]
+
+    monkeypatch.setattr(
+        "app.services.ai_service.list_openai_compatible_models",
+        lambda **_kwargs: [
+            {"id": "gemini-2.5-flash"},
+            {"id": "gemini-2.5-pro"},
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.ai_service.run_provider_chat",
+        lambda **kwargs: AIChatResult(
+            content=f"OK from {kwargs['provider_snapshot']['model']}",
+            raw_payload={"provider": "mock"},
+        ),
+    )
+
+    response = client.post(
+        f"/api/v1/me/ai/providers/{provider_id}/test", headers=headers
+    )
+    assert response.status_code == 200, response.text
+    detail = response.json()["data"]["detail"]
+    assert detail["vendor_name"] == "Google Gemini"
+    assert detail["model_count"] == 2
+    assert detail["model_catalog_ok"] is True
+    assert detail["allow_manual_model_input"] is False
+
+
+def test_user_can_test_external_provider_in_manual_model_mode(
+    client, db_session, monkeypatch
+):
+    user = _create_user(
+        db_session,
+        email="user-manual-test@example.com",
+        password="user12345",
+        role=SystemRole.USER.value,
+    )
+    headers = _login(client, email=user.email, password="user12345")
+
+    response = client.post(
+        "/api/v1/me/ai/providers",
+        headers=headers,
+        json={
+            "display_name": "Gemini Manual",
+            "vendor_name": "Google Gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "api_key": "gemini-test-key",
+            "default_model": "gemini-2.5-flash",
+            "timeout_seconds": 45,
+            "temperature": 0.1,
+            "enabled": True,
+            "is_default": True,
+        },
+    )
+    assert response.status_code == 201, response.text
+    provider_id = response.json()["data"]["id"]
+
+    def _mock_list_models(**_kwargs):
+        raise AppError(
+            code="AI_PROVIDER_HTTP_ERROR",
+            status_code=502,
+            message="models unsupported",
+            detail={"status_code": 405},
+        )
+
+    monkeypatch.setattr(
+        "app.services.ai_service.list_openai_compatible_models",
+        _mock_list_models,
+    )
+    monkeypatch.setattr(
+        "app.services.ai_service.run_provider_chat",
+        lambda **_kwargs: AIChatResult(
+            content="OK",
+            raw_payload={"provider": "mock"},
+        ),
+    )
+
+    response = client.post(
+        f"/api/v1/me/ai/providers/{provider_id}/test", headers=headers
+    )
+    assert response.status_code == 200, response.text
+    detail = response.json()["data"]["detail"]
+    assert detail["model_count"] == 0
+    assert detail["model_catalog_ok"] is False
+    assert detail["allow_manual_model_input"] is True
+    assert detail["status_label"] == "目录不可用，需手填模型"
 
 
 def test_scan_with_ai_enabled_creates_ai_job_and_assessments(
@@ -1826,7 +2344,15 @@ def test_ai_model_catalog_exposes_selectable_models(client, db_session, monkeypa
         if item["provider_source"] == "user_external"
         and item["provider_id"] == provider_id
     )
-    assert user_item["models"][1]["name"] == "deepseek-reasoner"
+    assert user_item["models"] == [
+        {
+            "name": "deepseek-chat",
+            "label": "deepseek-chat",
+            "is_default": True,
+            "selectable": True,
+            "details": {},
+        }
+    ]
     assert user_item["available"] is True
     assert user_item["connection_ok"] is True
     assert user_item["model_catalog_ok"] is True
@@ -1903,7 +2429,15 @@ def test_model_catalog_allows_manual_input_when_external_models_unavailable(
     assert user_item["available"] is True
     assert user_item["model_catalog_ok"] is False
     assert user_item["allow_manual_model_input"] is True
-    assert user_item["models"] == []
+    assert user_item["models"] == [
+        {
+            "name": "manual-default",
+            "label": "manual-default",
+            "is_default": True,
+            "selectable": True,
+            "details": {},
+        }
+    ]
 
     project = _create_project(db_session, name="Manual Model Scan Project")
     _add_member(db_session, user_id=user.id, project_id=project.id)

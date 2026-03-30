@@ -70,6 +70,8 @@ cd /mnt/e/CodeScope
 
 `start-dev-wsl.sh` automatically syncs `backend/.venv-wsl` when `uv` is available, so it does not conflict with a Windows-created `backend/.venv`.
 
+`start-dev-wsl.sh` also defaults the Vite watcher to polling mode, which keeps frontend hot reload working when the repo is opened from a WSL-mounted Windows path such as `/mnt/e/CodeScope`. Tune it with `FRONTEND_WATCH_INTERVAL_MS` or `--frontend-watch-interval-ms`, or switch back to native watching with `FRONTEND_WATCH_MODE=native` or `--frontend-watch-mode native` when developing fully inside the Linux filesystem.
+
 ### 4) Recommended WSL scan-related env defaults
 
 The backend defaults to WSL runtime profile. Keep these values in `backend/config/database.env`:

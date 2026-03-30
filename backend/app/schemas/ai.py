@@ -110,10 +110,29 @@ class AIProviderTestPayload(BaseModel):
     detail: dict[str, object] = Field(default_factory=dict)
 
 
+class AIProviderModelVerificationPayload(BaseModel):
+    model: str | None = None
+    ok: bool
+    message: str | None = None
+    error_code: str | None = None
+    response_preview: str | None = None
+
+
+class AIProviderDraftTestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    vendor_name: str = Field(default="OpenAI Compatible", min_length=1, max_length=255)
+    base_url: str = Field(min_length=1, max_length=1024)
+    api_key: str = Field(min_length=1, max_length=4096)
+    timeout_seconds: int = Field(default=60, ge=1, le=600)
+    selected_model: str | None = Field(default=None, max_length=255)
+    verify_selected_model: bool = False
+
+
 class UserAIProviderCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    display_name: str = Field(min_length=1, max_length=255)
+    display_name: str | None = Field(default=None, min_length=1, max_length=255)
     vendor_name: str = Field(default="OpenAI Compatible", min_length=1, max_length=255)
     base_url: str = Field(min_length=1, max_length=1024)
     api_key: str = Field(min_length=1, max_length=4096)
@@ -183,6 +202,22 @@ class AISelectableModelPayload(BaseModel):
     is_default: bool = False
     selectable: bool = True
     details: dict[str, object] = Field(default_factory=dict)
+
+
+class AIProviderDraftTestPayload(BaseModel):
+    ok: bool
+    provider_type: str
+    provider_label: str
+    base_url: str
+    vendor_name: str
+    connection_ok: bool
+    model_catalog_ok: bool
+    allow_manual_model_input: bool = False
+    status_label: str | None = None
+    status_reason: str | None = None
+    model_count: int = 0
+    models: list[AISelectableModelPayload] = Field(default_factory=list)
+    selected_model_verification: AIProviderModelVerificationPayload | None = None
 
 
 class AIModelCatalogProviderPayload(BaseModel):

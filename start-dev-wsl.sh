@@ -4,6 +4,8 @@ set -Eeuo pipefail
 
 BACKEND_PORT=8000
 FRONTEND_PORT=5173
+FRONTEND_WATCH_MODE="${FRONTEND_WATCH_MODE:-polling}"
+FRONTEND_WATCH_INTERVAL_MS="${FRONTEND_WATCH_INTERVAL_MS:-300}"
 WORKER_QUEUES="import,scan,patch,env,report,low"
 WORKER_LOG_LEVEL="info"
 BACKEND_READY_TIMEOUT_SECONDS="${BACKEND_READY_TIMEOUT_SECONDS:-60}"
@@ -19,6 +21,14 @@ while [[ $# -gt 0 ]]; do
       FRONTEND_PORT="${2:-}"
       shift 2
       ;;
+    --frontend-watch-mode)
+      FRONTEND_WATCH_MODE="${2:-}"
+      shift 2
+      ;;
+    --frontend-watch-interval-ms)
+      FRONTEND_WATCH_INTERVAL_MS="${2:-}"
+      shift 2
+      ;;
     --worker-queues)
       WORKER_QUEUES="${2:-}"
       shift 2
@@ -29,7 +39,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Usage: $0 [--backend-port <port>] [--frontend-port <port>] [--worker-queues <queues>] [--worker-log-level <level>]" >&2
+      echo "Usage: $0 [--backend-port <port>] [--frontend-port <port>] [--frontend-watch-mode <polling|native>] [--frontend-watch-interval-ms <ms>] [--worker-queues <queues>] [--worker-log-level <level>]" >&2
       exit 2
       ;;
   esac
@@ -178,6 +188,31 @@ assert_valid_port() {
   fi
 }
 
+assert_valid_positive_integer() {
+  local value="$1"
+  local flag_name="$2"
+  if [[ ! "$value" =~ ^[0-9]+$ ]] || (( value < 1 )); then
+    echo "Invalid ${flag_name}: ${value}. Expected an integer greater than 0." >&2
+    exit 2
+  fi
+}
+
+normalize_frontend_watch_mode() {
+  local mode="$1"
+  case "${mode,,}" in
+    polling)
+      echo "polling"
+      ;;
+    native)
+      echo "native"
+      ;;
+    *)
+      echo "Invalid --frontend-watch-mode: ${mode}. Expected 'polling' or 'native'." >&2
+      exit 2
+      ;;
+  esac
+}
+
 port_in_use() {
   local port="$1"
   ss -ltn "sport = :$port" 2>/dev/null | awk 'NR > 1 { found = 1 } END { exit found ? 0 : 1 }'
@@ -247,6 +282,8 @@ fi
 
 assert_valid_port "$BACKEND_PORT" "--backend-port"
 assert_valid_port "$FRONTEND_PORT" "--frontend-port"
+assert_valid_positive_integer "$FRONTEND_WATCH_INTERVAL_MS" "--frontend-watch-interval-ms"
+FRONTEND_WATCH_MODE="$(normalize_frontend_watch_mode "$FRONTEND_WATCH_MODE")"
 
 RESOLVED_BACKEND_PORT="$(find_available_port "$BACKEND_PORT" 30 || true)"
 if [[ -z "$RESOLVED_BACKEND_PORT" ]]; then
@@ -268,11 +305,16 @@ if [[ "$RESOLVED_FRONTEND_PORT" != "$FRONTEND_PORT" ]]; then
 fi
 FRONTEND_PORT="$RESOLVED_FRONTEND_PORT"
 
+FRONTEND_ENV=()
+if [[ "$FRONTEND_WATCH_MODE" == "polling" ]]; then
+  FRONTEND_ENV=(env CHOKIDAR_USEPOLLING=true CHOKIDAR_INTERVAL="$FRONTEND_WATCH_INTERVAL_MS")
+fi
+
 VITE_BIN="$FRONTEND_DIR/node_modules/.bin/vite"
 if [[ -x "$VITE_BIN" ]]; then
-  FRONTEND_CMD=("$VITE_BIN" --host 0.0.0.0 --port "$FRONTEND_PORT" --strictPort)
+  FRONTEND_CMD=("${FRONTEND_ENV[@]}" "$VITE_BIN" --host 0.0.0.0 --port "$FRONTEND_PORT" --strictPort)
 else
-  FRONTEND_CMD=("$NPM_BIN" run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" --strictPort)
+  FRONTEND_CMD=("${FRONTEND_ENV[@]}" "$NPM_BIN" run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" --strictPort)
 fi
 
 if command -v uv >/dev/null 2>&1; then
@@ -496,12 +538,22 @@ run_readiness_checks() {
 echo
 echo "Backend:  http://127.0.0.1:${BACKEND_PORT}"
 echo "Frontend: http://127.0.0.1:${FRONTEND_PORT}"
+if [[ "$FRONTEND_WATCH_MODE" == "polling" ]]; then
+  echo "Watch:    frontend=${FRONTEND_WATCH_MODE} (${FRONTEND_WATCH_INTERVAL_MS}ms)"
+else
+  echo "Watch:    frontend=${FRONTEND_WATCH_MODE}"
+fi
 echo "SPA via backend in dev proxies to same host:${FRONTEND_PORT}"
 echo "Worker:   queues=${WORKER_QUEUES}"
 echo "Logs:     $LOG_DIR"
 echo "Press Ctrl+C to stop all processes."
 echo
 log_supervisor "startup complete backend=$BACKEND_PID worker=$WORKER_PID frontend=$FRONTEND_PID"
+if [[ "$FRONTEND_WATCH_MODE" == "polling" ]]; then
+  log_supervisor "frontend watch mode=${FRONTEND_WATCH_MODE} interval_ms=${FRONTEND_WATCH_INTERVAL_MS}"
+else
+  log_supervisor "frontend watch mode=${FRONTEND_WATCH_MODE}"
+fi
 
 run_readiness_checks &
 READINESS_PID="$!"

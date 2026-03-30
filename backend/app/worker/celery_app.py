@@ -33,6 +33,7 @@ def create_celery_app() -> Any | None:
             "ai.run_ai_job": {"queue": "low"},
             "ai.run_system_ollama_pull_job": {"queue": "low"},
             "import.run_import_job": {"queue": "import"},
+            "report.run_report_job": {"queue": "report"},
             "rule.run_selftest_job": {"queue": "low"},
             "rule.aggregate_stats": {"queue": "low"},
         },

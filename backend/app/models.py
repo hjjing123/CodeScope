@@ -129,6 +129,17 @@ class ReportStatus(StrEnum):
     PUBLISHED = "PUBLISHED"
 
 
+class ReportFormat(StrEnum):
+    MARKDOWN = "MARKDOWN"
+
+
+class ReportJobStage(StrEnum):
+    PREPARE = "Prepare"
+    RENDER = "Render"
+    PACKAGE = "Package"
+    CLEANUP = "Cleanup"
+
+
 class ImportType(StrEnum):
     UPLOAD = "UPLOAD"
     GIT = "GIT"
@@ -204,6 +215,7 @@ class TaskLogType(StrEnum):
     SCAN = "SCAN"
     IMPORT = "IMPORT"
     AI = "AI"
+    REPORT = "REPORT"
     SELFTEST = "SELFTEST"
     OLLAMA_PULL = "OLLAMA_PULL"
 
@@ -682,13 +694,25 @@ class Report(Base):
     job_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    report_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    finding_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("findings.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     report_type: Mapped[str] = mapped_column(
         String(16), nullable=False, default=ReportType.SCAN.value
     )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default=ReportStatus.DRAFT.value
     )
+    format: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=ReportFormat.MARKDOWN.value
+    )
     object_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )

@@ -224,30 +224,20 @@ export const workspaceSections: WorkspaceSection[] = [
     route: 'reports',
     path: '/reports',
     label: '报告中心',
-    tagline: '管理报告模板、生成流程与导出记录。',
+    tagline: '查看报告生成记录与导出文件。',
     badge: 'Report Studio',
     intro:
-      '报告中心用于组织输出物和审计结论。骨架按模板区、预览区和导出历史三段划分，支持后续逐步接入。',
+      '报告中心当前聚焦已生成报告的历史记录、状态追踪与文件导出，便于统一回看输出结果。',
     icon: FileTextOutlined,
-    highlights: ['报告模板配置与复用', '在线预览与章节重排', '导出记录与追踪下载'],
+    highlights: ['报告生成历史', '导出状态追踪', '文件下载与回看'],
     blocks: [
       {
-        title: '模板列表与标签',
-        description: '预留模板筛选、复制和状态管理。',
-        status: 'skeleton',
-      },
-      {
-        title: '报告预览画布',
-        description: '后续接入章节拖拽和实时预览。',
-        status: 'planned',
-      },
-      {
         title: '导出任务历史',
-        description: '用于显示导出状态、下载链接和失败重试。',
+        description: '用于显示报告状态、创建时间和下载入口。',
         status: 'next',
       },
     ],
-    nextAction: '建议先做模板列表，再接入导出任务流水。',
+    nextAction: '继续补齐报告筛选、状态联动和导出体验细节。',
   },
   {
     key: 'log-center',

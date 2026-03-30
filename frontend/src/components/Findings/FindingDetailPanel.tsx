@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Drawer, Typography, Tag, Button, Space, message, Spin, Empty, Tabs } from 'antd';
-import { BugOutlined, CheckCircleOutlined, CloseCircleOutlined, WarningOutlined, CodeOutlined, InfoCircleOutlined, RobotOutlined } from '@ant-design/icons';
+import { BugOutlined, CheckCircleOutlined, CloseCircleOutlined, WarningOutlined, CodeOutlined, InfoCircleOutlined, RobotOutlined, FileTextOutlined } from '@ant-design/icons';
 import { FindingService } from '../../services/findings';
 import { getVersionFile } from '../../services/projectVersion';
 import FindingPathViewer from './FindingPathViewer';
@@ -44,6 +44,7 @@ interface FindingDetailPanelProps {
   finding: Finding | null;
   onClose: () => void;
   onUpdate: () => void;
+  onGenerateReport?: (finding: Finding) => void;
 }
 
 const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
@@ -51,6 +52,7 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
   finding,
   onClose,
   onUpdate,
+  onGenerateReport,
 }) => {
   const [loading, setLoading] = useState(false);
   const [paths, setPaths] = useState<FindingPath[]>([]);
@@ -273,8 +275,17 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
     }
   };
 
-  const renderTriageActions = () => (
-    <Space>
+  const renderHeaderActions = () => (
+    <Space wrap>
+      {finding && onGenerateReport && (
+        <Button
+          size="small"
+          icon={<FileTextOutlined />}
+          onClick={() => onGenerateReport(finding)}
+        >
+          生成报告
+        </Button>
+      )}
       <Button
         type={finding?.status === 'confirmed' ? 'primary' : 'default'}
         danger
@@ -325,7 +336,7 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
             </Text>
           </div>
           <div style={{ marginRight: 32 }}>
-            {renderTriageActions()}
+            {renderHeaderActions()}
           </div>
         </div>
       }

@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import { Dropdown, Typography, Space, Tag, Spin, Tooltip } from 'antd';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Dropdown, Typography, Space, Spin, Tooltip } from 'antd';
 import type { MenuProps } from 'antd';
 import { DownOutlined, CheckOutlined } from '@ant-design/icons';
 import { getMyAIModelCatalog } from '../../services/ai';
@@ -29,7 +29,7 @@ const parseModelKey = (key: string): AIProviderSelectionRequest => {
       ai_provider_id: p,
       ai_model: m,
     };
-  } catch (e) {
+  } catch {
     return {};
   }
 };
@@ -53,6 +53,13 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ value, onChange, disabled
   const [loading, setLoading] = useState(false);
   const [catalog, setCatalog] = useState<AIModelCatalogPayload | null>(null);
   const [open, setOpen] = useState(false);
+  const latestValueRef = useRef(value);
+  const latestOnChangeRef = useRef(onChange);
+
+  useEffect(() => {
+    latestValueRef.current = value;
+    latestOnChangeRef.current = onChange;
+  }, [onChange, value]);
 
   useEffect(() => {
     let isMounted = true;
@@ -67,9 +74,11 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ value, onChange, disabled
           
           // Only auto-select if there is no value at all AND we have a default selection.
           // Don't auto-select if value is partially set (e.g. empty object).
-          const isValueEmpty = !value || Object.keys(value).length === 0;
-          if (isValueEmpty && data.default_selection && onChange) {
-            onChange(data.default_selection as AIProviderSelectionRequest);
+          const currentValue = latestValueRef.current;
+          const currentOnChange = latestOnChangeRef.current;
+          const isValueEmpty = !currentValue || Object.keys(currentValue).length === 0;
+          if (isValueEmpty && data.default_selection && currentOnChange) {
+            currentOnChange(data.default_selection as AIProviderSelectionRequest);
           }
 
           const hasAvailableModels = data.items.some(
@@ -189,12 +198,11 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ value, onChange, disabled
         type: 'group',
         label: (
           <Space>
-            {provider.provider_label}
-            {provider.provider_source === 'system_ollama' && (
-              <Tag color="blue" style={{ margin: 0, fontSize: 10, lineHeight: '16px', borderRadius: 4 }}>
-                本地
-              </Tag>
-            )}
+            {provider.provider_source === 'system_ollama'
+              ? '本地模型'
+              : provider.provider_source === 'user_external'
+                ? '个人模型'
+                : provider.provider_label}
           </Space>
         ),
         children: options,
@@ -202,7 +210,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ value, onChange, disabled
 
       return [groupTitle];
     });
-  }, [catalog, selectedKey, onChange]);
+  }, [catalog, hasModels, selectedKey, onChange]);
 
   if (loading && !catalog) {
     return <Spin size="small" />;

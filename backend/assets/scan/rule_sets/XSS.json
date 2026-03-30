@@ -1,0 +1,19 @@
+{
+  "id": "e3eb0547-dd66-4c9d-9740-3547113e9e84",
+  "key": "XSS",
+  "name": "XSS",
+  "description": null,
+  "enabled": true,
+  "rules": [
+    "other_velocity_xss",
+    "any_any_xss",
+    "any_velocity_xss",
+    "any_freemarker_xss",
+    "jsp_any_xss",
+    "other_any_xss",
+    "other_freemarker_xss",
+    "spring_templet_xss"
+  ],
+  "created_at": "2026-03-27T04:18:43.981124+00:00",
+  "updated_at": "2026-03-27T04:18:44.188497+00:00"
+}

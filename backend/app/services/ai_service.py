@@ -43,7 +43,6 @@ from app.services.ai_client_service import (
     pull_ollama_model,
     run_provider_chat,
     test_ollama_connection,
-    test_openai_compatible_connection,
 )
 from app.services.assessment_context_service import (
     build_assessment_extraction,
@@ -59,6 +58,8 @@ SYSTEM_OLLAMA_PROVIDER_KEY = "system_ollama"
 AI_SOURCE_SYSTEM_OLLAMA = "system_ollama"
 AI_SOURCE_USER_EXTERNAL = "user_external"
 AI_CHAT_SESSION_SEED_ASSESSMENT = "assessment_review"
+MODEL_VERIFICATION_PROMPT = "Reply with exactly OK."
+MODEL_VERIFICATION_MAX_OUTPUT_TOKENS = 16
 
 AI_STEP_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("prepare", "准备上下文"),
@@ -460,7 +461,7 @@ def create_user_ai_provider(
     db: Session,
     *,
     user_id: uuid.UUID,
-    display_name: str,
+    display_name: str | None,
     vendor_name: str,
     base_url: str,
     api_key: str,
@@ -470,16 +471,20 @@ def create_user_ai_provider(
     enabled: bool,
     is_default: bool,
 ) -> UserAIProvider:
+    normalized_default_model = _normalize_required_text(
+        default_model, field_name="default_model"
+    )
     provider = UserAIProvider(
         user_id=user_id,
-        display_name=_normalize_required_text(display_name, field_name="display_name"),
+        display_name=_resolve_user_provider_display_name(
+            display_name=display_name,
+            default_model=normalized_default_model,
+        ),
         vendor_name=_normalize_required_text(vendor_name, field_name="vendor_name"),
         provider_type=AIProviderType.OPENAI_COMPATIBLE.value,
         base_url=_normalize_url(base_url),
         api_key_encrypted=encrypt_secret(api_key),
-        default_model=_normalize_required_text(
-            default_model, field_name="default_model"
-        ),
+        default_model=normalized_default_model,
         timeout_seconds=int(timeout_seconds),
         temperature=float(temperature),
         enabled=bool(enabled),
@@ -506,6 +511,7 @@ def update_user_ai_provider(
     enabled: bool | None = None,
     is_default: bool | None = None,
 ) -> UserAIProvider:
+    normalized_default_model: str | None = None
     if display_name is not None:
         provider.display_name = _normalize_required_text(
             display_name, field_name="display_name"
@@ -519,9 +525,12 @@ def update_user_ai_provider(
     if api_key is not None:
         provider.api_key_encrypted = encrypt_secret(api_key)
     if default_model is not None:
-        provider.default_model = _normalize_required_text(
+        normalized_default_model = _normalize_required_text(
             default_model, field_name="default_model"
         )
+        provider.default_model = normalized_default_model
+        if display_name is None:
+            provider.display_name = normalized_default_model
     if timeout_seconds is not None:
         provider.timeout_seconds = int(timeout_seconds)
     if temperature is not None:
@@ -626,12 +635,19 @@ def delete_system_ollama_model_by_name(
         timeout_seconds=int(provider.timeout_seconds),
     )
     normalized_name = _normalize_required_text(name, field_name="name")
+    deleted_name = _normalize_optional_text(result.get("name")) or normalized_name
+    deleted_name_keys = {
+        _canonicalize_ollama_model_name(normalized_name),
+        _canonicalize_ollama_model_name(deleted_name),
+    }
     provider.published_models_json = [
         item
         for item in _normalize_model_list(provider.published_models_json)
-        if item != normalized_name
+        if _canonicalize_ollama_model_name(item) not in deleted_name_keys
     ]
-    if provider.default_model == normalized_name:
+    if provider.default_model and (
+        _canonicalize_ollama_model_name(provider.default_model) in deleted_name_keys
+    ):
         provider.default_model = (
             provider.published_models_json[0]
             if provider.published_models_json
@@ -642,17 +658,57 @@ def delete_system_ollama_model_by_name(
 
 
 def test_user_ai_provider(provider: UserAIProvider) -> dict[str, object]:
-    detail = test_openai_compatible_connection(
+    probe_result = _probe_user_ai_provider(
+        vendor_name=provider.vendor_name,
+        provider_label=provider.display_name,
         base_url=provider.base_url,
         api_key=decrypt_secret(provider.api_key_encrypted),
         timeout_seconds=int(provider.timeout_seconds),
+        selected_model=provider.default_model,
+        verify_selected_model=bool(provider.default_model),
     )
+    selected_model_verification = probe_result.get("selected_model_verification")
+    detail = {
+        "base_url": probe_result.get("base_url"),
+        "vendor_name": probe_result.get("vendor_name"),
+        "connection_ok": bool(probe_result.get("connection_ok")),
+        "model_catalog_ok": bool(probe_result.get("model_catalog_ok")),
+        "allow_manual_model_input": bool(probe_result.get("allow_manual_model_input")),
+        "model_count": int(probe_result.get("model_count") or 0),
+        "status_label": probe_result.get("status_label"),
+        "status_reason": probe_result.get("status_reason"),
+        "models": probe_result.get("models") or [],
+        "selected_model_verification": selected_model_verification,
+    }
     return {
-        "ok": True,
+        "ok": bool(probe_result.get("ok")),
         "provider_type": provider.provider_type,
         "provider_label": provider.display_name,
         "detail": detail,
     }
+
+
+def probe_user_ai_provider_draft(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    vendor_name: str,
+    base_url: str,
+    api_key: str,
+    timeout_seconds: int,
+    selected_model: str | None = None,
+    verify_selected_model: bool = False,
+) -> dict[str, object]:
+    del db, user_id
+    return _probe_user_ai_provider(
+        vendor_name=vendor_name,
+        provider_label=vendor_name,
+        base_url=base_url,
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+        selected_model=selected_model,
+        verify_selected_model=verify_selected_model,
+    )
 
 
 def resolve_provider_snapshot(
@@ -2206,26 +2262,11 @@ def _build_user_provider_model_catalog_item(
     provider: UserAIProvider,
 ) -> dict[str, object]:
     catalog_state = _probe_user_provider_model_catalog(provider)
-    models: list[dict[str, object]] = []
-    for item in catalog_state.get("live_models") or []:
-        if not isinstance(item, dict):
-            continue
-        model_name = _normalize_optional_text(item.get("id") or item.get("name"))
-        if model_name is None:
-            continue
-        models.append(
-            {
-                "name": model_name,
-                "label": model_name,
-                "is_default": model_name == provider.default_model,
-                "selectable": bool(catalog_state.get("available")),
-                "details": {
-                    key: value
-                    for key, value in item.items()
-                    if key not in {"id", "name"}
-                },
-            }
-        )
+    models = _build_selected_user_provider_models(
+        live_models=catalog_state.get("live_models"),
+        selected_model=provider.default_model,
+        selectable=bool(catalog_state.get("available")),
+    )
 
     return {
         "provider_source": AI_SOURCE_USER_EXTERNAL,
@@ -2247,12 +2288,149 @@ def _build_user_provider_model_catalog_item(
 
 
 def _probe_user_provider_model_catalog(provider: UserAIProvider) -> dict[str, object]:
-    api_key = decrypt_secret(provider.api_key_encrypted)
+    return _probe_openai_compatible_model_catalog(
+        base_url=provider.base_url,
+        api_key=decrypt_secret(provider.api_key_encrypted),
+        timeout_seconds=int(provider.timeout_seconds),
+    )
+
+
+def _probe_user_ai_provider(
+    *,
+    vendor_name: str,
+    provider_label: str,
+    base_url: str,
+    api_key: str,
+    timeout_seconds: int,
+    selected_model: str | None = None,
+    verify_selected_model: bool = False,
+) -> dict[str, object]:
+    normalized_vendor_name = _normalize_required_text(
+        vendor_name, field_name="vendor_name"
+    )
+    normalized_base_url = _normalize_url(base_url)
+    normalized_api_key = _normalize_required_text(api_key, field_name="api_key")
+    normalized_selected_model = _normalize_optional_text(selected_model)
+
+    catalog_state = _probe_openai_compatible_model_catalog(
+        base_url=normalized_base_url,
+        api_key=normalized_api_key,
+        timeout_seconds=timeout_seconds,
+    )
+    models = _build_selectable_provider_models(
+        catalog_state.get("live_models"),
+        selected_model=normalized_selected_model,
+        selectable=bool(catalog_state.get("available")),
+    )
+    selected_model_verification: dict[str, object] | None = None
+    if (
+        verify_selected_model
+        and normalized_selected_model is not None
+        and bool(catalog_state.get("available"))
+    ):
+        selected_model_verification = _verify_openai_compatible_model(
+            provider_label=provider_label,
+            vendor_name=normalized_vendor_name,
+            base_url=normalized_base_url,
+            api_key=normalized_api_key,
+            timeout_seconds=timeout_seconds,
+            model_name=normalized_selected_model,
+        )
+
+    overall_ok = bool(catalog_state.get("available"))
+    if selected_model_verification is not None:
+        overall_ok = overall_ok and bool(selected_model_verification.get("ok"))
+
+    return {
+        "ok": overall_ok,
+        "provider_type": AIProviderType.OPENAI_COMPATIBLE.value,
+        "provider_label": provider_label,
+        "vendor_name": normalized_vendor_name,
+        "base_url": normalized_base_url,
+        "connection_ok": bool(catalog_state.get("connection_ok")),
+        "model_catalog_ok": bool(catalog_state.get("model_catalog_ok")),
+        "allow_manual_model_input": bool(catalog_state.get("allow_manual_model_input")),
+        "status_label": catalog_state.get("status_label"),
+        "status_reason": catalog_state.get("status_reason"),
+        "model_count": len(catalog_state.get("live_model_names") or []),
+        "models": models,
+        "selected_model_verification": selected_model_verification,
+    }
+
+
+def _build_selectable_provider_models(
+    live_models: object,
+    *,
+    selected_model: str | None,
+    selectable: bool,
+) -> list[dict[str, object]]:
+    models: list[dict[str, object]] = []
+    if not isinstance(live_models, list):
+        return models
+    for item in live_models:
+        if not isinstance(item, dict):
+            continue
+        model_name = _normalize_optional_text(item.get("id") or item.get("name"))
+        if model_name is None:
+            continue
+        models.append(
+            {
+                "name": model_name,
+                "label": model_name,
+                "is_default": model_name == selected_model,
+                "selectable": selectable,
+                "details": {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"id", "name"}
+                },
+            }
+        )
+    return models
+
+
+def _build_selected_user_provider_models(
+    *,
+    live_models: object,
+    selected_model: str | None,
+    selectable: bool,
+) -> list[dict[str, object]]:
+    normalized_selected_model = _normalize_optional_text(selected_model)
+    if normalized_selected_model is None:
+        return []
+
+    matched_details: dict[str, object] = {}
+    if isinstance(live_models, list):
+        for item in live_models:
+            if not isinstance(item, dict):
+                continue
+            model_name = _normalize_optional_text(item.get("id") or item.get("name"))
+            if model_name != normalized_selected_model:
+                continue
+            matched_details = {
+                key: value for key, value in item.items() if key not in {"id", "name"}
+            }
+            break
+
+    return [
+        {
+            "name": normalized_selected_model,
+            "label": normalized_selected_model,
+            "is_default": True,
+            "selectable": selectable,
+            "details": matched_details,
+        }
+    ]
+
+
+def _probe_openai_compatible_model_catalog(
+    *, base_url: str, api_key: str, timeout_seconds: int
+) -> dict[str, object]:
     try:
         live_models = list_openai_compatible_models(
-            base_url=provider.base_url,
+            base_url=base_url,
             api_key=api_key,
-            timeout_seconds=int(provider.timeout_seconds),
+            timeout_seconds=int(timeout_seconds),
         )
         live_model_names = [
             model_name
@@ -2313,6 +2491,66 @@ def _probe_user_provider_model_catalog(provider: UserAIProvider) -> dict[str, ob
             "live_models": [],
             "live_model_names": [],
         }
+
+
+def _verify_openai_compatible_model(
+    *,
+    provider_label: str,
+    vendor_name: str,
+    base_url: str,
+    api_key: str,
+    timeout_seconds: int,
+    model_name: str,
+) -> dict[str, object]:
+    try:
+        result = run_provider_chat(
+            provider_snapshot={
+                "provider_type": AIProviderType.OPENAI_COMPATIBLE.value,
+                "display_name": provider_label,
+                "vendor_name": vendor_name,
+                "base_url": base_url,
+                "model": model_name,
+                "api_key": api_key,
+                "timeout_seconds": int(timeout_seconds),
+                "temperature": 0.0,
+                "max_output_tokens": MODEL_VERIFICATION_MAX_OUTPUT_TOKENS,
+            },
+            messages=[{"role": "user", "content": MODEL_VERIFICATION_PROMPT}],
+        )
+        return {
+            "model": model_name,
+            "ok": True,
+            "message": "模型验证成功，可用于当前聊天调用链路。",
+            "response_preview": result.content[:120],
+        }
+    except AppError as exc:
+        return {
+            "model": model_name,
+            "ok": False,
+            "message": _describe_model_verification_error(exc),
+            "error_code": exc.code,
+            "response_preview": None,
+        }
+
+
+def _describe_model_verification_error(exc: AppError) -> str:
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    status_code = _to_int(detail.get("status_code"))
+    if exc.code == "AI_PROVIDER_HTTP_ERROR" and status_code == 429:
+        return "模型验证失败：服务商当前限流或配额不足，请稍后重试。"
+    if exc.code == "AI_PROVIDER_HTTP_ERROR" and status_code in {401, 403}:
+        return "模型验证失败：API Key 无效，或当前密钥无权访问该模型。"
+    if exc.code == "AI_PROVIDER_HTTP_ERROR" and status_code == 404:
+        return "模型验证失败：当前模型不可用，或不支持该兼容调用方式。"
+    if exc.code == "AI_PROVIDER_HTTP_ERROR" and status_code == 400:
+        return (
+            "模型验证失败：服务商拒绝了该模型请求，请确认模型名称与兼容接口是否匹配。"
+        )
+    if exc.code == "AI_CHAT_TIMEOUT":
+        return "模型验证超时，请稍后重试。"
+    if exc.code == "AI_PROVIDER_UNAVAILABLE":
+        return "模型验证失败：AI Provider 当前不可用，请检查网络或服务状态。"
+    return exc.message
 
 
 def _inflate_provider_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
@@ -3268,6 +3506,15 @@ def _normalize_optional_text(value: object) -> str | None:
     return normalized or None
 
 
+def _resolve_user_provider_display_name(
+    *, display_name: object | None, default_model: object
+) -> str:
+    normalized_display_name = _normalize_optional_text(display_name)
+    if normalized_display_name is not None:
+        return normalized_display_name
+    return _normalize_required_text(default_model, field_name="default_model")
+
+
 def _normalize_required_text(value: object, *, field_name: str) -> str:
     normalized = str(value or "").strip()
     if not normalized:
@@ -3292,6 +3539,16 @@ def _normalize_model_list(values: object) -> list[str]:
         seen.add(normalized)
         items.append(normalized)
     return items
+
+
+def _canonicalize_ollama_model_name(value: object) -> str:
+    normalized = _normalize_required_text(value, field_name="model_name")
+    if "@" in normalized:
+        return normalized
+    tail = normalized.rsplit("/", 1)[-1]
+    if ":" in tail:
+        return normalized
+    return f"{normalized}:latest"
 
 
 def _candidate_ollama_urls(primary_url: str | None) -> list[str]:

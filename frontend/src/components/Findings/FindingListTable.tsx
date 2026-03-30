@@ -22,6 +22,8 @@ interface FindingListTableProps {
   onViewDetail: (record: Finding) => void;
   onOpenAIReview?: (record: Finding) => void;
   openingFindingId?: string | null;
+  selectedRowKeys?: string[];
+  onSelectionChange?: (findingIds: string[]) => void;
 }
 
 const severityColorMap: Record<string, string> = {
@@ -86,6 +88,8 @@ const FindingListTable: React.FC<FindingListTableProps> = ({
   onViewDetail,
   onOpenAIReview,
   openingFindingId,
+  selectedRowKeys,
+  onSelectionChange,
 }) => {
   const renderAIReviewCell = (record: Finding) => {
     const review = record.ai_review;
@@ -194,6 +198,16 @@ const FindingListTable: React.FC<FindingListTableProps> = ({
       columns={columns}
       dataSource={data}
       loading={loading}
+      rowSelection={
+        onSelectionChange
+          ? {
+              selectedRowKeys,
+              onChange: (nextSelectedRowKeys) => {
+                onSelectionChange(nextSelectedRowKeys.map(String));
+              },
+            }
+          : undefined
+      }
       pagination={{
         current: currentPage,
         pageSize: pageSize,

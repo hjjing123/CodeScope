@@ -2,11 +2,11 @@
   "rule_key": "other_fastjson_deserialization",
   "name": "other_fastjson_deserialization",
   "vuln_type": "DESERIALIZATION",
-  "default_severity": "HIGH",
+  "default_severity": "LOW",
   "language_scope": "java",
   "description": null,
   "active_version": 1,
   "created_at": "2025-11-02T09:05:28+00:00",
   "enabled": false,
-  "updated_at": "2026-03-15T04:55:39.918476+00:00"
+  "updated_at": "2026-03-21T13:23:56.643810+00:00"
 }

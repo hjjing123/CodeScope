@@ -16,6 +16,7 @@ from app.core.errors import AppError
 from app.models import (
     ImportJobStage,
     JobStage,
+    ReportJobStage,
     SelfTestJobStage,
     TaskLogIndex,
     TaskLogType,
@@ -52,6 +53,12 @@ TASK_ALLOWED_STAGES: dict[str, list[str]] = {
         JobStage.PREPARE.value,
         JobStage.AI.value,
         JobStage.CLEANUP.value,
+    ],
+    TaskLogType.REPORT.value: [
+        ReportJobStage.PREPARE.value,
+        ReportJobStage.RENDER.value,
+        ReportJobStage.PACKAGE.value,
+        ReportJobStage.CLEANUP.value,
     ],
     TaskLogType.OLLAMA_PULL.value: [
         "Prepare",
@@ -410,6 +417,8 @@ def _task_log_root(*, task_type: str) -> Path:
         return Path(settings.import_log_root)
     if normalized == TaskLogType.AI.value:
         return Path(settings.ai_log_root)
+    if normalized == TaskLogType.REPORT.value:
+        return Path(settings.report_log_root)
     if normalized == TaskLogType.OLLAMA_PULL.value:
         return Path(settings.ai_log_root)
     return Path(settings.selftest_log_root)

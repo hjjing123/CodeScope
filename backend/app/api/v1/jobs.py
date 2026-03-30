@@ -83,6 +83,8 @@ def _task_log_type_for_job(job: Job) -> str | None:
         return "SCAN"
     if job.job_type == JobType.AI.value:
         return "AI"
+    if job.job_type == JobType.REPORT.value:
+        return "REPORT"
     return None
 
 

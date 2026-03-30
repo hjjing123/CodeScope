@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     import_workspace_root: str = "./storage/workspaces/imports"
     snapshot_storage_root: str = "./storage/snapshots"
     scan_workspace_root: str = "./storage/workspaces/scans"
+    report_storage_root: str = "./storage/reports"
 
     import_upload_max_bytes: int = 500 * 1024 * 1024
     import_archive_max_entries: int = 50_000
@@ -45,6 +46,8 @@ class Settings(BaseSettings):
     scan_dispatch_fallback_to_sync: bool = True
     ai_dispatch_backend: str = "celery"
     ai_dispatch_fallback_to_sync: bool = True
+    report_dispatch_backend: str = "celery"
+    report_dispatch_fallback_to_sync: bool = True
     ai_default_max_context_tokens: int = 32768
     ai_reserved_output_tokens: int = 6144
     ai_reserved_system_tokens: int = 2048
@@ -54,6 +57,7 @@ class Settings(BaseSettings):
     import_log_root: str = "./storage/import-logs"
     selftest_log_root: str = "./storage/selftest-logs"
     ai_log_root: str = "./storage/ai-logs"
+    report_log_root: str = "./storage/report-logs"
     task_log_storage_backend: str = "minio"
     task_log_object_prefix: str = "logs/tasks"
     task_log_minio_endpoint: str = ""

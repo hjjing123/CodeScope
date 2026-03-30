@@ -11,6 +11,7 @@ from app.api.v1 import (
     project_member_resources,
     project_members,
     projects,
+    reports,
     runtime_logs,
     rules,
     users,
@@ -32,4 +33,5 @@ api_router.include_router(versions.router)
 api_router.include_router(project_imports.router)
 api_router.include_router(jobs.router)
 api_router.include_router(findings.router)
+api_router.include_router(reports.router)
 api_router.include_router(rules.router)

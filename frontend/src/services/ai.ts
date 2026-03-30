@@ -6,6 +6,8 @@ import type {
   AIChatMessageCreateRequest,
   AIChatSessionCreateRequest,
   AIChatSessionPayload,
+  AIProviderDraftTestPayload,
+  AIProviderDraftTestRequest,
   AIEnrichmentJobPayload,
   AIModelCatalogPayload,
   AIProviderOptionsPayload,
@@ -86,7 +88,14 @@ export const deleteMyAIProvider = async (providerId: string) =>
   unwrap<{ ok: boolean; provider_id: string }>(request.delete(`/me/ai/providers/${providerId}`));
 
 export const testMyAIProvider = async (providerId: string) =>
-  unwrap<AIProviderTestPayload>(request.post(`/me/ai/providers/${providerId}/test`));
+  unwrap<AIProviderTestPayload>(
+    request.post(`/me/ai/providers/${providerId}/test`, undefined, { skipErrorToast: true })
+  );
+
+export const testMyAIProviderDraft = async (data: AIProviderDraftTestRequest) =>
+  unwrap<AIProviderDraftTestPayload>(
+    request.post('/me/ai/providers/test-draft', data, { skipErrorToast: true })
+  );
 
 export const getScanAIEnrichment = async (jobId: string) =>
   unwrap<AIEnrichmentJobPayload>(request.get(`/jobs/${jobId}/ai-enrichment`));

@@ -9,10 +9,14 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from app.config import get_settings
 from app.core.errors import AppError
-from app.models import Job
+from app.models import Job, JobType
+from app.services.report_storage_service import get_report_job_root
 
 
 def list_job_artifacts(*, job: Job) -> list[dict[str, object]]:
+    if job.job_type == JobType.REPORT.value:
+        return _list_report_job_artifacts(job=job)
+
     settings = get_settings()
     artifacts: list[dict[str, object]] = []
 
@@ -78,6 +82,31 @@ def list_job_artifacts(*, job: Job) -> list[dict[str, object]]:
             )
         )
 
+    return artifacts
+
+
+def _list_report_job_artifacts(*, job: Job) -> list[dict[str, object]]:
+    root = get_report_job_root(report_job_id=job.id, create=False)
+    if root is None or not root.exists() or not root.is_dir():
+        return []
+
+    artifacts: list[dict[str, object]] = []
+    for item in sorted(_iter_files(root), key=lambda p: p.as_posix().lower()):
+        target = root / item
+        artifact_type = "RESULT"
+        if item.name.lower() == "manifest.json":
+            artifact_type = "MANIFEST"
+        elif item.suffix.lower() == ".zip":
+            artifact_type = "BUNDLE"
+        artifacts.append(
+            _artifact_payload(
+                source="report_job",
+                relative_path=item.as_posix(),
+                artifact_type=artifact_type,
+                display_name=item.as_posix(),
+                size_bytes=_stat_size(target),
+            )
+        )
     return artifacts
 
 
@@ -214,6 +243,10 @@ def _artifact_payload(
 
 def _artifact_root(*, job: Job, source: str) -> Path | None:
     settings = get_settings()
+    if source == "report_job":
+        if job.job_type != JobType.REPORT.value:
+            return None
+        return get_report_job_root(report_job_id=job.id, create=False)
     if source == "scan_log":
         return Path(settings.scan_log_root) / str(job.id)
     if source == "scan_workspace":
