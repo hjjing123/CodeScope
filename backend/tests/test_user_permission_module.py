@@ -239,6 +239,92 @@ def test_platform_admin_endpoint_requires_admin(client, db_session):
     assert ok_resp.json()["data"]["total"] >= 2
 
 
+def test_admin_can_delete_normal_user(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="delete-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    target = _create_user(
+        db_session,
+        email="delete-target@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+
+    tokens = _login(client, email=admin.email, password="Password123!")
+    resp = client.delete(
+        f"/api/v1/users/{target.id}",
+        headers=_auth_header(tokens["access_token"]),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["removed"] is True
+    assert db_session.get(User, target.id) is None
+
+    logs = db_session.scalars(
+        select(SystemLog).where(
+            SystemLog.log_kind == SystemLogKind.OPERATION.value,
+            SystemLog.action == "user.delete",
+            SystemLog.operator_user_id == admin.id,
+            SystemLog.resource_id == str(target.id),
+        )
+    ).all()
+    assert len(logs) == 1
+
+
+def test_delete_user_endpoint_requires_admin(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="delete-admin-only@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    dev = _create_user(
+        db_session,
+        email="delete-dev@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    target = _create_user(
+        db_session,
+        email="delete-denied-target@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+
+    dev_tokens = _login(client, email=dev.email, password="Password123!")
+    denied_resp = client.delete(
+        f"/api/v1/users/{target.id}",
+        headers=_auth_header(dev_tokens["access_token"]),
+    )
+
+    assert denied_resp.status_code == 403
+    assert denied_resp.json()["error"]["code"] == "INSUFFICIENT_SCOPE"
+    assert db_session.get(User, target.id) is not None
+    assert db_session.get(User, admin.id) is not None
+
+
+def test_admin_cannot_delete_self(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="delete-self-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+
+    tokens = _login(client, email=admin.email, password="Password123!")
+    resp = client.delete(
+        f"/api/v1/users/{admin.id}",
+        headers=_auth_header(tokens["access_token"]),
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "SELF_DELETE_FORBIDDEN"
+    assert db_session.get(User, admin.id) is not None
+
+
 def test_permissions_endpoint_platform_scope_for_admin(client, db_session):
     admin = _create_user(
         db_session,

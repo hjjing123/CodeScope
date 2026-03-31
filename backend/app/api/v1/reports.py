@@ -12,8 +12,10 @@ from app.core.errors import AppError
 from app.core.response import get_request_id, success_response
 from app.db.session import get_db
 from app.dependencies.auth import get_current_principal, require_project_resource_action
-from app.models import Finding, Report, ReportType, SystemRole, UserProjectRole
+from app.models import Finding, Job, Report, ReportType, SystemRole, UserProjectRole
 from app.schemas.report import (
+    ReportContentPayload,
+    ReportDeletePayload,
     ReportJobCreateRequest,
     ReportJobTriggerPayload,
     ReportListPayload,
@@ -24,10 +26,12 @@ from app.services.authorization_service import ensure_project_action
 from app.services.report_service import (
     build_report_payload,
     create_report_job,
+    delete_report_record,
     dispatch_report_job,
     get_report_download_path,
     mark_report_dispatch_failed,
     prepare_report_selection,
+    read_report_markdown_content,
 )
 
 
@@ -69,8 +73,8 @@ def create_report_job_endpoint(
         project_id=payload.project_id,
         version_id=payload.version_id,
         job_id=payload.job_id,
-        generation_mode=payload.generation_mode,
-        finding_ids=payload.finding_ids,
+        report_type=payload.report_type,
+        finding_id=payload.finding_id,
     )
 
     job = create_report_job(
@@ -80,9 +84,10 @@ def create_report_job_endpoint(
         payload={
             "request_id": request_id,
             "report_type": payload.report_type,
-            "generation_mode": selection.generation_mode,
             "scan_job_id": str(selection.scan_job.id),
-            "finding_ids": [str(item.id) for item in selection.findings],
+            "finding_id": str(selection.target_finding_id)
+            if selection.target_finding_id is not None
+            else None,
             "options": payload.options.model_dump(),
         },
         created_by=principal.user.id,
@@ -97,10 +102,11 @@ def create_report_job_endpoint(
         project_id=payload.project_id,
         detail_json={
             "report_type": payload.report_type,
-            "generation_mode": selection.generation_mode,
             "scan_job_id": str(selection.scan_job.id),
-            "requested_count": selection.requested_count,
-            "bundle_expected": selection.bundle_expected,
+            "target_finding_id": str(selection.target_finding_id)
+            if selection.target_finding_id is not None
+            else None,
+            "finding_count": selection.finding_count,
         },
     )
     db.commit()
@@ -119,8 +125,8 @@ def create_report_job_endpoint(
 
     data = ReportJobTriggerPayload(
         report_job_id=job.id,
-        expected_report_count=selection.requested_count,
-        bundle_expected=selection.bundle_expected,
+        report_type=selection.report_type,
+        finding_count=selection.finding_count,
     )
     return success_response(request, data=data.model_dump(), status_code=202)
 
@@ -194,9 +200,27 @@ def list_reports(
         ).all()
         finding_map = {item.id: item for item in finding_rows}
 
+    scan_job_ids = [item.job_id for item in reports if item.job_id is not None]
+    job_map: dict[uuid.UUID, Job] = {}
+    finding_count_map: dict[uuid.UUID, int] = {}
+    if scan_job_ids:
+        job_rows = db.scalars(select(Job).where(Job.id.in_(scan_job_ids))).all()
+        job_map = {item.id: item for item in job_rows}
+        count_rows = db.execute(
+            select(Finding.job_id, func.count(Finding.id))
+            .where(Finding.job_id.in_(scan_job_ids))
+            .group_by(Finding.job_id)
+        ).all()
+        finding_count_map = {job_id: int(count) for job_id, count in count_rows}
+
     data = ReportListPayload(
         items=[
-            build_report_payload(report, finding=finding_map.get(report.finding_id))
+            build_report_payload(
+                report,
+                finding=finding_map.get(report.finding_id),
+                scan_job=job_map.get(report.job_id),
+                finding_count=finding_count_map.get(report.job_id),
+            )
             for report in reports
         ],
         total=total,
@@ -223,10 +247,104 @@ def get_report(
     finding = (
         db.get(Finding, report.finding_id) if report.finding_id is not None else None
     )
+    scan_job = db.get(Job, report.job_id) if report.job_id is not None else None
+    finding_count = (
+        db.scalar(select(func.count(Finding.id)).where(Finding.job_id == report.job_id))
+        if report.report_type == ReportType.SCAN.value and report.job_id is not None
+        else None
+    )
     return success_response(
         request,
-        data=build_report_payload(report, finding=finding).model_dump(),
+        data=build_report_payload(
+            report,
+            finding=finding,
+            scan_job=scan_job,
+            finding_count=int(finding_count) if finding_count is not None else None,
+        ).model_dump(),
     )
+
+
+@router.get("/api/v1/reports/{report_id}/content")
+def get_report_content(
+    request: Request,
+    report_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _principal: AuthPrincipal = Depends(
+        require_project_resource_action(
+            "report:read",
+            resource_type="REPORT",
+            resource_id_param="report_id",
+        )
+    ),
+):
+    report = db.get(Report, report_id)
+    if report is None:
+        raise AppError(code="NOT_FOUND", status_code=404, message="报告不存在")
+    finding = (
+        db.get(Finding, report.finding_id) if report.finding_id is not None else None
+    )
+    scan_job = db.get(Job, report.job_id) if report.job_id is not None else None
+    finding_count = (
+        db.scalar(select(func.count(Finding.id)).where(Finding.job_id == report.job_id))
+        if report.report_type == ReportType.SCAN.value and report.job_id is not None
+        else None
+    )
+    data = ReportContentPayload(
+        report=build_report_payload(
+            report,
+            finding=finding,
+            scan_job=scan_job,
+            finding_count=int(finding_count) if finding_count is not None else None,
+        ),
+        content=read_report_markdown_content(report=report),
+    )
+    return success_response(request, data=data.model_dump())
+
+
+@router.delete("/api/v1/reports/{report_id}")
+def delete_report(
+    request: Request,
+    report_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    principal: AuthPrincipal = Depends(
+        require_project_resource_action(
+            "report:delete",
+            resource_type="REPORT",
+            resource_id_param="report_id",
+        )
+    ),
+):
+    report = db.get(Report, report_id)
+    if report is None:
+        raise AppError(code="NOT_FOUND", status_code=404, message="报告不存在")
+
+    report_title = str(report.title or "").strip() or None
+    summary = delete_report_record(db, report=report)
+    payload = ReportDeletePayload(**summary)
+    append_audit_log(
+        db,
+        request_id=get_request_id(request),
+        operator_user_id=principal.user.id,
+        action="report.deleted",
+        resource_type="REPORT",
+        resource_id=str(report_id),
+        project_id=report.project_id,
+        detail_json={
+            "report_type": report.report_type,
+            "report_title": report_title,
+            "report_job_id": str(report.report_job_id)
+            if report.report_job_id
+            else None,
+            "remaining_report_count": payload.remaining_report_count,
+            "deleted_report_file": payload.deleted_report_file,
+            "deleted_report_job_root": payload.deleted_report_job_root,
+            "deleted_report_job_files_count": payload.deleted_report_job_files_count,
+            "deleted_task_log_index_count": payload.deleted_task_log_index_count,
+            "deleted_log_files_count": payload.deleted_log_files_count,
+        },
+    )
+    db.commit()
+    return success_response(request, data=payload.model_dump())
 
 
 @router.get("/api/v1/reports/{report_id}/download")

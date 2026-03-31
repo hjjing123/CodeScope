@@ -41,6 +41,7 @@ ROLE_ACTIONS: dict[str, set[str]] = {
         "rule:selftest",
         "report:read",
         "report:generate",
+        "report:delete",
         "report:publish",
         "system:config",
         "system:auditlog",
@@ -60,6 +61,7 @@ ROLE_ACTIONS: dict[str, set[str]] = {
         "finding:label",
         "report:read",
         "report:generate",
+        "report:delete",
         "rule:read",
     },
 }
@@ -81,6 +83,7 @@ PROJECT_ROLE_ACTIONS: dict[str, set[str]] = {
         "finding:label",
         "report:read",
         "report:generate",
+        "report:delete",
         "report:publish",
     },
     ProjectRole.MAINTAINER.value: {
@@ -97,6 +100,7 @@ PROJECT_ROLE_ACTIONS: dict[str, set[str]] = {
         "finding:label",
         "report:read",
         "report:generate",
+        "report:delete",
     },
     ProjectRole.READER.value: {
         "project:read",

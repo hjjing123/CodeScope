@@ -44,14 +44,23 @@ const WorkspaceLayout: React.FC = () => {
 
   const activeMenuKey = useMemo(() => activeSection.key, [activeSection.key]);
 
+  const filteredMenuItems = useMemo(() => {
+    return workspaceMenuItems?.filter((item) => {
+      if (item?.key === 'users' && user?.role !== 'Admin') {
+        return false;
+      }
+      return true;
+    });
+  }, [user?.role]);
+
   const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
     const nextSection = getWorkspaceSectionByKey(String(key));
     navigate(nextSection.path);
     setMobileMenuOpen(false);
   };
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     navigate('/login');
   };
 
@@ -65,7 +74,7 @@ const WorkspaceLayout: React.FC = () => {
         <Menu
           mode="inline"
           selectedKeys={[activeMenuKey]}
-          items={workspaceMenuItems}
+          items={filteredMenuItems}
           className="workspace-menu"
           onClick={handleMenuClick}
         />
@@ -113,7 +122,7 @@ const WorkspaceLayout: React.FC = () => {
               type="default"
               icon={<LogoutOutlined />}
               className="workspace-logout-btn"
-              onClick={handleLogout}
+              onClick={() => void handleLogout()}
             >
               退出登录
             </Button>
@@ -138,7 +147,7 @@ const WorkspaceLayout: React.FC = () => {
         <Menu
           mode="inline"
           selectedKeys={[activeMenuKey]}
-          items={workspaceMenuItems}
+          items={filteredMenuItems}
           className="workspace-drawer-menu"
           onClick={handleMenuClick}
         />

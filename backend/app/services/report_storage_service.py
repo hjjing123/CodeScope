@@ -87,6 +87,34 @@ def reset_report_job_root(*, report_job_id: uuid.UUID) -> Path:
     return root
 
 
+def delete_report_object(*, object_key: str) -> bool:
+    try:
+        target = resolve_report_object_path(object_key=object_key)
+    except AppError:
+        return False
+    if not target.exists() or not target.is_file():
+        return False
+    try:
+        target.unlink()
+    except OSError:
+        return False
+    _prune_empty_report_dirs(target.parent)
+    return True
+
+
+def delete_report_job_root(*, report_job_id: uuid.UUID) -> dict[str, int | bool]:
+    root = get_report_job_root(report_job_id=report_job_id, create=False)
+    if root is None:
+        return {"deleted": False, "deleted_files_count": 0}
+
+    deleted_files_count = sum(1 for item in root.rglob("*") if item.is_file())
+    shutil.rmtree(root, ignore_errors=True)
+    return {
+        "deleted": True,
+        "deleted_files_count": deleted_files_count,
+    }
+
+
 def resolve_report_object_path(*, object_key: str) -> Path:
     normalized = _safe_relative_key(object_key)
     target = (_report_root() / normalized).resolve()
@@ -112,3 +140,17 @@ def write_report_bytes(*, object_key: str, content: bytes) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(content)
     return target
+
+
+def _prune_empty_report_dirs(start: Path) -> None:
+    root = _report_root().resolve()
+    current = start.resolve()
+    while current != root and current.is_relative_to(root):
+        try:
+            next(current.iterdir())
+            break
+        except StopIteration:
+            current.rmdir()
+            current = current.parent
+        except OSError:
+            break

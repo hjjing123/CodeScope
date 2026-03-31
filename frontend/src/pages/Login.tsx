@@ -12,7 +12,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/useAuthStore';
 import { login, getMe } from '../services/auth';
 import type { LoginRequest } from '../types/auth';
-import { setAuthToken } from '../utils/authToken';
+import { clearAuthSession, setAuthSession } from '../utils/authToken';
 import './Login.css';
 
 const { Title, Text } = Typography;
@@ -32,7 +32,7 @@ const Login: React.FC = () => {
     setLoading(true);
     try {
       const { data: tokenData } = await login(values);
-      setAuthToken(tokenData.access_token, tokenData.expires_in);
+      setAuthSession(tokenData);
 
       const { data: userData } = await getMe();
 
@@ -40,6 +40,7 @@ const Login: React.FC = () => {
       message.success('登录成功');
       navigate('/dashboard');
     } catch (error: any) {
+      clearAuthSession();
       console.error('Login failed:', error);
     } finally {
       setLoading(false);

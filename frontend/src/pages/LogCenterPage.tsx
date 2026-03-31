@@ -58,7 +58,6 @@ const { Text } = Typography;
 type LogCenterTabKey = 'system' | 'task' | 'correlation';
 
 interface AuditFilterValues {
-  request_id?: string;
   project_id?: string;
   action?: string;
   action_group?: string;
@@ -76,7 +75,6 @@ interface TaskFilterValues {
 }
 
 interface CorrelationFilterValues {
-  request_id?: string;
   task_type?: TaskType;
   task_id?: string;
   project_id?: string;
@@ -165,8 +163,7 @@ const resultOptions = [
 
 const hasBatchDeleteCondition = (values: AuditFilterValues): boolean => {
   return Boolean(
-    normalizeText(values.request_id) ||
-      normalizeText(values.project_id) ||
+    normalizeText(values.project_id) ||
       normalizeText(values.keyword) ||
       normalizeText(values.action_group) ||
       values.high_value_only ||
@@ -216,7 +213,6 @@ const LogCenterPage: React.FC = () => {
   const loadAuditLogs = async (page = 1, pageSize = auditPageSize): Promise<void> => {
     const values = auditForm.getFieldsValue();
     const params: AuditLogQuery = {
-      request_id: normalizeText(values.request_id),
       project_id: normalizeText(values.project_id),
       action: normalizeText(values.action),
       action_group: normalizeText(values.action_group),
@@ -274,7 +270,6 @@ const LogCenterPage: React.FC = () => {
       onOk: async () => {
         const response = await batchDeleteLogs({
           log_kind: 'OPERATION',
-          request_id: normalizeText(values.request_id),
           project_id: normalizeText(values.project_id),
           keyword: normalizeText(values.keyword),
           action_group: normalizeText(values.action_group),
@@ -298,15 +293,15 @@ const LogCenterPage: React.FC = () => {
       {
         title: '时间',
         dataIndex: 'created_at',
-        width: 170,
+        width: 190,
         render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{formatTime(value)}</span>,
       },
       {
         title: '动作',
         dataIndex: 'action_zh',
-        width: 240,
+        width: 260,
         ellipsis: true,
-        render: (_: string, record) => (
+        render: (_: string, record: AuditLogItem) => (
           <div style={{ display: 'grid', gap: 2 }}>
             <span>{record.action_zh || record.action || '--'}</span>
             <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#999' }}>{record.action || '--'}</span>
@@ -316,22 +311,18 @@ const LogCenterPage: React.FC = () => {
       {
         title: '摘要',
         dataIndex: 'summary_zh',
+        width: 260,
         ellipsis: true,
         render: (value: string) => value || '--',
       },
       {
         title: '资源',
-        key: 'resource',
-        width: 200,
-        ellipsis: true,
-        render: (_, record) => (
-          <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{`${record.resource_type || '--'} / ${record.resource_id || '--'}`}</span>
-        ),
       },
       {
         title: '结果',
         dataIndex: 'result',
-        width: 110,
+        width: 140,
+        align: 'center',
         render: (value: string) => (
           <Tag color={value === 'SUCCEEDED' ? 'blue' : 'red'}>{value || 'UNKNOWN'}</Tag>
         ),
@@ -339,7 +330,8 @@ const LogCenterPage: React.FC = () => {
       {
         title: '高价值',
         dataIndex: 'is_high_value',
-        width: 88,
+        width: 110,
+        align: 'center',
         render: (value: boolean) => (value ? <Tag color="gold">是</Tag> : <Tag>否</Tag>),
       },
       {
@@ -365,14 +357,16 @@ const LogCenterPage: React.FC = () => {
       {
         title: '错误码',
         dataIndex: 'error_code',
-        width: 120,
+        width: 110,
+        align: 'center',
         render: (value: string | null) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>,
       },
       {
         title: '操作',
-        width: 92,
-        fixed: 'right',
-        render: (_, record) => (
+        width: 130,
+        align: 'center',
+        fixed: 'right' as const,
+        render: (_: unknown, record: AuditLogItem) => (
           <Button
             type="link"
             danger
@@ -386,7 +380,11 @@ const LogCenterPage: React.FC = () => {
           </Button>
         ),
       },
-    ],
+    ].filter((column) => {
+      const dataIndex = typeof column.dataIndex === 'string' ? column.dataIndex : undefined;
+      const title = typeof column.title === 'string' ? column.title : undefined;
+      return dataIndex !== 'request_id' && title !== '资源';
+    }) as ColumnsType<AuditLogItem>,
     [handleDeleteLog]
   );
 
@@ -427,19 +425,21 @@ const LogCenterPage: React.FC = () => {
   };
 
   const handleCorrelationSearch = async (values: CorrelationFilterValues): Promise<void> => {
-    const requestId = normalizeText(values.request_id);
     const taskId = normalizeText(values.task_id);
     const projectId = normalizeText(values.project_id);
+    if (!taskId && !projectId) {
+      message.warning('请至少填写 task_id 或 project_id');
+      return;
+    }
 
-    if (!requestId && !taskId && !projectId) {
-      message.warning('请至少填写 request_id、task_id 或 project_id');
+    if (!taskId && !projectId) {
+      message.warning('请至少填写 task_id 或 project_id');
       return;
     }
 
     setCorrelationLoading(true);
     try {
       const response = await getLogCorrelation({
-        request_id: requestId,
         task_type: values.task_type,
         task_id: taskId,
         project_id: projectId,
@@ -447,7 +447,6 @@ const LogCenterPage: React.FC = () => {
         ...toRangeParams(values.range),
       });
       setCorrelationQuery({
-        request_id: requestId,
         task_type: values.task_type,
         task_id: taskId,
         project_id: projectId,
@@ -695,7 +694,7 @@ const LogCenterPage: React.FC = () => {
                   }}
                 >
                   <Space wrap style={{ width: '100%' }}>
-                    <Form.Item name="request_id" style={{ margin: 0 }}>
+                    <Form.Item name="request_id" style={{ display: 'none', margin: 0 }}>
                       <Input allowClear placeholder="请求 ID" style={{ width: 180 }} />
                     </Form.Item>
                     <Form.Item name="project_id" style={{ margin: 0 }}>
@@ -737,7 +736,8 @@ const LogCenterPage: React.FC = () => {
                   loading={systemLoading}
                   columns={auditColumns}
                   dataSource={auditItems}
-                  scroll={{ x: 1360 }}
+                  tableLayout="fixed"
+                  scroll={{ x: 1200 }}
                   pagination={{
                     current: auditPage,
                     pageSize: auditPageSize,
@@ -843,7 +843,7 @@ const LogCenterPage: React.FC = () => {
                   }}
                 >
                   <Space wrap style={{ width: '100%' }}>
-                    <Form.Item name="request_id" style={{ margin: 0 }}>
+                    <Form.Item name="request_id" style={{ display: 'none', margin: 0 }}>
                       <Input allowClear placeholder="request_id" style={{ width: 180 }} />
                     </Form.Item>
                     <Form.Item name="task_type" style={{ margin: 0 }}>
@@ -908,7 +908,7 @@ const LogCenterPage: React.FC = () => {
                             ellipsis: true,
                             render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>,
                           },
-                        ]}
+                        ].filter((column) => column.dataIndex !== 'request_id')}
                       />
                     </Card>
 
@@ -981,7 +981,7 @@ const LogCenterPage: React.FC = () => {
       >
         {logDetail ? (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
-            <Descriptions column={1} size="small" bordered>
+            <Descriptions column={1} size="small" bordered style={{ display: 'none' }}>
               <>
                 <Descriptions.Item label="时间">{formatTime(logDetail.record.created_at)}</Descriptions.Item>
                 <Descriptions.Item label="动作中文">{logDetail.record.action_zh || '--'}</Descriptions.Item>
@@ -993,7 +993,7 @@ const LogCenterPage: React.FC = () => {
                 <Descriptions.Item label="资源">
                   <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{`${logDetail.record.resource_type} / ${logDetail.record.resource_id}`}</span>
                 </Descriptions.Item>
-                <Descriptions.Item label="request_id">
+                <Descriptions.Item label="request_id" style={{ display: 'none' }}>
                   <Button
                     type="link"
                     size="small"
@@ -1007,6 +1007,24 @@ const LogCenterPage: React.FC = () => {
                 </Descriptions.Item>
                 <Descriptions.Item label="结果">{logDetail.record.result || '--'}</Descriptions.Item>
                 <Descriptions.Item label="高价值">{logDetail.record.is_high_value ? '是' : '否'}</Descriptions.Item>
+              </>
+            </Descriptions>
+
+            <Descriptions column={1} size="small" bordered>
+              <>
+                <Descriptions.Item label="时间">{formatTime(logDetail.record.created_at)}</Descriptions.Item>
+                <Descriptions.Item label="动作中文">{logDetail.record.action_zh || '--'}</Descriptions.Item>
+                <Descriptions.Item label="动作编码">
+                  <span style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                    {logDetail.record.action || '--'}
+                  </span>
+                </Descriptions.Item>
+                <Descriptions.Item label="摘要">{logDetail.record.summary_zh || '--'}</Descriptions.Item>
+                <Descriptions.Item label="动作分组">{logDetail.record.action_group || '--'}</Descriptions.Item>
+                <Descriptions.Item label="结果">{logDetail.record.result || '--'}</Descriptions.Item>
+                <Descriptions.Item label="高价值">
+                  {logDetail.record.is_high_value ? '是' : '否'}
+                </Descriptions.Item>
               </>
             </Descriptions>
 

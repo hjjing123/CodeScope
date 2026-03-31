@@ -5,19 +5,18 @@ export interface ReportJobCreateOptions {
 }
 
 export interface ReportJobCreateRequest {
-  report_type: 'FINDING';
-  generation_mode: 'JOB_ALL' | 'FINDING_SET';
+  report_type: 'SCAN' | 'FINDING';
   project_id: string;
   version_id: string;
   job_id: string;
-  finding_ids?: string[];
+  finding_id?: string;
   options?: ReportJobCreateOptions;
 }
 
 export interface ReportJobTriggerPayload {
   report_job_id: string;
-  expected_report_count: number;
-  bundle_expected: boolean;
+  report_type: 'SCAN' | 'FINDING';
+  finding_count: number;
 }
 
 export interface ReportPayload {
@@ -32,6 +31,10 @@ export interface ReportPayload {
   format: string;
   object_key?: string;
   file_name?: string;
+  title?: string;
+  template_key?: string;
+  summary_text?: string;
+  finding_count?: number | null;
   created_by?: string;
   created_at: string;
   rule_key?: string;
@@ -48,6 +51,24 @@ export interface ReportListPayload {
   total: number;
 }
 
+export interface ReportContentPayload {
+  report: ReportPayload;
+  content: string;
+  mime_type: 'text/markdown';
+}
+
+export interface ReportDeletePayload {
+  ok: boolean;
+  report_id: string;
+  report_job_id?: string;
+  remaining_report_count: number;
+  deleted_report_file: boolean;
+  deleted_report_job_root: boolean;
+  deleted_report_job_files_count: number;
+  deleted_task_log_index_count: number;
+  deleted_log_files_count: number;
+}
+
 export interface ReportListParams {
   project_id?: string;
   version_id?: string;
@@ -57,17 +78,4 @@ export interface ReportListParams {
   report_type?: string;
   page?: number;
   page_size?: number;
-}
-
-export interface ReportJobArtifact {
-  artifact_id: string;
-  artifact_type: string;
-  display_name: string;
-  size_bytes?: number | null;
-  source: string;
-}
-
-export interface ReportJobArtifactListPayload {
-  job_id: string;
-  items: ReportJobArtifact[];
 }

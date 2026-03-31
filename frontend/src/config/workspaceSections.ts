@@ -12,6 +12,7 @@ import {
   FolderOpenOutlined,
   RobotOutlined,
   SettingOutlined,
+  TeamOutlined,
 } from '@ant-design/icons';
 
 type IconComponent = ComponentType<AntdIconProps>;
@@ -298,6 +299,19 @@ export const workspaceSections: WorkspaceSection[] = [
       },
     ],
     nextAction: '建议先落地权限配置页，再逐步补齐通知与运行参数。',
+  },
+  {
+    key: 'users',
+    route: 'users',
+    path: '/users',
+    label: '用户管理',
+    tagline: '管理系统用户与角色权限。',
+    badge: 'User Admin',
+    intro: '维护用户列表、重置密码及分配角色，仅管理员可见。',
+    icon: TeamOutlined,
+    highlights: ['用户列表与搜索', '角色权限分配', '状态启停管理'],
+    blocks: [],
+    nextAction: '对接用户管理 API。',
   },
 ];
 

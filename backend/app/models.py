@@ -710,6 +710,9 @@ class Report(Base):
         String(32), nullable=False, default=ReportFormat.MARKDOWN.value
     )
     object_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    template_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )

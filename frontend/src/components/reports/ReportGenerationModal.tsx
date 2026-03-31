@@ -5,18 +5,22 @@ import { ReportService } from '../../services/report';
 import type { Finding } from '../../types/finding';
 import type { ReportJobCreateRequest, ReportJobTriggerPayload } from '../../types/report';
 
-const { Text } = Typography;
+const { Paragraph, Text } = Typography;
 
-const getVulnDisplayName = (finding: Finding) => {
+const getVulnDisplayName = (finding?: Finding | null) => {
+  if (!finding) {
+    return '-';
+  }
   return finding.vuln_display_name || finding.vuln_type || finding.rule_key || finding.id;
 };
 
 export interface ReportGenerationContext {
+  reportType: ReportJobCreateRequest['report_type'];
   projectId: string;
   versionId: string;
   jobId: string;
-  generationMode: ReportJobCreateRequest['generation_mode'];
-  findings: Finding[];
+  findingId?: string;
+  finding?: Finding | null;
   findingCount: number;
 }
 
@@ -45,27 +49,16 @@ const ReportGenerationModal: React.FC<ReportGenerationModalProps> = ({
     setIncludeAISections(true);
   }, [open, context]);
 
-  const previewFindings = useMemo(() => {
-    if (!context || context.generationMode !== 'FINDING_SET') {
-      return [];
-    }
-    return context.findings.slice(0, 3);
-  }, [context]);
-
   const description = useMemo(() => {
     if (!context) {
       return '';
     }
 
-    if (context.generationMode === 'JOB_ALL') {
-      return `将为当前扫描任务下的 ${context.findingCount} 条漏洞分别生成 Markdown 报告。`;
+    if (context.reportType === 'SCAN') {
+      return `将为当前扫描任务生成 1 份统一扫描报告，汇总 ${context.findingCount} 条漏洞，并按“结论摘要 + 技术附录”组织内容。`;
     }
 
-    if (context.findingCount === 1) {
-      return '将为当前漏洞生成 1 份 Markdown 报告。';
-    }
-
-    return `将为选中的 ${context.findingCount} 条漏洞分别生成 Markdown 报告，并提供打包下载。`;
+    return '将为当前漏洞生成 1 份单漏洞报告，前半部分给老师/管理者看结论，后半部分提供开发与安全复核细节。';
   }, [context]);
 
   const handleSubmit = async () => {
@@ -76,15 +69,11 @@ const ReportGenerationModal: React.FC<ReportGenerationModalProps> = ({
     setSubmitting(true);
     try {
       const payload: ReportJobCreateRequest = {
-        report_type: 'FINDING',
-        generation_mode: context.generationMode,
+        report_type: context.reportType,
         project_id: context.projectId,
         version_id: context.versionId,
         job_id: context.jobId,
-        finding_ids:
-          context.generationMode === 'FINDING_SET'
-            ? context.findings.map((item) => item.id)
-            : undefined,
+        finding_id: context.reportType === 'FINDING' ? context.findingId : undefined,
         options: {
           format: 'MARKDOWN',
           include_code_snippets: includeCodeSnippets,
@@ -102,7 +91,7 @@ const ReportGenerationModal: React.FC<ReportGenerationModalProps> = ({
 
   return (
     <Modal
-      title="生成漏洞报告"
+      title={context?.reportType === 'SCAN' ? '生成扫描报告' : '生成漏洞报告'}
       open={open}
       onCancel={onCancel}
       onOk={() => {
@@ -113,12 +102,12 @@ const ReportGenerationModal: React.FC<ReportGenerationModalProps> = ({
       cancelText="取消"
       destroyOnHidden
     >
-      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={16} style={{ width: '100%' }}>
         <Alert
           type="info"
           showIcon
-          message="当前仅支持漏洞报告"
-          description="后端现阶段只支持 FINDING 类型 Markdown 报告。提交后会异步生成，并可在报告中心查看结果。"
+          message="当前支持扫描报告与单漏洞报告"
+          description="报告会先生成 Markdown 文件，随后可在报告中心中直接预览与下载。"
         />
 
         <div
@@ -129,37 +118,26 @@ const ReportGenerationModal: React.FC<ReportGenerationModalProps> = ({
             background: '#f8fafc',
           }}
         >
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={8} style={{ width: '100%' }}>
             <Text strong>{description}</Text>
             <Space size={[8, 8]} wrap>
               <Tag color="blue" icon={<FileTextOutlined />}>
                 Markdown
               </Tag>
               <Tag color="geekblue">任务 {context?.jobId.slice(0, 8)}</Tag>
-              {context?.generationMode === 'JOB_ALL' ? (
-                <Tag color="gold">全量漏洞</Tag>
-              ) : (
-                <Tag color="cyan">已选 {context?.findingCount} 条</Tag>
-              )}
+              <Tag color={context?.reportType === 'SCAN' ? 'gold' : 'cyan'}>
+                {context?.reportType === 'SCAN' ? `扫描报告 · ${context?.findingCount ?? 0} 条漏洞` : '单漏洞报告'}
+              </Tag>
             </Space>
-            {previewFindings.length > 0 && (
-              <Space direction="vertical" size={4}>
-                {previewFindings.map((item) => (
-                  <Text key={item.id} type="secondary">
-                    - {getVulnDisplayName(item)}
-                  </Text>
-                ))}
-                {context && context.findingCount > previewFindings.length && (
-                  <Text type="secondary">
-                    以及其余 {context.findingCount - previewFindings.length} 条漏洞
-                  </Text>
-                )}
-              </Space>
-            )}
+            {context?.reportType === 'FINDING' && context.finding ? (
+              <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                当前漏洞：{getVulnDisplayName(context.finding)}
+              </Paragraph>
+            ) : null}
           </Space>
         </div>
 
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
           <div
             style={{
               display: 'flex',
@@ -171,7 +149,7 @@ const ReportGenerationModal: React.FC<ReportGenerationModalProps> = ({
             <div>
               <Text strong>包含源码片段</Text>
               <br />
-              <Text type="secondary">将漏洞附近的关键代码片段写入报告正文。</Text>
+              <Text type="secondary">在技术附录中带上关键代码片段，方便研发快速定位。</Text>
             </div>
             <Switch checked={includeCodeSnippets} onChange={setIncludeCodeSnippets} />
           </div>
@@ -187,7 +165,7 @@ const ReportGenerationModal: React.FC<ReportGenerationModalProps> = ({
             <div>
               <Text strong>包含 AI 研判段落</Text>
               <br />
-              <Text type="secondary">若漏洞已有 AI 研判结果，则一并写入报告。</Text>
+              <Text type="secondary">若已有 AI 研判结果，则将摘要并入技术附录。</Text>
             </div>
             <Switch checked={includeAISections} onChange={setIncludeAISections} />
           </div>

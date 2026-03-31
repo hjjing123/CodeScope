@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import io
 import uuid
 from pathlib import Path
-from zipfile import ZipFile
 
 import pytest
 from sqlalchemy import select
@@ -174,7 +172,7 @@ def _write_snapshot_source(
     target.write_text(content, encoding="utf-8")
 
 
-def test_create_selected_finding_report_and_download_single_file(
+def test_create_finding_report_preview_and_download_single_file(
     client, db_session, report_storage_settings
 ):
     user = _create_user(
@@ -229,11 +227,10 @@ def test_create_selected_finding_report_and_download_single_file(
         headers=_auth_header(tokens["access_token"]),
         json={
             "report_type": "FINDING",
-            "generation_mode": "FINDING_SET",
             "project_id": str(project.id),
             "version_id": str(version.id),
             "job_id": str(scan_job.id),
-            "finding_ids": [str(finding.id)],
+            "finding_id": str(finding.id),
             "options": {
                 "format": "MARKDOWN",
                 "include_code_snippets": True,
@@ -244,8 +241,8 @@ def test_create_selected_finding_report_and_download_single_file(
 
     assert response.status_code == 202
     payload = response.json()["data"]
-    assert payload["expected_report_count"] == 1
-    assert payload["bundle_expected"] is False
+    assert payload["report_type"] == "FINDING"
+    assert payload["finding_count"] == 1
 
     report_job_id = payload["report_job_id"]
     job_resp = client.get(
@@ -264,22 +261,21 @@ def test_create_selected_finding_report_and_download_single_file(
     assert reports_resp.status_code == 200
     reports_payload = reports_resp.json()["data"]
     assert reports_payload["total"] == 1
-    report_id = reports_payload["items"][0]["id"]
-    assert reports_payload["items"][0]["finding_id"] == str(finding.id)
+    report_item = reports_payload["items"][0]
+    report_id = report_item["id"]
+    assert report_item["report_type"] == "FINDING"
+    assert "SQL Injection" in report_item["title"]
 
-    artifacts_resp = client.get(
-        f"/api/v1/jobs/{report_job_id}/artifacts",
+    content_resp = client.get(
+        f"/api/v1/reports/{report_id}/content",
         headers=_auth_header(tokens["access_token"]),
     )
-    assert artifacts_resp.status_code == 200
-    artifact_names = {
-        item["display_name"] for item in artifacts_resp.json()["data"]["items"]
-    }
-    assert "manifest.json" in artifact_names
-    assert any(
-        name.startswith("generated/") and name.endswith(".md")
-        for name in artifact_names
-    )
+    assert content_resp.status_code == 200
+    content_payload = content_resp.json()["data"]
+    assert content_payload["report"]["title"] == report_item["title"]
+    assert "## 一、结论摘要" in content_payload["content"]
+    assert "## 四、修复建议" in content_payload["content"]
+    assert "SQL Injection" in content_payload["content"]
 
     download_resp = client.get(
         f"/api/v1/reports/{report_id}/download",
@@ -287,21 +283,20 @@ def test_create_selected_finding_report_and_download_single_file(
     )
     assert download_resp.status_code == 200
     text = download_resp.content.decode("utf-8")
-    assert "# Finding Report" in text
-    assert str(finding.id) in text
-    assert "SQL Injection" in text
+    assert "单漏洞安全报告" in text
+    assert "## 五、技术附录" in text
 
 
-def test_create_job_all_report_generates_bundle_artifact(
+def test_create_scan_report_generates_single_report(
     client, db_session, report_storage_settings
 ):
     user = _create_user(
         db_session,
-        email="bundle-user@example.com",
+        email="scan-report-user@example.com",
         password="Password123!",
         role=SystemRole.USER.value,
     )
-    project = _create_project(db_session, name="bundle-project")
+    project = _create_project(db_session, name="scan-report-project")
     version = _create_version(db_session, project_id=project.id)
     _add_member(
         db_session,
@@ -315,7 +310,7 @@ def test_create_job_all_report_generates_bundle_artifact(
         version_id=version.id,
         created_by=user.id,
     )
-    finding_a = _create_finding(
+    _create_finding(
         db_session,
         project_id=project.id,
         version_id=version.id,
@@ -325,7 +320,7 @@ def test_create_job_all_report_generates_bundle_artifact(
         suffix="Order",
         line_start=7,
     )
-    finding_b = _create_finding(
+    _create_finding(
         db_session,
         project_id=project.id,
         version_id=version.id,
@@ -338,30 +333,12 @@ def test_create_job_all_report_generates_bundle_artifact(
     _write_snapshot_source(
         version.id,
         relative_path="src/main/java/com/demo/OrderController.java",
-        content=(
-            "package com.demo;\n\n"
-            "import org.springframework.web.bind.annotation.GetMapping;\n\n"
-            "public class OrderController {\n"
-            '  @GetMapping("/orders")\n'
-            "  public String listOrders(String sort) {\n"
-            '    return "orders" + sort;\n'
-            "  }\n"
-            "}\n"
-        ),
+        content="public class OrderController {}\n",
     )
     _write_snapshot_source(
         version.id,
         relative_path="src/main/java/com/demo/UploadController.java",
-        content=(
-            "package com.demo;\n\n"
-            "import org.springframework.web.bind.annotation.PostMapping;\n\n"
-            "public class UploadController {\n"
-            '  @PostMapping("/upload")\n'
-            "  public String upload(String name) {\n"
-            "    return name;\n"
-            "  }\n"
-            "}\n"
-        ),
+        content="public class UploadController {}\n",
     )
 
     tokens = _login(client, email=user.email, password="Password123!")
@@ -369,8 +346,7 @@ def test_create_job_all_report_generates_bundle_artifact(
         "/api/v1/report-jobs",
         headers=_auth_header(tokens["access_token"]),
         json={
-            "report_type": "FINDING",
-            "generation_mode": "JOB_ALL",
+            "report_type": "SCAN",
             "project_id": str(project.id),
             "version_id": str(version.id),
             "job_id": str(scan_job.id),
@@ -384,48 +360,36 @@ def test_create_job_all_report_generates_bundle_artifact(
 
     assert response.status_code == 202
     payload = response.json()["data"]
-    assert payload["expected_report_count"] == 2
-    assert payload["bundle_expected"] is True
+    assert payload["report_type"] == "SCAN"
+    assert payload["finding_count"] == 2
 
     report_job_id = payload["report_job_id"]
-    artifacts_resp = client.get(
-        f"/api/v1/jobs/{report_job_id}/artifacts",
+    reports_resp = client.get(
+        "/api/v1/reports",
+        headers=_auth_header(tokens["access_token"]),
+        params={"report_job_id": report_job_id},
+    )
+    assert reports_resp.status_code == 200
+    reports_payload = reports_resp.json()["data"]
+    assert reports_payload["total"] == 1
+    report_item = reports_payload["items"][0]
+    assert report_item["report_type"] == "SCAN"
+    assert report_item["finding_count"] == 2
+    assert "扫描安全报告" in report_item["title"]
+
+    content_resp = client.get(
+        f"/api/v1/reports/{report_item['id']}/content",
         headers=_auth_header(tokens["access_token"]),
     )
-    assert artifacts_resp.status_code == 200
-    artifacts = artifacts_resp.json()["data"]["items"]
-    bundle_item = next(item for item in artifacts if item["artifact_type"] == "BUNDLE")
-    manifest_item = next(
-        item for item in artifacts if item["artifact_type"] == "MANIFEST"
-    )
-    assert manifest_item["display_name"] == "manifest.json"
-
-    bundle_resp = client.get(
-        f"/api/v1/jobs/{report_job_id}/artifacts/{bundle_item['artifact_id']}/download",
-        headers=_auth_header(tokens["access_token"]),
-    )
-    assert bundle_resp.status_code == 200
-    with ZipFile(io.BytesIO(bundle_resp.content)) as archive:
-        names = set(archive.namelist())
-        assert "manifest.json" in names
-        assert (
-            len(
-                [
-                    name
-                    for name in names
-                    if name.startswith("generated/") and name.endswith(".md")
-                ]
-            )
-            == 2
-        )
-
-    reports = db_session.scalars(
-        select(Report).where(Report.report_job_id == uuid.UUID(report_job_id))
-    ).all()
-    assert {item.finding_id for item in reports} == {finding_a.id, finding_b.id}
+    assert content_resp.status_code == 200
+    content = content_resp.json()["data"]["content"]
+    assert "## 三、风险总览" in content
+    assert "## 六、技术附录" in content
+    assert "SQL Injection" in content
+    assert "Arbitrary File Upload" in content
 
 
-def test_create_selected_report_rejects_cross_job_findings(
+def test_create_finding_report_rejects_cross_job_finding(
     client, db_session, report_storage_settings
 ):
     user = _create_user(
@@ -476,11 +440,10 @@ def test_create_selected_report_rejects_cross_job_findings(
         headers=_auth_header(tokens["access_token"]),
         json={
             "report_type": "FINDING",
-            "generation_mode": "FINDING_SET",
             "project_id": str(project.id),
             "version_id": str(version.id),
             "job_id": str(scan_job_a.id),
-            "finding_ids": [str(finding.id)],
+            "finding_id": str(finding.id),
         },
     )
 
@@ -539,11 +502,10 @@ def test_report_download_requires_membership(
         headers=_auth_header(owner_tokens["access_token"]),
         json={
             "report_type": "FINDING",
-            "generation_mode": "FINDING_SET",
             "project_id": str(project.id),
             "version_id": str(version.id),
             "job_id": str(scan_job.id),
-            "finding_ids": [str(finding.id)],
+            "finding_id": str(finding.id),
             "options": {
                 "format": "MARKDOWN",
                 "include_code_snippets": False,
@@ -564,3 +526,254 @@ def test_report_download_requires_membership(
         headers=_auth_header(outsider_tokens["access_token"]),
     )
     assert download_resp.status_code == 403
+
+
+def test_report_content_requires_membership(
+    client, db_session, report_storage_settings
+):
+    owner = _create_user(
+        db_session,
+        email="owner-preview@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    outsider = _create_user(
+        db_session,
+        email="outsider-preview@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    project = _create_project(db_session, name="preview-project")
+    version = _create_version(db_session, project_id=project.id)
+    _add_member(
+        db_session,
+        user_id=owner.id,
+        project_id=project.id,
+        project_role=ProjectRole.OWNER.value,
+    )
+    scan_job = _create_scan_job(
+        db_session,
+        project_id=project.id,
+        version_id=version.id,
+        created_by=owner.id,
+    )
+    _create_finding(
+        db_session,
+        project_id=project.id,
+        version_id=version.id,
+        job_id=scan_job.id,
+        rule_key="any_mybatis_sqli",
+        vuln_type="SQLI",
+        suffix="Preview",
+        line_start=7,
+    )
+    _write_snapshot_source(
+        version.id,
+        relative_path="src/main/java/com/demo/PreviewController.java",
+        content="public class PreviewController {}\n",
+    )
+
+    owner_tokens = _login(client, email=owner.email, password="Password123!")
+    create_resp = client.post(
+        "/api/v1/report-jobs",
+        headers=_auth_header(owner_tokens["access_token"]),
+        json={
+            "report_type": "SCAN",
+            "project_id": str(project.id),
+            "version_id": str(version.id),
+            "job_id": str(scan_job.id),
+        },
+    )
+    assert create_resp.status_code == 202
+    report_job_id = create_resp.json()["data"]["report_job_id"]
+    report = db_session.scalar(
+        select(Report).where(Report.report_job_id == uuid.UUID(report_job_id))
+    )
+    assert report is not None
+
+    outsider_tokens = _login(client, email=outsider.email, password="Password123!")
+    preview_resp = client.get(
+        f"/api/v1/reports/{report.id}/content",
+        headers=_auth_header(outsider_tokens["access_token"]),
+    )
+    assert preview_resp.status_code == 403
+
+
+def test_delete_report_removes_file_and_cleans_last_report_job_artifacts(
+    client, db_session, report_storage_settings
+):
+    owner = _create_user(
+        db_session,
+        email="delete-report@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    project = _create_project(db_session, name="delete-report-project")
+    version = _create_version(db_session, project_id=project.id)
+    _add_member(
+        db_session,
+        user_id=owner.id,
+        project_id=project.id,
+        project_role=ProjectRole.OWNER.value,
+    )
+    scan_job = _create_scan_job(
+        db_session,
+        project_id=project.id,
+        version_id=version.id,
+        created_by=owner.id,
+    )
+    finding = _create_finding(
+        db_session,
+        project_id=project.id,
+        version_id=version.id,
+        job_id=scan_job.id,
+        rule_key="any_mybatis_sqli",
+        vuln_type="SQLI",
+        suffix="Delete",
+        line_start=7,
+    )
+    _write_snapshot_source(
+        version.id,
+        relative_path="src/main/java/com/demo/DeleteController.java",
+        content="public class DeleteController {}\n",
+    )
+
+    owner_tokens = _login(client, email=owner.email, password="Password123!")
+    create_resp = client.post(
+        "/api/v1/report-jobs",
+        headers=_auth_header(owner_tokens["access_token"]),
+        json={
+            "report_type": "FINDING",
+            "project_id": str(project.id),
+            "version_id": str(version.id),
+            "job_id": str(scan_job.id),
+            "finding_id": str(finding.id),
+            "options": {
+                "format": "MARKDOWN",
+                "include_code_snippets": False,
+                "include_ai_sections": False,
+            },
+        },
+    )
+    assert create_resp.status_code == 202
+    report_job_id = create_resp.json()["data"]["report_job_id"]
+    report = db_session.scalar(
+        select(Report).where(Report.report_job_id == uuid.UUID(report_job_id))
+    )
+    assert report is not None
+
+    report_id = report.id
+    report_job_uuid = uuid.UUID(report_job_id)
+    report_root = Path(get_settings().report_storage_root) / "jobs" / report_job_id
+    report_log_root = Path(get_settings().report_log_root) / report_job_id
+    assert report_root.exists()
+    assert report_log_root.exists()
+
+    delete_resp = client.delete(
+        f"/api/v1/reports/{report_id}",
+        headers=_auth_header(owner_tokens["access_token"]),
+    )
+    assert delete_resp.status_code == 200
+    payload = delete_resp.json()["data"]
+    assert payload["ok"] is True
+    assert payload["report_id"] == str(report_id)
+    assert payload["remaining_report_count"] == 0
+    assert payload["deleted_report_file"] is True
+    assert payload["deleted_report_job_root"] is True
+    assert payload["deleted_report_job_files_count"] >= 1
+
+    assert db_session.get(Report, report_id) is None
+    report_job = db_session.get(Job, report_job_uuid)
+    assert report_job is not None
+    assert report_job.result_summary["report_id"] is None
+    assert report_job.result_summary["report_ids"] == []
+    assert report_job.result_summary["manifest_object_key"] is None
+    assert not report_root.exists()
+    assert not report_log_root.exists()
+
+    get_resp = client.get(
+        f"/api/v1/reports/{report_id}",
+        headers=_auth_header(owner_tokens["access_token"]),
+    )
+    assert get_resp.status_code == 404
+    preview_resp = client.get(
+        f"/api/v1/reports/{report_id}/content",
+        headers=_auth_header(owner_tokens["access_token"]),
+    )
+    assert preview_resp.status_code == 404
+    download_resp = client.get(
+        f"/api/v1/reports/{report_id}/download",
+        headers=_auth_header(owner_tokens["access_token"]),
+    )
+    assert download_resp.status_code == 404
+
+
+def test_report_delete_requires_membership(client, db_session, report_storage_settings):
+    owner = _create_user(
+        db_session,
+        email="owner-delete-report@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    outsider = _create_user(
+        db_session,
+        email="outsider-delete-report@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    project = _create_project(db_session, name="delete-membership-project")
+    version = _create_version(db_session, project_id=project.id)
+    _add_member(
+        db_session,
+        user_id=owner.id,
+        project_id=project.id,
+        project_role=ProjectRole.OWNER.value,
+    )
+    scan_job = _create_scan_job(
+        db_session,
+        project_id=project.id,
+        version_id=version.id,
+        created_by=owner.id,
+    )
+    finding = _create_finding(
+        db_session,
+        project_id=project.id,
+        version_id=version.id,
+        job_id=scan_job.id,
+        rule_key="any_any_upload",
+        vuln_type="UPLOAD",
+        suffix="ForbiddenDelete",
+        line_start=9,
+    )
+    _write_snapshot_source(
+        version.id,
+        relative_path="src/main/java/com/demo/ForbiddenDeleteController.java",
+        content="public class ForbiddenDeleteController {}\n",
+    )
+
+    owner_tokens = _login(client, email=owner.email, password="Password123!")
+    create_resp = client.post(
+        "/api/v1/report-jobs",
+        headers=_auth_header(owner_tokens["access_token"]),
+        json={
+            "report_type": "FINDING",
+            "project_id": str(project.id),
+            "version_id": str(version.id),
+            "job_id": str(scan_job.id),
+            "finding_id": str(finding.id),
+        },
+    )
+    assert create_resp.status_code == 202
+    report_job_id = create_resp.json()["data"]["report_job_id"]
+    report = db_session.scalar(
+        select(Report).where(Report.report_job_id == uuid.UUID(report_job_id))
+    )
+    assert report is not None
+
+    outsider_tokens = _login(client, email=outsider.email, password="Password123!")
+    delete_resp = client.delete(
+        f"/api/v1/reports/{report.id}",
+        headers=_auth_header(outsider_tokens["access_token"]),
+    )
+    assert delete_resp.status_code == 403
+    assert db_session.get(Report, report.id) is not None

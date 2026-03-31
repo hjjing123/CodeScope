@@ -1,9 +1,8 @@
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import { useAuthStore } from './store/useAuthStore';
-import { hasAuthToken } from './utils/authToken';
 import { ConfigProvider, Spin } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import 'dayjs/locale/zh-cn';
@@ -19,6 +18,8 @@ const ScanTasksPage = lazy(() => import('./pages/ScanTasksPage'));
 const FindingsPage = lazy(() => import('./pages/FindingsPage'));
 const AICenterPage = lazy(() => import('./pages/AICenterPage'));
 const ReportsPage = lazy(() => import('./pages/ReportsPage'));
+const UserManagementPage = lazy(() => import('./pages/UserManagementPage'));
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 
 const RouteFallback = () => (
   <div style={{ display: 'flex', justifyContent: 'center', padding: '48px 0' }}>
@@ -28,14 +29,41 @@ const RouteFallback = () => (
 
 // Protected Route Component
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated } = useAuthStore();
-  if (!isAuthenticated && !hasAuthToken()) {
+  const { isAuthenticated, isAuthReady } = useAuthStore();
+  if (!isAuthReady) {
+    return <RouteFallback />;
+  }
+  if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
   }
   return <>{children}</>;
 };
 
+// Admin Route Component
+const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, isAuthenticated, isAuthReady } = useAuthStore();
+  if (!isAuthReady) {
+    return <RouteFallback />;
+  }
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+  if (!user) {
+    return <RouteFallback />;
+  }
+  if (user?.role !== 'Admin') {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+};
+
 function App() {
+  const initializeAuth = useAuthStore((state) => state.initializeAuth);
+
+  useEffect(() => {
+    void initializeAuth();
+  }, [initializeAuth]);
+
   return (
     <ConfigProvider
       locale={zhCN}
@@ -67,6 +95,14 @@ function App() {
             }
           >
             <Route index element={<Navigate to="dashboard" replace />} />
+            <Route
+              path="dashboard"
+              element={
+                <Suspense fallback={<RouteFallback />}>
+                  <DashboardPage />
+                </Suspense>
+              }
+            />
             <Route
               path="code-management"
               element={
@@ -111,16 +147,28 @@ function App() {
                 </Suspense>
               }
             />
+            <Route
+              path="users"
+              element={
+                <AdminRoute>
+                  <Suspense fallback={<RouteFallback />}>
+                    <UserManagementPage />
+                  </Suspense>
+                </AdminRoute>
+              }
+            />
             {workspaceSections
               .filter(
                 (section) =>
+                  section.key !== 'dashboard' &&
                   section.key !== 'projects' &&
                   section.key !== 'scans' &&
                   section.key !== 'log-center' &&
                   section.key !== 'rules' &&
                   section.key !== 'findings' &&
                   section.key !== 'ai-center' &&
-                  section.key !== 'reports'
+                  section.key !== 'reports' &&
+                  section.key !== 'users'
               )
               .map((section) => (
                 <Route

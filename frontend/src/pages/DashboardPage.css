@@ -1,0 +1,109 @@
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap');
+
+.dashboard-container {
+  padding: 16px;
+  background-color: #F8FAFC;
+  min-height: 100%;
+  font-family: 'Fira Sans', sans-serif;
+  color: #1E3A8A;
+}
+
+.dashboard-container .ant-card {
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  border: 1px solid #e2e8f0;
+  transition: box-shadow 0.2s ease-in-out;
+}
+
+.dashboard-container .ant-card:hover {
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.dashboard-container .ant-statistic-title {
+  color: #64748b;
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.dashboard-container .ant-statistic-content-value {
+  font-family: 'Fira Code', monospace;
+  color: #1E40AF;
+  font-weight: 700;
+  font-size: 28px;
+}
+
+.dashboard-section-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1E3A8A;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dashboard-list-item {
+  padding: 12px 0;
+  border-bottom: 1px solid #f1f5f9;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  border-radius: 4px;
+}
+
+.dashboard-list-item:hover {
+  background-color: #f0f9ff;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.dashboard-list-item:last-child {
+  border-bottom: none;
+}
+
+.dashboard-item-title {
+  font-weight: 500;
+  color: #0f172a;
+  margin-bottom: 4px;
+  font-family: 'Fira Code', monospace;
+  font-size: 13px;
+}
+
+.dashboard-item-meta {
+  font-size: 12px;
+  color: #64748b;
+  display: flex;
+  gap: 12px;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.status-high { background-color: #fee2e2; color: #b91c1c; }
+.status-medium { background-color: #fef3c7; color: #b45309; }
+.status-low { background-color: #f0fdf4; color: #15803d; }
+.status-info { background-color: #e0f2fe; color: #0369a1; }
+
+.timeline-container {
+  margin-top: 16px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding-right: 16px;
+}
+
+/* Custom scrollbar for timeline */
+.timeline-container::-webkit-scrollbar {
+  width: 6px;
+}
+.timeline-container::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+.timeline-container::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}

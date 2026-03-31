@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Layout, message, Button, Space, Typography } from 'antd';
 import type { TablePaginationConfig } from 'antd/es/table';
 import type { FilterValue, SorterResult } from 'antd/es/table/interface';
@@ -15,7 +15,6 @@ import ReportGenerationModal, {
 import { createAssessmentSeedChatSession } from '../services/ai';
 import { FindingService } from '../services/findings';
 import { ReportService } from '../services/report';
-import { triggerBrowserDownload } from '../utils/download';
 import type {
   Finding,
   FindingListParams,
@@ -34,29 +33,13 @@ const REPORT_POLL_RETRY_INTERVAL_MS = 5000;
 interface LatestReportJobState {
   reportJobId: string;
   jobId: string;
-  bundleExpected: boolean;
+  reportType: 'SCAN' | 'FINDING';
   status: 'SUBMITTED' | 'SUCCEEDED' | 'FAILED';
   failureMessage?: string;
-  bundleArtifactId?: string;
-  bundleFileName?: string;
+  reportId?: string;
 }
 
 const getShortId = (value: string) => value.slice(0, 8);
-
-const getArtifactFileName = (displayName?: string) => {
-  if (!displayName) {
-    return 'report_bundle.zip';
-  }
-  const segments = displayName.split('/');
-  return segments[segments.length - 1] || 'report_bundle.zip';
-};
-
-const getErrorMessage = (error: unknown, fallback: string) => {
-  const responseData = (error as {
-    response?: { data?: { error?: { message?: string }; message?: string } };
-  })?.response?.data;
-  return responseData?.error?.message || responseData?.message || fallback;
-};
 
 const getReportNoticePalette = (status: LatestReportJobState['status']) => {
   if (status === 'FAILED') {
@@ -102,11 +85,9 @@ const FindingsPage: React.FC = () => {
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
   const [detailVisible, setDetailVisible] = useState(false);
   const [openingFindingId, setOpeningFindingId] = useState<string | null>(null);
-  const [selectedFindingIds, setSelectedFindingIds] = useState<string[]>([]);
   const [reportModalContext, setReportModalContext] =
     useState<ReportGenerationContext | null>(null);
   const [latestReportJob, setLatestReportJob] = useState<LatestReportJobState | null>(null);
-  const [downloadingBundleJobId, setDownloadingBundleJobId] = useState<string | null>(null);
 
   const [loadingScans, setLoadingScans] = useState(false);
   const [scanData, setScanData] = useState<ScanResultRow[]>([]);
@@ -120,12 +101,13 @@ const FindingsPage: React.FC = () => {
   const isMountedRef = useRef(true);
 
   useEffect(() => {
+    const timers = reportPollTimersRef.current;
     return () => {
       isMountedRef.current = false;
-      reportPollTimersRef.current.forEach((timer) => {
+      timers.forEach((timer) => {
         window.clearTimeout(timer);
       });
-      reportPollTimersRef.current.clear();
+      timers.clear();
     };
   }, []);
 
@@ -183,24 +165,6 @@ const FindingsPage: React.FC = () => {
     void fetchScanResults();
   }, [fetchScanResults]);
 
-  useEffect(() => {
-    setSelectedFindingIds((prev) => {
-      const availableIds = new Set(findingsData.map((item) => item.id));
-      return prev.filter((id) => availableIds.has(id));
-    });
-  }, [findingsData]);
-
-  useEffect(() => {
-    if (viewMode !== 'finding-list') {
-      setSelectedFindingIds([]);
-    }
-  }, [viewMode]);
-
-  const selectedFindings = useMemo(() => {
-    const selectedIdSet = new Set(selectedFindingIds);
-    return findingsData.filter((item) => selectedIdSet.has(item.id));
-  }, [findingsData, selectedFindingIds]);
-
   const stopReportJobPolling = useCallback((reportJobId: string) => {
     const timer = reportPollTimersRef.current.get(reportJobId);
     if (timer !== undefined) {
@@ -225,8 +189,11 @@ const FindingsPage: React.FC = () => {
   );
 
   const handleViewReportCenter = useCallback(
-    (reportJobId?: string, jobId?: string) => {
+    (reportId?: string, reportJobId?: string, jobId?: string) => {
       const params = new URLSearchParams();
+      if (reportId) {
+        params.set('report_id', reportId);
+      }
       if (reportJobId) {
         params.set('report_job_id', reportJobId);
       }
@@ -238,26 +205,6 @@ const FindingsPage: React.FC = () => {
     },
     [navigate]
   );
-
-  const handleDownloadBundle = useCallback(async (
-    reportJobId: string,
-    artifactId: string,
-    fileName: string
-  ) => {
-    try {
-      setDownloadingBundleJobId(reportJobId);
-      const blob = await ReportService.downloadReportJobArtifact(reportJobId, artifactId);
-      triggerBrowserDownload(blob, fileName);
-      message.success('打包文件下载开始');
-    } catch (error) {
-      console.error('Failed to download bundle artifact:', error);
-      message.error(getErrorMessage(error, '打包文件下载失败'));
-    } finally {
-      if (isMountedRef.current) {
-        setDownloadingBundleJobId(null);
-      }
-    }
-  }, []);
 
   const monitorReportJob = useCallback(
     (payload: ReportJobTriggerPayload) => {
@@ -275,18 +222,16 @@ const FindingsPage: React.FC = () => {
           }
 
           if (job.status === 'SUCCEEDED') {
-            let bundleArtifactId: string | undefined;
-            let bundleFileName: string | undefined;
-
-            if (payload.bundle_expected) {
-              try {
-                const artifacts = await ReportService.listReportJobArtifacts(payload.report_job_id);
-                const bundle = artifacts.items.find((item) => item.artifact_type === 'BUNDLE');
-                bundleArtifactId = bundle?.artifact_id;
-                bundleFileName = getArtifactFileName(bundle?.display_name);
-              } catch (error) {
-                console.warn('Failed to load report artifacts:', error);
-              }
+            let reportId: string | undefined;
+            try {
+              const reports = await ReportService.listReports({
+                report_job_id: payload.report_job_id,
+                page: 1,
+                page_size: 1,
+              });
+              reportId = reports.items[0]?.id;
+            } catch (error) {
+              console.warn('Failed to load generated report:', error);
             }
 
             setLatestReportJob((current) => {
@@ -297,16 +242,11 @@ const FindingsPage: React.FC = () => {
               return {
                 ...current,
                 status: 'SUCCEEDED',
-                bundleArtifactId,
-                bundleFileName,
+                reportId,
               };
             });
 
-            message.success(
-              payload.bundle_expected && bundleArtifactId
-                ? '报告已生成，打包文件已就绪。'
-                : '报告已生成，可前往报告中心查看。'
-            );
+            message.success('报告已生成，可前往报告中心预览。');
             return;
           }
 
@@ -327,8 +267,8 @@ const FindingsPage: React.FC = () => {
             };
           });
           message.error(failureMessage);
-        } catch (error) {
-          console.warn('Failed to poll report job:', error);
+        } catch {
+          console.warn('Failed to poll report job');
           scheduleReportJobPolling(
             payload.report_job_id,
             poll,
@@ -341,35 +281,6 @@ const FindingsPage: React.FC = () => {
     },
     [scheduleReportJobPolling, stopReportJobPolling]
   );
-
-  const buildFindingSetContext = useCallback((items: Finding[]) => {
-    if (items.length === 0) {
-      message.warning('请先选择至少一条漏洞');
-      return null;
-    }
-
-    const seed = items[0];
-    const mixedJobs = items.some(
-      (item) =>
-        item.project_id !== seed.project_id ||
-        item.version_id !== seed.version_id ||
-        item.job_id !== seed.job_id
-    );
-
-    if (mixedJobs) {
-      message.warning('仅支持同一扫描任务下的漏洞批量生成报告');
-      return null;
-    }
-
-    return {
-      projectId: seed.project_id,
-      versionId: seed.version_id,
-      jobId: seed.job_id,
-      generationMode: 'FINDING_SET' as const,
-      findings: items,
-      findingCount: items.length,
-    };
-  }, []);
 
   const handleFindingFilterChange = (newFilters: FindingListParams) => {
     setFindingFilters((prev) => ({ ...prev, ...newFilters, page: 1 }));
@@ -414,28 +325,26 @@ const FindingsPage: React.FC = () => {
       setOpeningFindingId(finding.id);
       const result = await createAssessmentSeedChatSession(finding.id);
       navigate(`/ai-center?tab=workspace&finding_id=${finding.id}&session_id=${result.session_id}`);
-    } catch (error) {
+    } catch {
       message.error('打开 AI 承接会话失败');
     } finally {
       setOpeningFindingId(null);
     }
   };
 
-  const handleOpenSelectedReportModal = useCallback(() => {
-    const context = buildFindingSetContext(selectedFindings);
-    if (context) {
-      setReportModalContext(context);
-    }
-  }, [buildFindingSetContext, selectedFindings]);
-
   const handleOpenSingleReportModal = useCallback(
     (finding: Finding) => {
-      const context = buildFindingSetContext([finding]);
-      if (context) {
-        setReportModalContext(context);
-      }
+      setReportModalContext({
+        reportType: 'FINDING',
+        projectId: finding.project_id,
+        versionId: finding.version_id,
+        jobId: finding.job_id,
+        findingId: finding.id,
+        finding,
+        findingCount: 1,
+      });
     },
-    [buildFindingSetContext]
+    []
   );
 
   const handleOpenJobAllReportModal = useCallback(() => {
@@ -446,11 +355,11 @@ const FindingsPage: React.FC = () => {
     }
 
     setReportModalContext({
+      reportType: 'SCAN',
       projectId: seedFinding.project_id,
       versionId: seedFinding.version_id,
       jobId: seedFinding.job_id,
-      generationMode: 'JOB_ALL',
-      findings: findingsData,
+      finding: null,
       findingCount: findingsTotal,
     });
   }, [findingFilters.job_id, findingsData, findingsTotal]);
@@ -461,10 +370,9 @@ const FindingsPage: React.FC = () => {
       setLatestReportJob({
         reportJobId: payload.report_job_id,
         jobId: context.jobId,
-        bundleExpected: payload.bundle_expected,
+        reportType: payload.report_type,
         status: 'SUBMITTED',
       });
-      setSelectedFindingIds([]);
       message.success(`已提交报告任务 ${getShortId(payload.report_job_id)}，正在后台生成。`);
       monitorReportJob(payload);
     },
@@ -556,36 +464,17 @@ const FindingsPage: React.FC = () => {
                       {latestReportJob.status === 'SUBMITTED'
                         ? '任务已提交，正在后台生成。'
                         : latestReportJob.status === 'SUCCEEDED'
-                          ? latestReportJob.bundleExpected
-                            ? latestReportJob.bundleArtifactId
-                              ? '报告已生成，可直接下载打包文件或进入报告中心查看。'
-                              : '报告已生成，可进入报告中心查看导出记录。'
-                            : '报告已生成，可进入报告中心下载。'
+                          ? '报告已生成，可进入报告中心预览或下载。'
                           : latestReportJob.failureMessage || '报告生成失败，请稍后重试。'}
                     </Text>
                   </Space>
                   <Space wrap>
-                    {latestReportJob.status === 'SUCCEEDED' &&
-                      latestReportJob.bundleArtifactId &&
-                      latestReportJob.bundleFileName && (
-                        <Button
-                          loading={downloadingBundleJobId === latestReportJob.reportJobId}
-                          onClick={() =>
-                            void handleDownloadBundle(
-                              latestReportJob.reportJobId,
-                              latestReportJob.bundleArtifactId as string,
-                              latestReportJob.bundleFileName as string
-                            )
-                          }
-                        >
-                          下载打包文件
-                        </Button>
-                      )}
                     <Button
                       type="primary"
                       ghost
                       onClick={() =>
                         handleViewReportCenter(
+                          latestReportJob.reportId,
                           latestReportJob.reportJobId,
                           latestReportJob.jobId
                         )
@@ -612,13 +501,6 @@ const FindingsPage: React.FC = () => {
               }}
             >
               <Space wrap>
-                <Button
-                  icon={<FileTextOutlined />}
-                  disabled={selectedFindingIds.length === 0}
-                  onClick={handleOpenSelectedReportModal}
-                >
-                  生成选中报告
-                </Button>
                 {findingFilters.job_id && (
                   <Button
                     type="primary"
@@ -633,9 +515,6 @@ const FindingsPage: React.FC = () => {
               </Space>
 
               <Space wrap>
-                {selectedFindingIds.length > 0 && (
-                  <Text type="secondary">已选 {selectedFindingIds.length} 项</Text>
-                )}
                 <Button type="link" onClick={() => handleViewReportCenter()}>
                   查看报告中心
                 </Button>
@@ -654,8 +533,6 @@ const FindingsPage: React.FC = () => {
                 void handleOpenAIReview(record);
               }}
               openingFindingId={openingFindingId}
-              selectedRowKeys={selectedFindingIds}
-              onSelectionChange={setSelectedFindingIds}
             />
           </div>
         </>

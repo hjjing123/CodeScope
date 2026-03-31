@@ -99,6 +99,8 @@ _AUDIT_ACTION_META: dict[str, AuditActionMeta] = {
         "report.dispatch.failed", "报告派发失败", "report"
     ),
     "report.downloaded": AuditActionMeta("report.downloaded", "下载报告", "report"),
+    "report.deleted": AuditActionMeta("report.deleted", "删除报告", "report"),
+    "user.delete": AuditActionMeta("user.delete", "删除用户", "user"),
     "user.update": AuditActionMeta("user.update", "更新用户信息", "user"),
     "log.delete": AuditActionMeta("log.delete", "删除日志", "log"),
 }

@@ -1,7 +1,8 @@
 import request from '../utils/request';
 import type {
+  ReportContentPayload,
+  ReportDeletePayload,
   ReportJobCreateRequest,
-  ReportJobArtifactListPayload,
   ReportJobTriggerPayload,
   ReportListParams,
   ReportListPayload,
@@ -25,25 +26,24 @@ export class ReportService {
     return res.data;
   }
 
+  static async getReportContent(reportId: string): Promise<ReportContentPayload> {
+    const res = await request.get(`/reports/${reportId}/content`);
+    return res.data;
+  }
+
   static async downloadReport(reportId: string): Promise<Blob> {
     return request.get<Blob, Blob>(`/reports/${reportId}/download`, {
       responseType: 'blob',
     });
   }
 
+  static async deleteReport(reportId: string): Promise<ReportDeletePayload> {
+    const res = await request.delete(`/reports/${reportId}`);
+    return res.data;
+  }
+
   static async getReportJob(jobId: string): Promise<Job> {
     const res = await request.get(`/jobs/${jobId}`);
     return res.data;
-  }
-
-  static async listReportJobArtifacts(jobId: string): Promise<ReportJobArtifactListPayload> {
-    const res = await request.get(`/jobs/${jobId}/artifacts`);
-    return res.data;
-  }
-
-  static async downloadReportJobArtifact(jobId: string, artifactId: string): Promise<Blob> {
-    return request.get<Blob, Blob>(`/jobs/${jobId}/artifacts/${artifactId}/download`, {
-      responseType: 'blob',
-    });
   }
 }
