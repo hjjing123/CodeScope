@@ -833,6 +833,92 @@ def test_normalize_external_finding_payload_supports_relative_snapshot_root(
     assert normalized["paths"][0]["steps"][0]["file"] == "src/Main.java"
 
 
+def test_normalize_finding_drafts_prefers_explicit_severity() -> None:
+    drafts = scan_service_module._normalize_finding_drafts(
+        findings=[
+            {
+                "rule_key": "any_any_xss",
+                "severity": "low",
+                "file_path": "src/Main.java",
+            }
+        ],
+        rule_meta_by_key={
+            "any_any_xss": SimpleNamespace(
+                enabled=True,
+                active_version=3,
+                vuln_type="XSS",
+                default_severity="HIGH",
+            )
+        },
+    )
+
+    assert len(drafts) == 1
+    assert drafts[0]["severity"] == "LOW"
+
+
+def test_normalize_finding_drafts_uses_rule_default_severity_when_missing() -> None:
+    drafts = scan_service_module._normalize_finding_drafts(
+        findings=[
+            {
+                "rule_key": "other_fastjson_deserialization",
+                "file_path": "src/Main.java",
+            }
+        ],
+        rule_meta_by_key={
+            "other_fastjson_deserialization": SimpleNamespace(
+                enabled=True,
+                active_version=1,
+                vuln_type="DESERIALIZATION",
+                default_severity="HIGH",
+            )
+        },
+    )
+
+    assert len(drafts) == 1
+    assert drafts[0]["severity"] == "HIGH"
+
+
+def test_normalize_finding_drafts_infers_severity_from_rule_key_when_meta_missing() -> None:
+    drafts = scan_service_module._normalize_finding_drafts(
+        findings=[
+            {
+                "rule_key": "any_any_xxe",
+                "file_path": "src/Main.java",
+            }
+        ],
+        rule_meta_by_key={},
+    )
+
+    assert len(drafts) == 1
+    assert drafts[0]["severity"] == "HIGH"
+
+
+def test_normalize_finding_drafts_falls_back_to_med_when_sources_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(scan_service_module, "infer_rule_severity", lambda _rule_key: "??")
+
+    drafts = scan_service_module._normalize_finding_drafts(
+        findings=[
+            {
+                "rule_key": "custom_safe_rule",
+                "file_path": "src/Main.java",
+            }
+        ],
+        rule_meta_by_key={
+            "custom_safe_rule": SimpleNamespace(
+                enabled=True,
+                active_version=1,
+                vuln_type="CUSTOM",
+                default_severity="unknown",
+            )
+        },
+    )
+
+    assert len(drafts) == 1
+    assert drafts[0]["severity"] == "MED"
+
+
 def test_refine_external_finding_paths_with_runtime_replaces_structural_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1288,6 +1374,76 @@ def test_persist_external_finding_live_replaces_weaker_duplicate(
     assert len(stored) == 1
     assert stored[0].file_path == "src/dao/ProductOrderMapper.java"
     assert stored[0].evidence_json["dedupe_score"] == 72
+
+
+def test_persist_external_finding_live_uses_rule_default_severity_when_missing(
+    db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = Project(name="demo")
+    db_session.add(project)
+    db_session.flush()
+    version = Version(project_id=project.id, name="v1", status="READY")
+    db_session.add(version)
+    db_session.flush()
+    job = Job(
+        project_id=project.id,
+        version_id=version.id,
+        job_type=JobType.SCAN.value,
+        status=JobStatus.RUNNING.value,
+        stage=JobStage.QUERY.value,
+        payload={},
+        result_summary={},
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        scan_service_module,
+        "process_external_finding_candidate",
+        lambda **kwargs: {
+            "rule_key": "other_fastjson_deserialization",
+            "file_path": "src/Main.java",
+            "line_start": 42,
+            "line_end": 42,
+            "source_file": "src/Main.java",
+            "source_line": 12,
+            "sink_file": "src/Main.java",
+            "sink_line": 42,
+            "vuln_type": "DESERIALIZATION",
+            "has_path": False,
+            "path_length": None,
+            "paths": [],
+            "evidence": {"repair_status": "node_only"},
+        },
+    )
+    monkeypatch.setattr(
+        scan_service_module,
+        "get_rules_by_keys",
+        lambda rule_keys: {
+            "other_fastjson_deserialization": SimpleNamespace(
+                enabled=True,
+                active_version=1,
+                vuln_type="DESERIALIZATION",
+                default_severity="HIGH",
+            )
+        },
+    )
+
+    persisted = scan_service_module._persist_external_finding_live(
+        job=job,
+        db_bind=db_session.get_bind(),
+        raw_finding={"rule_key": "other_fastjson_deserialization"},
+        seen_fingerprints=None,
+    )
+
+    stored = (
+        db_session.query(scan_service_module.Finding).filter_by(job_id=job.id).all()
+    )
+
+    assert persisted is not None
+    assert persisted["finding"]["severity"] == "HIGH"
+    assert len(stored) == 1
+    assert stored[0].severity == "HIGH"
 
 
 def test_persist_external_finding_live_keeps_different_business_entries(

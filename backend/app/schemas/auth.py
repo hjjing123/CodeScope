@@ -12,7 +12,7 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=1)
 
 
@@ -25,7 +25,7 @@ class RevokeRequest(BaseModel):
 
 
 class FirstPasswordResetRequest(BaseModel):
-    email: EmailStr
+    email: str = Field(min_length=1, max_length=255)
     current_password: str = Field(min_length=1)
     new_password: str = Field(min_length=8)
 
@@ -41,7 +41,7 @@ class AuthTokenPayload(BaseModel):
 
 class RegisterPayload(BaseModel):
     id: uuid.UUID
-    email: EmailStr
+    email: str
     display_name: str
     role: str
     is_active: bool
@@ -50,7 +50,7 @@ class RegisterPayload(BaseModel):
 
 class MePayload(BaseModel):
     id: uuid.UUID
-    email: EmailStr
+    email: str
     display_name: str
     role: str
     is_active: bool

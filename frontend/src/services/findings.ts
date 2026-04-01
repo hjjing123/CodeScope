@@ -43,7 +43,9 @@ export class FindingService {
     findingId: string,
     payload: FindingLabelRequest
   ): Promise<FindingLabelActionResponse> {
-    const res = await request.post(`/findings/${findingId}/labels`, payload);
+    const res = await request.post(`/findings/${findingId}/labels`, payload, {
+      skipErrorToast: true,
+    });
     return res.data;
   }
 

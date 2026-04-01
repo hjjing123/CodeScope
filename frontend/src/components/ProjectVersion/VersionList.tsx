@@ -9,6 +9,7 @@ import {
   RadarChartOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import dayjs from 'dayjs';
 import { useNavigate } from 'react-router-dom';
 import { getVersions, deleteVersion, triggerGitSync } from '../../services/projectVersion';
 import type { Version } from '../../types/projectVersion';
@@ -24,6 +25,19 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
     return error.message;
   }
   return fallback;
+};
+
+const formatDateTime = (value: string | null | undefined): string => {
+  if (!value) {
+    return '-';
+  }
+
+  const parsed = dayjs(value);
+  if (!parsed.isValid()) {
+    return '-';
+  }
+
+  return parsed.format('YYYY-MM-DD HH:mm:ss');
 };
 
 const VersionList: React.FC<VersionListProps> = ({ projectId }) => {
@@ -123,7 +137,7 @@ const VersionList: React.FC<VersionListProps> = ({ projectId }) => {
       title: '创建时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      render: (date) => new Date(date).toLocaleString(),
+      render: (date) => formatDateTime(date),
     },
     {
       title: '操作',

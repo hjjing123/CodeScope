@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 class UserUpdateRequest(BaseModel):
@@ -14,7 +14,7 @@ class UserUpdateRequest(BaseModel):
 
 class UserPayload(BaseModel):
     id: uuid.UUID
-    email: EmailStr
+    email: str
     display_name: str
     role: str
     is_active: bool

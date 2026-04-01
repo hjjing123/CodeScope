@@ -111,14 +111,11 @@ const Login: React.FC = () => {
             className="login-form"
           >
             <Form.Item
-              label="邮箱"
+              label="账号"
               name="email"
-              rules={[
-                { required: true, message: '请输入邮箱!' },
-                { type: 'email', message: '请输入有效的邮箱地址!' },
-              ]}
+              rules={[{ required: true, message: '请输入账号!' }]}
             >
-              <Input prefix={<UserOutlined />} placeholder="name@example.com" autoComplete="username" />
+              <Input prefix={<UserOutlined />} placeholder="请输入邮箱" autoComplete="username" />
             </Form.Item>
 
             <Form.Item
@@ -159,9 +156,6 @@ const Login: React.FC = () => {
               </Button>
             </Form.Item>
 
-            <div className="login-hint">
-              <Text>演示账号: admin@example.com / admin123</Text>
-            </div>
           </Form>
         </Card>
       </div>

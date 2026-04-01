@@ -105,42 +105,6 @@
   display: none;
 }
 
-.workspace-sider-footer {
-  margin-top: auto;
-  padding: 12px;
-  border-radius: 6px;
-  border: 1px solid var(--cs-border);
-  background: var(--cs-surface-muted);
-}
-
-.workspace-footer-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  color: var(--cs-primary);
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  font-size: 12px;
-  font-family: var(--cs-font-mono);
-  font-weight: 600;
-}
-
-.workspace-footer-title {
-  margin: 10px 0 4px;
-  color: var(--cs-text);
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.workspace-footer-text {
-  margin: 0;
-  color: var(--cs-text-muted);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
 .workspace-main {
   background: transparent !important;
 }

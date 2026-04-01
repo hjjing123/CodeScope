@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Alert, Form, Input, Modal, Select, Switch, message } from 'antd';
+import { Form, Input, Modal, Select, Switch, message } from 'antd';
 import { getProjects, getVersions } from '../../services/projectVersion';
 import AIScanModelSelectFields from '../AI/AIScanModelSelectFields';
 import { getMyAIModelCatalog } from '../../services/ai';
@@ -302,15 +302,8 @@ const CreateScanModal: React.FC<CreateScanModalProps> = ({
               background: 'linear-gradient(180deg, rgba(240,249,255,0.75), rgba(255,255,255,0.98))',
             }}
           >
-            <Alert
-              type="info"
-              showIcon
-              message="扫描完成后会异步创建 AI 研判任务"
-              description="AI 不会阻塞扫描结果入库；如果 AI 不可用，扫描任务仍会正常完成。"
-              style={{ marginBottom: 16 }}
-            />
             {loadingAIOptions ? (
-              <Alert type="info" showIcon message="正在加载 AI 模型目录" />
+              <div style={{ color: '#1677ff' }}>正在加载 AI 模型目录</div>
             ) : (
               <AIScanModelSelectFields
                 catalog={aiModelCatalog}

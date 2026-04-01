@@ -248,9 +248,9 @@ export const workspaceSections: WorkspaceSection[] = [
     tagline: '统一检索操作与任务日志，快速复盘问题链路。',
     badge: 'Trace Hub',
     intro:
-      '日志中心用于调试和审计复盘。通过 request_id、task_id 和 project_id 组合检索，可以在同一页面快速还原系统行为与任务执行过程。',
+      '日志中心当前聚焦系统操作日志与任务日志，帮助管理员快速筛选审计记录并按任务阶段定位执行问题。',
     icon: FileSearchOutlined,
-    highlights: ['操作日志快速检索与筛选', '任务阶段日志按类型聚合与下载', '关联追踪支持 request_id 全链路回放'],
+    highlights: ['操作日志快速检索与筛选', '任务阶段日志按类型聚合与下载', '支持单条与批量清理历史日志'],
     blocks: [
       {
         title: '系统日志检索区',
@@ -263,9 +263,9 @@ export const workspaceSections: WorkspaceSection[] = [
         status: 'next',
       },
       {
-        title: '关联追踪区',
-        description: '根据 request_id/task_id 聚合审计、运行与任务日志元数据，便于定位根因。',
-        status: 'planned',
+        title: '日志清理区',
+        description: '支持删除单条日志或按当前筛选条件批量清理无效历史记录。',
+        status: 'next',
       },
     ],
     nextAction: '优先接通告警联动与保存检索视图能力，提升日常排障效率。',

@@ -53,7 +53,11 @@ from app.services.ai_service import (
 from app.services.artifact_service import delete_scan_job_artifacts
 from app.services.finding_presentation_service import build_finding_presentation
 from app.services.job_stream_service import append_job_stream_event
-from app.services.rule_file_service import get_rules_by_keys, normalize_rule_selector
+from app.services.rule_file_service import (
+    get_rules_by_keys,
+    infer_rule_severity,
+    normalize_rule_selector,
+)
 from app.services.scan_runtime_service import (
     acquire_scan_runtime_slot,
     release_scan_runtime_slot,
@@ -1005,6 +1009,7 @@ FINDING_DRAFT_REQUIRED_KEYS: tuple[str, ...] = (
     "evidence",
     "trace_summary",
 )
+VALID_FINDING_SEVERITIES = frozenset(item.value for item in FindingSeverity)
 
 LLM_TEXT_MAX_LENGTH = 800
 LLM_EVIDENCE_ITEM_MAX_LENGTH = 200
@@ -3097,7 +3102,7 @@ def _run_external_scan(*, job: Job, db: Session) -> ScanExecutionResult:
         append_log=lambda stage, message: _append_scan_log(
             job_id=job.id, stage=stage, message=message
         ),
-        severity_from_rule_key=_severity_from_rule_key,
+        severity_from_rule_key=infer_rule_severity,
         on_stage_status=_on_external_stage_status,
         on_rule_finding=_on_live_rule_finding,
     )
@@ -3457,9 +3462,34 @@ def _normalize_evidence_payload(value: object) -> dict[str, object]:
     return {}
 
 
+def _normalize_finding_severity_value(value: object) -> str | None:
+    normalized = str(value or "").strip().upper()
+    if normalized in VALID_FINDING_SEVERITIES:
+        return normalized
+    return None
+
+
+def _resolve_finding_severity(
+    *, finding_data: dict[str, object], rule_key: str, meta: Any
+) -> str:
+    explicit_severity = _normalize_finding_severity_value(finding_data.get("severity"))
+    if explicit_severity is not None:
+        return explicit_severity
+    if meta is not None:
+        default_severity = _normalize_finding_severity_value(
+            getattr(meta, "default_severity", None)
+        )
+        if default_severity is not None:
+            return default_severity
+    inferred_severity = _normalize_finding_severity_value(infer_rule_severity(rule_key))
+    if inferred_severity is not None:
+        return inferred_severity
+    return FindingSeverity.MED.value
+
+
 def _normalize_finding_drafts(
     *,
-    findings: list[dict[str, str]],
+    findings: list[dict[str, object]],
     rule_meta_by_key: dict[str, Any],
 ) -> list[dict[str, object]]:
     drafts: list[dict[str, object]] = []
@@ -3502,7 +3532,11 @@ def _normalize_finding_drafts(
                 str(finding_data.get("vuln_type") or "").strip()
                 or (meta.vuln_type if meta is not None else None)
             ),
-            "severity": str(finding_data.get("severity") or FindingSeverity.MED.value),
+            "severity": _resolve_finding_severity(
+                finding_data=finding_data,
+                rule_key=rule_key,
+                meta=meta,
+            ),
             "file_path": fallback_path,
             "line_start": line_start,
             "line_end": line_end,
@@ -3551,7 +3585,7 @@ def _is_valid_finding_draft(draft: dict[str, object]) -> bool:
     if not isinstance(rule_key, str) or not rule_key.strip():
         return False
     severity = str(draft.get("severity") or "").strip().upper()
-    if severity not in {item.value for item in FindingSeverity}:
+    if severity not in VALID_FINDING_SEVERITIES:
         return False
     return True
 
@@ -4367,17 +4401,3 @@ def _truncate_text(value: str, max_length: int) -> str:
     if len(value) <= max_length:
         return value
     return value[: max(0, max_length - 1)] + "…"
-
-
-def _severity_from_rule_key(rule_key: str) -> str:
-    key = rule_key.lower()
-    if any(
-        token in key
-        for token in ["rce", "cmdi", "deserialization", "sqli", "sql", "xxe"]
-    ):
-        return FindingSeverity.HIGH.value
-    if any(
-        token in key for token in ["xss", "ssrf", "upload", "pathtraver", "redirect"]
-    ):
-        return FindingSeverity.MED.value
-    return FindingSeverity.LOW.value

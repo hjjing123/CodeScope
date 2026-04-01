@@ -138,7 +138,7 @@ Notes:
 - If you run Celery manually on Windows, add `-P solo` (example: `uv run celery -A app.worker.celery_app worker -Q import,scan,env,report,low -l info -P solo`).
 - Task logs are stored in MinIO (`CODESCOPE_TASK_LOG_STORAGE_BACKEND=minio`), metadata is indexed in PostgreSQL (`task_log_index`).
 - `alembic upgrade head` seeds/normalizes a bootstrap admin for local login debug.
-- Default bootstrap admin credentials are `admin@example.com / admin123` (override via `CODESCOPE_BOOTSTRAP_ADMIN_*`).
+- Default bootstrap admin credentials are `admin / admin123` (override via `CODESCOPE_BOOTSTRAP_ADMIN_*`).
 - Backend serves frontend `dist` for `/`, `/login`, `/register`, `/dashboard`; run `npm run build` in `frontend/` before direct access via `http://127.0.0.1:8000/`.
 - In frontend dev-proxy mode, tune `FRONTEND_DEV_PROXY_TIMEOUT_SECONDS` if the first Vite render is slow while dependencies are being optimized.
 - Public registration endpoint: `POST /api/v1/auth/register` (`role` supports `Admin` / `User`).

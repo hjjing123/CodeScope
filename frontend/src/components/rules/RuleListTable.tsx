@@ -11,6 +11,7 @@ interface RuleListTableProps {
   dataSource: Rule[];
   togglingRuleKeys: string[];
   pagination: TablePaginationConfig;
+  canManageRules?: boolean;
   onChange: (
     pagination: TablePaginationConfig,
     filters: Record<string, FilterValue | null>,
@@ -35,6 +36,7 @@ const RuleListTable: React.FC<RuleListTableProps> = ({
   dataSource,
   togglingRuleKeys,
   pagination,
+  canManageRules = true,
   onChange,
   onEdit,
   onToggle,
@@ -47,7 +49,9 @@ const RuleListTable: React.FC<RuleListTableProps> = ({
       dataIndex: 'name',
       key: 'name',
       render: (text, record) => (
-        <a onClick={() => onEdit(record)} style={{ fontWeight: 500 }}>{text}</a>
+        <a onClick={() => onEdit(record)} style={{ fontWeight: 500 }}>
+          {text}
+        </a>
       ),
     },
     {
@@ -60,9 +64,7 @@ const RuleListTable: React.FC<RuleListTableProps> = ({
       title: '严重程度',
       dataIndex: 'default_severity',
       key: 'default_severity',
-      render: (text) => (
-        <Tag color={severityColors[text] || 'default'}>{text}</Tag>
-      ),
+      render: (text) => <Tag color={severityColors[text] || 'default'}>{text}</Tag>,
       filters: [
         { text: 'Critical', value: 'CRITICAL' },
         { text: 'High', value: 'HIGH' },
@@ -71,25 +73,29 @@ const RuleListTable: React.FC<RuleListTableProps> = ({
         { text: 'Info', value: 'INFO' },
       ],
     },
-    {
-      title: '状态',
-      dataIndex: 'enabled',
-      key: 'enabled',
-      render: (enabled, record) => (
-        <Switch
-          checked={enabled}
-          loading={togglingRuleKeys.includes(record.rule_key)}
-          disabled={togglingRuleKeys.includes(record.rule_key)}
-          onChange={(checked) => onToggle(record, checked)}
-          checkedChildren="启用"
-          unCheckedChildren="禁用"
-        />
-      ),
-      filters: [
-        { text: '启用', value: true },
-        { text: '禁用', value: false },
-      ],
-    },
+    ...(canManageRules
+      ? [
+          {
+            title: '状态',
+            dataIndex: 'enabled',
+            key: 'enabled',
+            render: (enabled: boolean, record: Rule) => (
+              <Switch
+                checked={enabled}
+                loading={togglingRuleKeys.includes(record.rule_key)}
+                disabled={togglingRuleKeys.includes(record.rule_key)}
+                onChange={(checked) => onToggle(record, checked)}
+                checkedChildren="启用"
+                unCheckedChildren="禁用"
+              />
+            ),
+            filters: [
+              { text: '启用', value: true },
+              { text: '禁用', value: false },
+            ],
+          },
+        ]
+      : []),
     {
       title: '最后更新',
       dataIndex: 'updated_at',
@@ -97,28 +103,28 @@ const RuleListTable: React.FC<RuleListTableProps> = ({
       render: (text) => dayjs(text).format('YYYY-MM-DD HH:mm:ss'),
       sorter: (a, b) => dayjs(a.updated_at).unix() - dayjs(b.updated_at).unix(),
     },
-    {
-      title: '操作',
-      key: 'action',
-      render: (_, record) => (
-        <Space size="middle">
-          <Tooltip title="编辑规则">
-            <Button
-              type="text"
-              icon={<EditOutlined />}
-              onClick={() => onEdit(record)}
-            />
-          </Tooltip>
-          <Tooltip title="查看版本">
-            <Button
-              type="text"
-              icon={<HistoryOutlined />}
-              onClick={() => onViewVersions(record)}
-            />
-          </Tooltip>
-        </Space>
-      ),
-    },
+    ...(canManageRules
+      ? [
+          {
+            title: '操作',
+            key: 'action',
+            render: (_: unknown, record: Rule) => (
+              <Space size="middle">
+                <Tooltip title="编辑规则">
+                  <Button type="text" icon={<EditOutlined />} onClick={() => onEdit(record)} />
+                </Tooltip>
+                <Tooltip title="查看版本">
+                  <Button
+                    type="text"
+                    icon={<HistoryOutlined />}
+                    onClick={() => onViewVersions(record)}
+                  />
+                </Tooltip>
+              </Space>
+            ),
+          },
+        ]
+      : []),
   ];
 
   return (

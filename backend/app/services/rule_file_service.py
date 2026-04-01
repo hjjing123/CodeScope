@@ -1008,7 +1008,7 @@ def _infer_vuln_type(rule_key: str) -> str:
     return "CUSTOM"
 
 
-def _infer_severity(rule_key: str) -> str:
+def infer_rule_severity(rule_key: str) -> str:
     key = rule_key.lower()
     if any(
         token in key
@@ -1031,6 +1031,10 @@ def _infer_severity(rule_key: str) -> str:
     ):
         return "MED"
     return "LOW"
+
+
+def _infer_severity(rule_key: str) -> str:
+    return infer_rule_severity(rule_key)
 
 
 def _version_uuid(rule_key: str, version: int, status: str) -> uuid.UUID:

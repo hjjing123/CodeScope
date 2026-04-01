@@ -30,6 +30,14 @@ const REPORT_TERMINAL_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'CANCELED', 'TI
 const REPORT_POLL_INTERVAL_MS = 3000;
 const REPORT_POLL_RETRY_INTERVAL_MS = 5000;
 
+const sanitizeFindingFilters = (filters: FindingListParams): FindingListParams => {
+  const { version_id: _versionId, q: _query, ...rest } = filters;
+  const sanitizedEntries = Object.entries(rest).filter(
+    ([, value]) => value !== undefined && value !== null && value !== ''
+  );
+  return Object.fromEntries(sanitizedEntries) as FindingListParams;
+};
+
 interface LatestReportJobState {
   reportJobId: string;
   jobId: string;
@@ -77,11 +85,13 @@ const FindingsPage: React.FC = () => {
   const [loadingFindings, setLoadingFindings] = useState(false);
   const [findingsData, setFindingsData] = useState<Finding[]>([]);
   const [findingsTotal, setFindingsTotal] = useState(0);
-  const [findingFilters, setFindingFilters] = useState<FindingListParams>({
-    page: 1,
-    page_size: 20,
-    job_id: initialJobId || undefined,
-  });
+  const [findingFilters, setFindingFilters] = useState<FindingListParams>(
+    sanitizeFindingFilters({
+      page: 1,
+      page_size: 20,
+      job_id: initialJobId || undefined,
+    })
+  );
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
   const [detailVisible, setDetailVisible] = useState(false);
   const [openingFindingId, setOpeningFindingId] = useState<string | null>(null);
@@ -115,7 +125,12 @@ const FindingsPage: React.FC = () => {
     const jobId = searchParams.get('job_id');
     if (jobId) {
       setViewMode('finding-list');
-      setFindingFilters((prev) => ({ ...prev, job_id: jobId }));
+      setFindingFilters((prev) =>
+        sanitizeFindingFilters({
+          ...prev,
+          job_id: jobId,
+        })
+      );
     } else {
       setViewMode('scan-list');
     }
@@ -128,7 +143,7 @@ const FindingsPage: React.FC = () => {
 
     setLoadingFindings(true);
     try {
-      const res = await FindingService.listFindings(findingFilters);
+      const res = await FindingService.listFindings(sanitizeFindingFilters(findingFilters));
       setFindingsData(res.items);
       setFindingsTotal(res.total);
     } catch (error) {
@@ -283,7 +298,16 @@ const FindingsPage: React.FC = () => {
   );
 
   const handleFindingFilterChange = (newFilters: FindingListParams) => {
-    setFindingFilters((prev) => ({ ...prev, ...newFilters, page: 1 }));
+    setFindingFilters((prev) =>
+      sanitizeFindingFilters({
+        page: 1,
+        page_size: prev.page_size,
+        job_id: prev.job_id,
+        sort_by: prev.sort_by,
+        sort_order: prev.sort_order,
+        ...newFilters,
+      })
+    );
   };
 
   const handleFindingTableChange = (

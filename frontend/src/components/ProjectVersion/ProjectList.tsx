@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Table, Space, Button, Popconfirm, message, Tooltip, Badge } from 'antd';
 import { PlusOutlined, DeleteOutlined, FolderOpenOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType, TableProps } from 'antd/es/table';
+import dayjs from 'dayjs';
 import { useNavigate } from 'react-router-dom';
 import type { Project } from '../../types/projectVersion';
 import { getProjects, deleteProject } from '../../services/projectVersion';
@@ -16,6 +17,19 @@ interface PaginationState {
   pageSize: number;
   total: number;
 }
+
+const formatDateTime = (value: string | null | undefined): string => {
+  if (!value) {
+    return '-';
+  }
+
+  const parsed = dayjs(value);
+  if (!parsed.isValid()) {
+    return '-';
+  }
+
+  return parsed.format('YYYY-MM-DD HH:mm:ss');
+};
 
 const ProjectList: React.FC<ProjectListProps> = ({ onProjectSelect }) => {
   const [data, setData] = useState<Project[]>([]);
@@ -122,7 +136,7 @@ const ProjectList: React.FC<ProjectListProps> = ({ onProjectSelect }) => {
       dataIndex: 'created_at',
       key: 'created_at',
       width: 180,
-      render: (text: string) => new Date(text).toLocaleString(),
+      render: (text: string) => formatDateTime(text),
     },
     {
       title: '操作',

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Checkbox, Modal, Space, Typography } from 'antd';
+import { Checkbox, Modal, Space, Typography } from 'antd';
 import type { Job, ScanJobDeleteTarget } from '../../types/scan';
 
 const { Paragraph, Text } = Typography;
@@ -9,6 +9,11 @@ const DELETE_OPTIONS: Array<{
   label: string;
   description: string;
 }> = [
+  {
+    value: 'job_record',
+    label: '任务记录',
+    description: '硬删除任务记录和步骤记录；若选择该项，将自动删除 Findings。',
+  },
   {
     value: 'logs',
     label: '运行日志',
@@ -28,11 +33,6 @@ const DELETE_OPTIONS: Array<{
     value: 'findings',
     label: '扫描结果 Findings',
     description: '删除本次扫描写入的漏洞结果及其标签。',
-  },
-  {
-    value: 'job_record',
-    label: '任务记录',
-    description: '硬删除任务记录和步骤记录；若选择该项，将自动删除 Findings。',
   },
 ];
 
@@ -107,13 +107,6 @@ const DeleteScanJobModal: React.FC<DeleteScanJobModalProps> = ({
             '请选择要删除的内容。'
           )}
         </Paragraph>
-
-        <Alert
-          type="warning"
-          showIcon
-          message="代码快照归档不会被删除"
-          description="快照归档属于版本级资源，不在本次删除范围内。"
-        />
 
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           {DELETE_OPTIONS.map((option) => {

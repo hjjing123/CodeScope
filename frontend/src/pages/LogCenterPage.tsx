@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dayjs } from 'dayjs';
 import dayjs from 'dayjs';
 import {
@@ -10,6 +10,7 @@ import {
   DatePicker,
   Descriptions,
   Drawer,
+  Empty,
   Form,
   Input,
   InputNumber,
@@ -19,7 +20,6 @@ import {
   Select,
   Space,
   Statistic,
-  Switch,
   Table,
   Tabs,
   Tag,
@@ -27,11 +27,10 @@ import {
   message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { useSearchParams } from 'react-router-dom';
 import {
-  CopyOutlined,
   DeleteOutlined,
   DownloadOutlined,
-  LinkOutlined,
   ReloadOutlined,
   SearchOutlined,
 } from '@ant-design/icons';
@@ -40,30 +39,28 @@ import {
   deleteSingleLog,
   downloadTaskLogs,
   getAuditLogs,
-  getLogCorrelation,
   getTaskLogs,
 } from '../services/logCenter';
+import { ScanService } from '../services/scan';
+import { useAuthStore } from '../store/useAuthStore';
+import { logCenterActionGroupOptions } from './logCenterOptions';
 import type {
   AuditLogItem,
   AuditLogQuery,
-  CorrelationQuery,
-  LogCorrelationPayload,
   TaskLogPayload,
   TaskType,
 } from '../types/logCenter';
+import type { Job } from '../types/scan';
 
 const { RangePicker } = DatePicker;
 const { Text } = Typography;
 
-type LogCenterTabKey = 'system' | 'task' | 'correlation';
+type LogCenterTabKey = 'system' | 'task';
 
 interface AuditFilterValues {
-  project_id?: string;
-  action?: string;
   action_group?: string;
   result?: string;
   keyword?: string;
-  high_value_only?: boolean;
   range?: [Dayjs, Dayjs];
 }
 
@@ -74,17 +71,18 @@ interface TaskFilterValues {
   tail: number;
 }
 
-interface CorrelationFilterValues {
-  task_type?: TaskType;
-  task_id?: string;
-  project_id?: string;
-  limit?: number;
-  range?: [Dayjs, Dayjs];
-}
-
 type LogDetailState = { kind: 'audit'; record: AuditLogItem } | null;
 
 const DEFAULT_PAGE_SIZE = 20;
+const DEFAULT_TASK_TYPE: TaskType = 'SCAN';
+const DEFAULT_TASK_TAIL = 200;
+const MAX_TASK_TAIL = 5000;
+const DEFAULT_TASK_FORM_VALUES: TaskFilterValues = {
+  task_type: DEFAULT_TASK_TYPE,
+  task_id: '',
+  stage: undefined,
+  tail: DEFAULT_TASK_TAIL,
+};
 
 const normalizeText = (value: string | undefined): string | undefined => {
   const next = (value ?? '').trim();
@@ -116,25 +114,20 @@ const formatJson = (value: Record<string, unknown>): string => {
   return JSON.stringify(value, null, 2);
 };
 
-const copyText = async (label: string, value: string): Promise<void> => {
-  if (!value) {
-    return;
+const parseTaskTail = (rawValue: string | null): number => {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return DEFAULT_TASK_TAIL;
   }
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    message.success(`${label} 已复制`);
-    return;
-  }
+  return Math.min(parsed, MAX_TASK_TAIL);
+};
 
-  const input = document.createElement('textarea');
-  input.value = value;
-  input.style.position = 'fixed';
-  input.style.opacity = '0';
-  document.body.appendChild(input);
-  input.select();
-  document.execCommand('copy');
-  document.body.removeChild(input);
-  message.success(`${label} 已复制`);
+const resolveTabKey = (rawValue: string | null): LogCenterTabKey =>
+  rawValue === 'task' ? 'task' : 'system';
+
+const resolveTaskType = (rawValue: string | null): TaskType => {
+  const normalized = (rawValue ?? '').trim().toUpperCase() as TaskType;
+  return ['SCAN', 'IMPORT', 'SELFTEST'].includes(normalized) ? normalized : DEFAULT_TASK_TYPE;
 };
 
 const taskTypeOptions: { label: string; value: TaskType }[] = [
@@ -143,18 +136,24 @@ const taskTypeOptions: { label: string; value: TaskType }[] = [
   { label: '规则自测', value: 'SELFTEST' },
 ];
 
-const actionGroupOptions = [
-  { label: '认证与会话', value: 'AUTH' },
-  { label: '权限与成员', value: 'PERMISSION' },
-  { label: '项目与代码快照', value: 'PROJECT' },
-  { label: '规则与规则集', value: 'RULE' },
-  { label: '导入与扫描', value: 'SCAN' },
-  { label: '结果与修复', value: 'FINDING' },
-  { label: '报告与导出', value: 'REPORT' },
-  { label: '任务与执行器', value: 'TASK' },
-  { label: '平台运维', value: 'SYSTEM' },
-  { label: '其他', value: 'OTHER' },
-];
+const buildLogCenterSearchParams = (
+  tab: LogCenterTabKey,
+  taskQuery: { taskType: TaskType; taskId: string; stage?: string; tail: number } | null
+): URLSearchParams => {
+  const params = new URLSearchParams();
+  params.set('tab', tab);
+  if (!taskQuery) {
+    return params;
+  }
+
+  params.set('task_type', taskQuery.taskType);
+  params.set('task_id', taskQuery.taskId);
+  params.set('tail', String(taskQuery.tail));
+  if (taskQuery.stage) {
+    params.set('stage', taskQuery.stage);
+  }
+  return params;
+};
 
 const resultOptions = [
   { label: '成功', value: 'SUCCEEDED' },
@@ -163,22 +162,22 @@ const resultOptions = [
 
 const hasBatchDeleteCondition = (values: AuditFilterValues): boolean => {
   return Boolean(
-    normalizeText(values.project_id) ||
-      normalizeText(values.keyword) ||
+    normalizeText(values.keyword) ||
       normalizeText(values.action_group) ||
-      values.high_value_only ||
       (values.range && values.range.length === 2)
   );
 };
 
 const LogCenterPage: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<LogCenterTabKey>('system');
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
-  const [refreshIntervalSec, setRefreshIntervalSec] = useState(15);
-  const [lastRefreshTime, setLastRefreshTime] = useState<string>('');
+  const { user } = useAuthStore();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<LogCenterTabKey>(() =>
+    searchParams.get('task_id') ? 'task' : resolveTabKey(searchParams.get('tab'))
+  );
   const [auditForm] = Form.useForm<AuditFilterValues>();
   const [taskForm] = Form.useForm<TaskFilterValues>();
-  const [correlationForm] = Form.useForm<CorrelationFilterValues>();
+  const didHydrateTaskQueryRef = useRef(false);
+  const didLoadRecentScansRef = useRef(false);
 
   const [auditItems, setAuditItems] = useState<AuditLogItem[]>([]);
   const [auditTotal, setAuditTotal] = useState(0);
@@ -193,32 +192,23 @@ const LogCenterPage: React.FC = () => {
   const [taskQuery, setTaskQuery] = useState<
     { taskType: TaskType; taskId: string; stage?: string; tail: number } | null
   >(null);
+  const [recentScans, setRecentScans] = useState<Job[]>([]);
+  const [recentScansLoading, setRecentScansLoading] = useState(false);
+  const [recentScansError, setRecentScansError] = useState<string | null>(null);
+  const canManageAuditLogs = user?.role === 'Admin';
 
-  const [correlationLoading, setCorrelationLoading] = useState(false);
-  const [correlationPayload, setCorrelationPayload] = useState<LogCorrelationPayload | null>(null);
-  const [correlationQuery, setCorrelationQuery] = useState<CorrelationQuery | null>(null);
-
-  const activeTotal = auditTotal;
+  const activeTotal = activeTab === 'system' ? auditTotal : taskPayload?.items.length ?? 0;
   const auditFailedCount = auditItems.filter((item) => item.result !== 'SUCCEEDED').length;
-  const auditHighValueCount = auditItems.filter((item) => item.is_high_value).length;
   const taskStageCount = taskPayload?.items.length ?? 0;
-  const correlationHitCount =
-    (correlationPayload?.audit_logs.length ?? 0) +
-    (correlationPayload?.task_log_previews.length ?? 0);
-
-  const markRefreshed = () => {
-    setLastRefreshTime(dayjs().format('HH:mm:ss'));
-  };
+  const taskLineCount = taskPayload?.items.reduce((total, item) => total + item.line_count, 0) ?? 0;
+  const taskTruncatedCount = taskPayload?.items.filter((item) => item.truncated).length ?? 0;
 
   const loadAuditLogs = async (page = 1, pageSize = auditPageSize): Promise<void> => {
     const values = auditForm.getFieldsValue();
     const params: AuditLogQuery = {
-      project_id: normalizeText(values.project_id),
-      action: normalizeText(values.action),
       action_group: normalizeText(values.action_group),
       result: normalizeText(values.result),
       keyword: normalizeText(values.keyword),
-      high_value_only: Boolean(values.high_value_only),
       page,
       page_size: pageSize,
       ...toRangeParams(values.range),
@@ -231,11 +221,55 @@ const LogCenterPage: React.FC = () => {
       setAuditTotal(response.data.total);
       setAuditPage(page);
       setAuditPageSize(pageSize);
-      markRefreshed();
     } finally {
       setSystemLoading(false);
     }
   };
+
+  const loadRecentScans = useCallback(async (): Promise<void> => {
+    setRecentScansLoading(true);
+    setRecentScansError(null);
+    try {
+      const response = await ScanService.listJobs({ page: 1, page_size: 5 });
+      setRecentScans(response.items ?? []);
+    } catch {
+      setRecentScansError('Failed to load recent scan tasks. You can still search by task ID.');
+    } finally {
+      setRecentScansLoading(false);
+    }
+  }, []);
+
+  const executeTaskSearch = useCallback(
+    async (
+      query: { taskType: TaskType; taskId: string; stage?: string; tail: number },
+      options: { syncUrl?: boolean } = {}
+    ): Promise<void> => {
+      const { syncUrl = true } = options;
+
+      setTaskLoading(true);
+      try {
+        const response = await getTaskLogs(query.taskType, query.taskId, {
+          stage: query.stage,
+          tail: query.tail,
+        });
+        setTaskPayload(response.data);
+        setTaskQuery(query);
+        if (syncUrl) {
+          setSearchParams(buildLogCenterSearchParams('task', query));
+        }
+      } finally {
+        setTaskLoading(false);
+      }
+    },
+    [setSearchParams]
+  );
+
+  const resetTaskLogView = useCallback((): void => {
+    setTaskPayload(null);
+    setTaskQuery(null);
+    taskForm.resetFields();
+    setSearchParams(buildLogCenterSearchParams('task', null));
+  }, [setSearchParams, taskForm]);
 
   const handleDeleteLog = (record: AuditLogItem): void => {
     Modal.confirm({
@@ -270,10 +304,8 @@ const LogCenterPage: React.FC = () => {
       onOk: async () => {
         const response = await batchDeleteLogs({
           log_kind: 'OPERATION',
-          project_id: normalizeText(values.project_id),
           keyword: normalizeText(values.keyword),
           action_group: normalizeText(values.action_group),
-          high_value_only: Boolean(values.high_value_only),
           ...toRangeParams(values.range),
         });
         message.success(`已删除 ${response.data.deleted_count} 条日志`);
@@ -282,11 +314,59 @@ const LogCenterPage: React.FC = () => {
     });
   };
 
-  React.useEffect(() => {
-    taskForm.setFieldsValue({ task_type: 'SCAN', tail: 200 });
-    correlationForm.setFieldsValue({ limit: 100 });
+  useEffect(() => {
     void loadAuditLogs(1, DEFAULT_PAGE_SIZE);
   }, []);
+
+  useEffect(() => {
+    if (didHydrateTaskQueryRef.current) {
+      return;
+    }
+    didHydrateTaskQueryRef.current = true;
+
+    const taskType = resolveTaskType(searchParams.get('task_type'));
+    const taskId = (searchParams.get('task_id') ?? '').trim();
+    const stage = normalizeText(searchParams.get('stage') ?? undefined);
+    const tail = parseTaskTail(searchParams.get('tail'));
+    const nextTab = taskId ? 'task' : resolveTabKey(searchParams.get('tab'));
+
+    setActiveTab(nextTab);
+    taskForm.setFieldsValue({
+      task_type: taskType,
+      task_id: taskId,
+      stage,
+      tail,
+    });
+
+    if (!taskId) {
+      return;
+    }
+
+    void executeTaskSearch(
+      {
+        taskType,
+        taskId,
+        stage,
+        tail,
+      },
+      { syncUrl: false }
+    );
+  }, [executeTaskSearch, searchParams, taskForm]);
+
+  useEffect(() => {
+    if (activeTab !== 'task' || didLoadRecentScansRef.current) {
+      return;
+    }
+    didLoadRecentScansRef.current = true;
+    void loadRecentScans();
+  }, [activeTab, loadRecentScans]);
+
+  useEffect(() => {
+    if (!didHydrateTaskQueryRef.current || activeTab !== 'task') {
+      return;
+    }
+    setSearchParams(buildLogCenterSearchParams('task', taskQuery));
+  }, [activeTab, setSearchParams, taskQuery]);
 
   const auditColumns: ColumnsType<AuditLogItem> = useMemo(
     () => [
@@ -316,9 +396,6 @@ const LogCenterPage: React.FC = () => {
         render: (value: string) => value || '--',
       },
       {
-        title: '资源',
-      },
-      {
         title: '结果',
         dataIndex: 'result',
         width: 140,
@@ -326,40 +403,6 @@ const LogCenterPage: React.FC = () => {
         render: (value: string) => (
           <Tag color={value === 'SUCCEEDED' ? 'blue' : 'red'}>{value || 'UNKNOWN'}</Tag>
         ),
-      },
-      {
-        title: '高价值',
-        dataIndex: 'is_high_value',
-        width: 110,
-        align: 'center',
-        render: (value: boolean) => (value ? <Tag color="gold">是</Tag> : <Tag>否</Tag>),
-      },
-      {
-        title: 'request_id',
-        dataIndex: 'request_id',
-        width: 220,
-        ellipsis: true,
-        render: (value: string) => (
-          <Button
-            type="link"
-            size="small"
-            style={{ paddingInline: 0, height: 'auto' }}
-            icon={<CopyOutlined />}
-            onClick={(event) => {
-              event.stopPropagation();
-              void copyText('request_id', value);
-            }}
-          >
-            <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>
-          </Button>
-        ),
-      },
-      {
-        title: '错误码',
-        dataIndex: 'error_code',
-        width: 110,
-        align: 'center',
-        render: (value: string | null) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>,
       },
       {
         title: '操作',
@@ -380,12 +423,15 @@ const LogCenterPage: React.FC = () => {
           </Button>
         ),
       },
-    ].filter((column) => {
-      const dataIndex = typeof column.dataIndex === 'string' ? column.dataIndex : undefined;
-      const title = typeof column.title === 'string' ? column.title : undefined;
-      return dataIndex !== 'request_id' && title !== '资源';
-    }) as ColumnsType<AuditLogItem>,
+    ],
     [handleDeleteLog]
+  );
+  const visibleAuditColumns = useMemo(
+    () =>
+      canManageAuditLogs
+        ? auditColumns
+        : auditColumns.filter((column) => column.fixed !== 'right'),
+    [auditColumns, canManageAuditLogs]
   );
 
   const handleTaskSearch = async (values: TaskFilterValues): Promise<void> => {
@@ -395,23 +441,12 @@ const LogCenterPage: React.FC = () => {
       return;
     }
 
-    setTaskLoading(true);
-    try {
-      const response = await getTaskLogs(values.task_type, taskId, {
-        stage: normalizeText(values.stage),
-        tail: values.tail,
-      });
-      setTaskPayload(response.data);
-      setTaskQuery({
-        taskType: values.task_type,
-        taskId,
-        stage: normalizeText(values.stage),
-        tail: values.tail,
-      });
-      markRefreshed();
-    } finally {
-      setTaskLoading(false);
-    }
+    await executeTaskSearch({
+      taskType: values.task_type,
+      taskId,
+      stage: normalizeText(values.stage),
+      tail: values.tail,
+    });
   };
 
   const handleTaskDownload = async (stage?: string): Promise<void> => {
@@ -424,99 +459,64 @@ const LogCenterPage: React.FC = () => {
     message.success(`已下载 ${downloaded}`);
   };
 
-  const handleCorrelationSearch = async (values: CorrelationFilterValues): Promise<void> => {
-    const taskId = normalizeText(values.task_id);
-    const projectId = normalizeText(values.project_id);
-    if (!taskId && !projectId) {
-      message.warning('请至少填写 task_id 或 project_id');
-      return;
-    }
-
-    if (!taskId && !projectId) {
-      message.warning('请至少填写 task_id 或 project_id');
-      return;
-    }
-
-    setCorrelationLoading(true);
-    try {
-      const response = await getLogCorrelation({
-        task_type: values.task_type,
-        task_id: taskId,
-        project_id: projectId,
-        limit: values.limit,
-        ...toRangeParams(values.range),
-      });
-      setCorrelationQuery({
-        task_type: values.task_type,
-        task_id: taskId,
-        project_id: projectId,
-        limit: values.limit,
-        ...toRangeParams(values.range),
-      });
-      setCorrelationPayload(response.data);
-      markRefreshed();
-    } finally {
-      setCorrelationLoading(false);
-    }
-  };
-
   const runAutoRefresh = async (): Promise<void> => {
     if (activeTab === 'system') {
       await loadAuditLogs(auditPage, auditPageSize);
       return;
     }
 
-    if (activeTab === 'task') {
-      if (!taskQuery) {
-        return;
-      }
-      setTaskLoading(true);
-      try {
-        const response = await getTaskLogs(taskQuery.taskType, taskQuery.taskId, {
-          stage: taskQuery.stage,
-          tail: taskQuery.tail,
-        });
-        setTaskPayload(response.data);
-        markRefreshed();
-      } finally {
-        setTaskLoading(false);
-      }
+    if (!taskQuery) {
       return;
     }
-
-    if (!correlationQuery) {
-      return;
-    }
-    setCorrelationLoading(true);
-    try {
-      const response = await getLogCorrelation(correlationQuery);
-      setCorrelationPayload(response.data);
-      markRefreshed();
-    } finally {
-      setCorrelationLoading(false);
-    }
+    await executeTaskSearch(taskQuery, { syncUrl: false });
   };
 
-  React.useEffect(() => {
-    if (!autoRefreshEnabled) {
+  const handleSelectRecentScan = (job: Job): void => {
+    const nextQuery = {
+      taskType: 'SCAN' as TaskType,
+      taskId: job.id,
+      stage: undefined,
+      tail: DEFAULT_TASK_TAIL,
+    };
+    taskForm.setFieldsValue({
+      task_type: nextQuery.taskType,
+      task_id: nextQuery.taskId,
+      stage: undefined,
+      tail: nextQuery.tail,
+    });
+    void executeTaskSearch(nextQuery);
+  };
+
+  const handleTaskFormValuesChange = (changedValues: Partial<TaskFilterValues>): void => {
+    if (!Object.prototype.hasOwnProperty.call(changedValues, 'task_id')) {
       return;
     }
-    const timer = window.setInterval(() => {
-      void runAutoRefresh();
-    }, refreshIntervalSec * 1000);
 
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [
-    activeTab,
-    autoRefreshEnabled,
-    auditPage,
-    auditPageSize,
-    correlationQuery,
-    refreshIntervalSec,
-    taskQuery,
-  ]);
+    const nextTaskId = typeof changedValues.task_id === 'string' ? changedValues.task_id.trim() : '';
+    if (nextTaskId.length > 0 || (!taskPayload && !taskQuery)) {
+      return;
+    }
+
+    resetTaskLogView();
+  };
+
+  const handleTabChange = (key: string): void => {
+    const nextTab = key as LogCenterTabKey;
+    setActiveTab(nextTab);
+
+    const fallbackTaskId = (searchParams.get('task_id') ?? '').trim();
+    const fallbackTaskQuery =
+      fallbackTaskId.length > 0
+        ? {
+            taskType: resolveTaskType(searchParams.get('task_type')),
+            taskId: fallbackTaskId,
+            stage: normalizeText(searchParams.get('stage') ?? undefined),
+            tail: parseTaskTail(searchParams.get('tail')),
+          }
+        : null;
+
+    setSearchParams(buildLogCenterSearchParams(nextTab, taskQuery ?? fallbackTaskQuery));
+  };
 
   const taskLogItems = useMemo(() => {
     if (!taskPayload) {
@@ -588,79 +588,46 @@ const LogCenterPage: React.FC = () => {
 
   return (
     <div style={{ padding: '24px', background: '#fff', minHeight: '100%' }}>
-      <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
+      <div style={{ marginBottom: 24 }}>
         <h2 style={{ margin: 0 }}>日志中心</h2>
         
-        <Space size={16} wrap>
-          <Space size={8}>
-            <Text type="secondary" style={{ fontSize: 13 }}>自动刷新</Text>
-            <Switch
-              checked={autoRefreshEnabled}
-              onChange={(checked) => {
-                setAutoRefreshEnabled(checked);
-                if (checked) {
-                  void runAutoRefresh();
-                }
-              }}
-            />
-            <Segmented
-              options={[
-                { label: '5s', value: 5 },
-                { label: '10s', value: 10 },
-                { label: '15s', value: 15 },
-                { label: '30s', value: 30 },
-                { label: '60s', value: 60 },
-              ]}
-              value={refreshIntervalSec}
-              onChange={(value) => setRefreshIntervalSec(Number(value))}
-              disabled={!autoRefreshEnabled}
-            />
-          </Space>
-          
-          <Text type="secondary" style={{ fontSize: 12 }}>上次刷新: {lastRefreshTime || '--'}</Text>
-          
-          <Button
-            type="default"
-            icon={<ReloadOutlined />}
-            onClick={() => {
-              void runAutoRefresh();
-            }}
-          >
-            立即刷新
-          </Button>
-        </Space>
       </div>
 
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        <Col xs={24} sm={12} md={6}>
+        <Col xs={24} sm={12} md={8}>
           <Card size="small" bordered>
-            <Statistic title="当前视图日志数" value={activeTotal} valueStyle={{ fontSize: 20 }} />
+            <Statistic
+              title={activeTab === 'system' ? '当前视图日志数' : '阶段数量'}
+              value={activeTotal}
+              valueStyle={{ fontSize: 20 }}
+            />
           </Card>
         </Col>
-        <Col xs={24} sm={12} md={6}>
+        <Col xs={24} sm={12} md={8}>
           <Card size="small" bordered>
-            <Statistic title="操作失败（当前页）" value={auditFailedCount} valueStyle={{ fontSize: 20 }} />
+            <Statistic
+              title={activeTab === 'system' ? '操作失败（当前页）' : '日志总行数'}
+              value={activeTab === 'system' ? auditFailedCount : taskLineCount}
+              valueStyle={{ fontSize: 20 }}
+            />
           </Card>
         </Col>
-        <Col xs={24} sm={12} md={6}>
-          <Card size="small" bordered>
-            <Statistic title="高价值操作（当前页）" value={auditHighValueCount} valueStyle={{ fontSize: 20 }} />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} md={6}>
-          <Card size="small" bordered>
-            <Statistic title="关联命中数" value={correlationHitCount} valueStyle={{ fontSize: 20 }} />
-          </Card>
-        </Col>
+        {activeTab === 'task' ? (
+          <Col xs={24} sm={12} md={8}>
+            <Card size="small" bordered>
+              <Statistic title="已截断阶段" value={taskTruncatedCount} valueStyle={{ fontSize: 20 }} />
+            </Card>
+          </Col>
+        ) : null}
       </Row>
 
       <Tabs
         activeKey={activeTab}
-        onChange={(key) => setActiveTab(key as LogCenterTabKey)}
+        onChange={handleTabChange}
         items={[
           {
             key: 'system',
-            label: '系统日志（操作）',
+            label: '系统操作日志',
             children: (
               <div style={{ display: 'grid', gap: 16 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -668,13 +635,15 @@ const LogCenterPage: React.FC = () => {
                     默认展示操作日志，可按动作、结果和时间范围筛选。
                   </Text>
                   <Space>
-                    <Button
-                      danger
-                      icon={<DeleteOutlined />}
-                      onClick={handleBatchDelete}
-                    >
+                    {canManageAuditLogs ? (
+                      <Button
+                        danger
+                        icon={<DeleteOutlined />}
+                        onClick={handleBatchDelete}
+                      >
                       批量删除当前筛选
                     </Button>
+                    ) : null}
                     <Button
                       icon={<ReloadOutlined />}
                       onClick={() => {
@@ -694,21 +663,12 @@ const LogCenterPage: React.FC = () => {
                   }}
                 >
                   <Space wrap style={{ width: '100%' }}>
-                    <Form.Item name="request_id" style={{ display: 'none', margin: 0 }}>
-                      <Input allowClear placeholder="请求 ID" style={{ width: 180 }} />
-                    </Form.Item>
-                    <Form.Item name="project_id" style={{ margin: 0 }}>
-                      <Input allowClear placeholder="项目 ID" style={{ width: 150 }} />
-                    </Form.Item>
-                    <Form.Item name="action" style={{ margin: 0 }}>
-                      <Input allowClear placeholder="动作编码" style={{ width: 150 }} />
-                    </Form.Item>
                     <Form.Item name="action_group" style={{ margin: 0 }}>
                       <Select
                         allowClear
                         placeholder="动作分组"
                         style={{ width: 160 }}
-                        options={actionGroupOptions}
+                        options={logCenterActionGroupOptions}
                       />
                     </Form.Item>
                     <Form.Item name="result" style={{ margin: 0 }}>
@@ -716,9 +676,6 @@ const LogCenterPage: React.FC = () => {
                     </Form.Item>
                     <Form.Item name="keyword" style={{ margin: 0 }}>
                       <Input allowClear placeholder="关键词" style={{ width: 160 }} />
-                    </Form.Item>
-                    <Form.Item name="high_value_only" style={{ margin: 0 }} valuePropName="checked">
-                      <Switch checkedChildren="高价值" unCheckedChildren="全部" />
                     </Form.Item>
                     <Form.Item name="range" style={{ margin: 0 }}>
                       <RangePicker showTime style={{ width: 300 }} />
@@ -734,7 +691,7 @@ const LogCenterPage: React.FC = () => {
                 <Table<AuditLogItem>
                   rowKey="id"
                   loading={systemLoading}
-                  columns={auditColumns}
+                  columns={visibleAuditColumns}
                   dataSource={auditItems}
                   tableLayout="fixed"
                   scroll={{ x: 1200 }}
@@ -768,6 +725,8 @@ const LogCenterPage: React.FC = () => {
                 <Form
                   form={taskForm}
                   layout="inline"
+                  initialValues={DEFAULT_TASK_FORM_VALUES}
+                  onValuesChange={handleTaskFormValuesChange}
                   onFinish={(values) => {
                     void handleTaskSearch(values);
                   }}
@@ -777,22 +736,38 @@ const LogCenterPage: React.FC = () => {
                       <Segmented options={taskTypeOptions} />
                     </Form.Item>
                     <Form.Item name="task_id" rules={[{ required: true, message: '请输入任务 ID' }]} style={{ margin: 0 }}>
-                      <Input allowClear placeholder="task_id (UUID)" style={{ width: 300 }} />
+                      <Input
+                        allowClear
+                        placeholder="task_id (UUID)"
+                        style={{ width: 300 }}
+                      />
                     </Form.Item>
                     <Form.Item name="stage" style={{ margin: 0 }}>
                       <Input allowClear placeholder="stage (可选)" style={{ width: 150 }} />
                     </Form.Item>
                     <Form.Item name="tail" rules={[{ required: true, message: '请输入 tail 行数' }]} style={{ margin: 0 }}>
-                      <InputNumber min={1} max={5000} style={{ width: 100 }} />
+                      <InputNumber min={1} max={MAX_TASK_TAIL} style={{ width: 100 }} />
                     </Form.Item>
                     <Form.Item style={{ margin: 0 }}>
                       <Space size={8}>
                         <Button type="primary" htmlType="submit" icon={<SearchOutlined />} loading={taskLoading}>
                           查询
                         </Button>
+                        {taskQuery || taskPayload ? (
+                          <Button
+                            type="default"
+                            data-testid="task-log-reset-button"
+                            onClick={() => {
+                              resetTaskLogView();
+                            }}
+                          >
+                            返回最近任务
+                          </Button>
+                        ) : null}
                         <Button
                           type="default"
                           icon={<DownloadOutlined />}
+                          data-testid="task-log-download-current"
                           disabled={!taskQuery}
                           onClick={() => {
                             void handleTaskDownload(taskQuery?.stage);
@@ -803,6 +778,7 @@ const LogCenterPage: React.FC = () => {
                         <Button
                           type="default"
                           icon={<DownloadOutlined />}
+                          data-testid="task-log-download-all"
                           disabled={!taskQuery}
                           onClick={() => {
                             void handleTaskDownload();
@@ -823,135 +799,68 @@ const LogCenterPage: React.FC = () => {
                 </div>
 
                 {taskPayload ? (
-                  <Collapse items={taskLogItems} style={{ background: '#fff' }} />
-                ) : (
-                  <Alert type="info" showIcon title="请先输入任务条件并点击查询。" />
-                )}
-              </div>
-            ),
-          },
-          {
-            key: 'correlation',
-            label: '关联追踪',
-            children: (
-              <div style={{ display: 'grid', gap: 16 }}>
-                <Form
-                  form={correlationForm}
-                  layout="inline"
-                  onFinish={(values) => {
-                    void handleCorrelationSearch(values);
-                  }}
-                >
-                  <Space wrap style={{ width: '100%' }}>
-                    <Form.Item name="request_id" style={{ display: 'none', margin: 0 }}>
-                      <Input allowClear placeholder="request_id" style={{ width: 180 }} />
-                    </Form.Item>
-                    <Form.Item name="task_type" style={{ margin: 0 }}>
-                      <Segmented options={taskTypeOptions} />
-                    </Form.Item>
-                    <Form.Item name="task_id" style={{ margin: 0 }}>
-                      <Input allowClear placeholder="task_id" style={{ width: 300 }} />
-                    </Form.Item>
-                    <Form.Item name="project_id" style={{ margin: 0 }}>
-                      <Input allowClear placeholder="project_id" style={{ width: 150 }} />
-                    </Form.Item>
-                    <Form.Item name="limit" style={{ margin: 0 }}>
-                      <InputNumber min={1} max={500} style={{ width: 100 }} />
-                    </Form.Item>
-                    <Form.Item name="range" style={{ margin: 0 }}>
-                      <RangePicker showTime style={{ width: 300 }} />
-                    </Form.Item>
-                    <Form.Item style={{ margin: 0 }}>
-                      <Button type="primary" htmlType="submit" icon={<LinkOutlined />} loading={correlationLoading}>
-                        追踪
-                      </Button>
-                    </Form.Item>
-                  </Space>
-                </Form>
-
-                {correlationPayload ? (
-                  <div style={{ display: 'grid', gap: 16 }}>
-                    <Card title={`操作日志 (${correlationPayload.audit_logs.length})`} size="small">
-                      <Table
-                        rowKey="id"
-                        size="middle"
-                        pagination={false}
-                        dataSource={correlationPayload.audit_logs}
-                        columns={[
-                          {
-                            title: '时间',
-                            dataIndex: 'created_at',
-                            width: 170,
-                            render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{formatTime(value)}</span>,
-                          },
-                          {
-                            title: '动作',
-                            dataIndex: 'action_zh',
-                            ellipsis: true,
-                            render: (_: string, record: AuditLogItem) => (
-                              <div style={{ display: 'grid', gap: 2 }}>
-                                <span>{record.action_zh || record.action || '--'}</span>
-                                <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#999' }}>{record.action || '--'}</span>
-                              </div>
-                            ),
-                          },
-                          {
-                            title: '摘要',
-                            dataIndex: 'summary_zh',
-                            ellipsis: true,
-                            render: (value: string) => value || '--',
-                          },
-                          {
-                            title: 'request_id',
-                            dataIndex: 'request_id',
-                            width: 220,
-                            ellipsis: true,
-                            render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value || '--'}</span>,
-                          },
-                        ].filter((column) => column.dataIndex !== 'request_id')}
+                  taskPayload.items.length > 0 ? (
+                    <Collapse items={taskLogItems} style={{ background: '#fff' }} />
+                  ) : (
+                    <Alert type="info" showIcon message="No stage logs found for this task." />
+                  )
+                                ) : (
+                  <Card
+                    size="small"
+                    title="Recent Scan Tasks"
+                    extra={
+                      recentScans.length > 0 ? (
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          Pick a recent task to view logs
+                        </Text>
+                      ) : null
+                    }
+                  >
+                    {recentScansError ? (
+                      <Alert type="warning" showIcon message={recentScansError} />
+                    ) : recentScansLoading ? (
+                      <Card loading size="small" />
+                    ) : recentScans.length > 0 ? (
+                      <div style={{ display: 'grid', gap: 12 }}>
+                        {recentScans.map((job) => (
+                          <div
+                            key={job.id}
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              gap: 16,
+                              padding: '12px 0',
+                              borderBottom: '1px solid #f0f0f0',
+                            }}
+                          >
+                            <div style={{ display: 'grid', gap: 4 }}>
+                              <Text strong>{job.project_name || job.project_id}</Text>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                Task ID: {job.id}
+                              </Text>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                Created At: {formatTime(job.created_at)}
+                              </Text>
+                            </div>
+                            <Button
+                              type="link"
+                              onClick={() => {
+                                handleSelectRecentScan(job);
+                              }}
+                            >
+                              View Logs
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description="No recent scan tasks. Enter a task ID to search."
                       />
-                    </Card>
-
-                    <Card
-                      title={`任务日志元数据 (${correlationPayload.task_log_previews.length})`}
-                      size="small"
-                    >
-                      <Table
-                        rowKey={(item) => `${item.task_type}-${item.task_id}-${item.stage}`}
-                        size="middle"
-                        pagination={false}
-                        dataSource={correlationPayload.task_log_previews}
-                        columns={[
-                          {
-                            title: 'task',
-                            width: 260,
-                            render: (_, item) => (
-                              <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{`${item.task_type} / ${item.task_id}`}</span>
-                            ),
-                          },
-                          {
-                            title: 'stage',
-                            dataIndex: 'stage',
-                            width: 120,
-                            render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{value}</span>,
-                          },
-                          {
-                            title: '行数',
-                            dataIndex: 'line_count',
-                            width: 90,
-                          },
-                          {
-                            title: '更新时间',
-                            dataIndex: 'updated_at',
-                            width: 170,
-                            render: (value: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{formatTime(value)}</span>,
-                          },
-                        ]}
-                      />
-                    </Card>
-                  </div>
-                ) : (
-                  <Alert type="info" showIcon title="请输入关联条件后点击追踪。" />
+                    )}
+                  </Card>
                 )}
               </div>
             ),
@@ -965,7 +874,7 @@ const LogCenterPage: React.FC = () => {
         onClose={() => setLogDetail(null)}
         title="操作日志详情"
         extra={
-          logDetail ? (
+          logDetail && canManageAuditLogs ? (
             <Button
               danger
               size="small"
@@ -993,20 +902,7 @@ const LogCenterPage: React.FC = () => {
                 <Descriptions.Item label="资源">
                   <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{`${logDetail.record.resource_type} / ${logDetail.record.resource_id}`}</span>
                 </Descriptions.Item>
-                <Descriptions.Item label="request_id" style={{ display: 'none' }}>
-                  <Button
-                    type="link"
-                    size="small"
-                    icon={<CopyOutlined />}
-                    onClick={() => {
-                      void copyText('request_id', logDetail.record.request_id);
-                    }}
-                  >
-                    <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{logDetail.record.request_id}</span>
-                  </Button>
-                </Descriptions.Item>
                 <Descriptions.Item label="结果">{logDetail.record.result || '--'}</Descriptions.Item>
-                <Descriptions.Item label="高价值">{logDetail.record.is_high_value ? '是' : '否'}</Descriptions.Item>
               </>
             </Descriptions>
 
@@ -1022,9 +918,6 @@ const LogCenterPage: React.FC = () => {
                 <Descriptions.Item label="摘要">{logDetail.record.summary_zh || '--'}</Descriptions.Item>
                 <Descriptions.Item label="动作分组">{logDetail.record.action_group || '--'}</Descriptions.Item>
                 <Descriptions.Item label="结果">{logDetail.record.result || '--'}</Descriptions.Item>
-                <Descriptions.Item label="高价值">
-                  {logDetail.record.is_high_value ? '是' : '否'}
-                </Descriptions.Item>
               </>
             </Descriptions>
 

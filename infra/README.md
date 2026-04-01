@@ -67,7 +67,7 @@ If you want GPU-backed Ollama locally, add your platform-specific GPU settings t
 
 Default bootstrap login after migrations:
 
-- email: `admin@example.com`
+- email: `admin`
 - password: `admin123`
 
 停止当前本地 Docker 依赖组：

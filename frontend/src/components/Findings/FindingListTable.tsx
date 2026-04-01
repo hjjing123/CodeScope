@@ -1,9 +1,13 @@
 import React from 'react';
-import { Table, Tag, Badge, Button, Tooltip, Typography } from 'antd';
+import { Table, Tag, Button, Tooltip, Typography } from 'antd';
 import { EyeOutlined } from '@ant-design/icons';
 import type { TablePaginationConfig } from 'antd/es/table';
 import type { FilterValue, SorterResult } from 'antd/es/table/interface';
 import type { Finding } from '../../types/finding';
+import {
+  getFindingStatusDotColor,
+  getFindingStatusLabel,
+} from '../../utils/findingStatus';
 import { formatLocation } from '../../utils/findingLocation';
 
 const { Text } = Typography;
@@ -31,14 +35,6 @@ const severityColorMap: Record<string, string> = {
   MED: 'orange',
   LOW: 'blue',
   INFO: 'default',
-};
-
-const statusStatusMap: Record<string, "success" | "processing" | "error" | "default" | "warning"> = {
-  new: 'processing',
-  confirmed: 'error',
-  false_positive: 'success', // Green for handled
-  wont_fix: 'warning',
-  fixed: 'success',
 };
 
 const getVulnDisplayName = (record: Finding) => {
@@ -76,6 +72,31 @@ const getEntryTooltip = (record: Finding) => {
     return record.entry_display;
   }
   return formatLocation(record.file_path, record.line_start);
+};
+
+const renderFindingStatus = (status: string) => {
+  const label = getFindingStatusLabel(status);
+  const dotColor = getFindingStatusDotColor(status);
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+      <span
+        aria-hidden="true"
+        data-status-dot={status}
+        style={{
+          width: 9,
+          height: 9,
+          borderRadius: '50%',
+          backgroundColor: dotColor ?? '#d9d9d9',
+          boxShadow: dotColor
+            ? `0 0 0 2px ${dotColor}22, 0 0 6px ${dotColor}, 0 0 12px ${dotColor}66`
+            : 'none',
+          flexShrink: 0,
+        }}
+      />
+      <span>{label}</span>
+    </span>
+  );
 };
 
 const FindingListTable: React.FC<FindingListTableProps> = ({
@@ -160,12 +181,7 @@ const FindingListTable: React.FC<FindingListTableProps> = ({
       dataIndex: 'status',
       key: 'status',
       width: 120,
-      render: (status: string) => (
-        <Badge
-          status={statusStatusMap[status] || 'default'}
-          text={status.replace('_', ' ').toUpperCase()}
-        />
-      ),
+      render: (status: string) => renderFindingStatus(status),
     },
     {
       title: 'AI 研判',
@@ -177,7 +193,7 @@ const FindingListTable: React.FC<FindingListTableProps> = ({
       title: 'Action',
       key: 'action',
       width: 100,
-      render: (_: any, record: Finding) => (
+      render: (_: unknown, record: Finding) => (
         <Button
           type="link"
           icon={<EyeOutlined />}

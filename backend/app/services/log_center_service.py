@@ -92,6 +92,32 @@ _AUDIT_ACTION_META: dict[str, AuditActionMeta] = {
         "rule_set.bind_rules", "绑定规则集规则", "rule_set"
     ),
     "finding.label": AuditActionMeta("finding.label", "标记漏洞", "finding"),
+    "finding.ai.retry.triggered": AuditActionMeta(
+        "finding.ai.retry.triggered", "触发漏洞 AI 研判重试", "finding"
+    ),
+    "finding.ai.chat.session.created": AuditActionMeta(
+        "finding.ai.chat.session.created", "创建漏洞 AI 会话", "finding"
+    ),
+    "ai.chat.session.created": AuditActionMeta(
+        "ai.chat.session.created", "创建通用 AI 会话", "ai"
+    ),
+    "ai.chat.session.deleted": AuditActionMeta(
+        "ai.chat.session.deleted", "删除 AI 会话", "ai"
+    ),
+    "ai.chat.session.selection.updated": AuditActionMeta(
+        "ai.chat.session.selection.updated", "更新 AI 会话模型选择", "ai"
+    ),
+    "ai.chat.message.sent": AuditActionMeta(
+        "ai.chat.message.sent", "发送 AI 对话消息", "ai"
+    ),
+    "ai.chat.message.failed": AuditActionMeta(
+        "ai.chat.message.failed", "AI 对话消息失败", "ai"
+    ),
+    "ai.job.dispatch.failed": AuditActionMeta(
+        "ai.job.dispatch.failed", "AI 任务派发失败", "ai"
+    ),
+    "ai.job.completed": AuditActionMeta("ai.job.completed", "AI 任务完成", "ai"),
+    "ai.job.failed": AuditActionMeta("ai.job.failed", "AI 任务失败", "ai"),
     "report.triggered": AuditActionMeta("report.triggered", "触发报告生成", "report"),
     "report.generated": AuditActionMeta("report.generated", "生成报告", "report"),
     "report.failed": AuditActionMeta("report.failed", "报告生成失败", "report"),
@@ -100,6 +126,39 @@ _AUDIT_ACTION_META: dict[str, AuditActionMeta] = {
     ),
     "report.downloaded": AuditActionMeta("report.downloaded", "下载报告", "report"),
     "report.deleted": AuditActionMeta("report.deleted", "删除报告", "report"),
+    "system.ai.ollama.updated": AuditActionMeta(
+        "system.ai.ollama.updated", "更新系统 Ollama 配置", "system"
+    ),
+    "system.ai.ollama.tested": AuditActionMeta(
+        "system.ai.ollama.tested", "测试系统 Ollama 配置", "system"
+    ),
+    "system.ai.ollama.model.pull.triggered": AuditActionMeta(
+        "system.ai.ollama.model.pull.triggered", "触发 Ollama 模型拉取", "system"
+    ),
+    "system.ai.ollama.model.pull.succeeded": AuditActionMeta(
+        "system.ai.ollama.model.pull.succeeded", "Ollama 模型拉取成功", "system"
+    ),
+    "system.ai.ollama.model.pull.failed": AuditActionMeta(
+        "system.ai.ollama.model.pull.failed", "Ollama 模型拉取失败", "system"
+    ),
+    "system.ai.ollama.model.deleted": AuditActionMeta(
+        "system.ai.ollama.model.deleted", "删除 Ollama 模型", "system"
+    ),
+    "user.ai.provider.created": AuditActionMeta(
+        "user.ai.provider.created", "创建个人 AI 提供方", "user"
+    ),
+    "user.ai.provider.draft_tested": AuditActionMeta(
+        "user.ai.provider.draft_tested", "测试个人 AI 提供方草稿", "user"
+    ),
+    "user.ai.provider.updated": AuditActionMeta(
+        "user.ai.provider.updated", "更新个人 AI 提供方", "user"
+    ),
+    "user.ai.provider.deleted": AuditActionMeta(
+        "user.ai.provider.deleted", "删除个人 AI 提供方", "user"
+    ),
+    "user.ai.provider.tested": AuditActionMeta(
+        "user.ai.provider.tested", "测试个人 AI 提供方", "user"
+    ),
     "user.delete": AuditActionMeta("user.delete", "删除用户", "user"),
     "user.update": AuditActionMeta("user.update", "更新用户信息", "user"),
     "log.delete": AuditActionMeta("log.delete", "删除日志", "log"),
@@ -204,6 +263,37 @@ def resolve_action_zh(*, action: str | None, action_zh: str | None) -> str:
     if normalized_action:
         return resolve_audit_action_meta(normalized_action).action_zh
     return normalized_action_zh
+
+
+def resolve_summary_zh(
+    *,
+    action: str | None,
+    action_zh: str | None,
+    summary_zh: str | None,
+    detail_json: dict[str, object] | None,
+) -> str:
+    normalized_action = (action or "").strip()
+    normalized_action_zh = (action_zh or "").strip()
+    normalized_summary_zh = (summary_zh or "").strip()
+    stored_action_zh_is_untranslated = (
+        bool(normalized_action_zh) and normalized_action_zh == normalized_action
+    )
+    should_rebuild_summary = (
+        not normalized_summary_zh
+        or normalized_summary_zh == normalized_action
+        or (
+            stored_action_zh_is_untranslated
+            and normalized_summary_zh == normalized_action_zh
+        )
+    )
+    if not should_rebuild_summary:
+        return normalized_summary_zh
+    if not normalized_action:
+        return normalized_summary_zh
+    return build_audit_summary_zh(
+        action=normalized_action,
+        detail_json=coalesce_json(detail_json),
+    )
 
 
 def build_log_keyword_condition(keyword: str) -> ColumnElement[bool]:

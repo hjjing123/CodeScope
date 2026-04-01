@@ -10,7 +10,7 @@ const buildFinding = (overrides: Partial<Finding> = {}): Finding => ({
   job_id: 'job-1',
   rule_key: 'demo_rule',
   severity: 'HIGH',
-  status: 'new',
+  status: 'OPEN',
   has_path: false,
   evidence_json: {},
   ai_review: { has_assessment: false },

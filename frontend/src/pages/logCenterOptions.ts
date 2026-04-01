@@ -1,0 +1,15 @@
+export const logCenterActionGroupOptions = [
+  { label: '认证与会话', value: 'AUTH' },
+  { label: 'AI 相关', value: 'AI' },
+  { label: '项目与成员', value: 'PROJECT' },
+  { label: '代码快照', value: 'VERSION' },
+  { label: '导入任务', value: 'IMPORT' },
+  { label: '扫描任务', value: 'SCAN' },
+  { label: '规则管理', value: 'RULE' },
+  { label: '规则集管理', value: 'RULE_SET' },
+  { label: '漏洞处理', value: 'FINDING' },
+  { label: '报告管理', value: 'REPORT' },
+  { label: '系统 AI', value: 'SYSTEM' },
+  { label: '用户管理', value: 'USER' },
+  { label: '日志治理', value: 'LOG' },
+];

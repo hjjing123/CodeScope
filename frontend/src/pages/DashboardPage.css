@@ -15,7 +15,11 @@
   transition: box-shadow 0.2s ease-in-out;
 }
 
-.dashboard-container .ant-card:hover {
+.dashboard-container .dashboard-card--clickable {
+  cursor: pointer;
+}
+
+.dashboard-container .dashboard-card--clickable:hover {
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
 

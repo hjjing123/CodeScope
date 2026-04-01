@@ -1,17 +1,17 @@
 import { Suspense, lazy, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import Login from './pages/Login';
-import Register from './pages/Register';
-import { useAuthStore } from './store/useAuthStore';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { ConfigProvider, Spin } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import 'dayjs/locale/zh-cn';
+import Login from './pages/Login';
+import Register from './pages/Register';
 import WorkspaceLayout from './layouts/WorkspaceLayout';
 import WorkspaceSectionPage from './pages/WorkspaceSectionPage';
-import LogCenterPage from './pages/LogCenterPage';
 import RuleCenterPage from './pages/RuleCenterPage';
 import RuleDetailPage from './pages/RuleDetailPage';
+import LogCenterRoutePage from './pages/LogCenterRoutePage';
 import { workspaceSections } from './config/workspaceSections';
+import { useAuthStore } from './store/useAuthStore';
 
 const CodeManagementPage = lazy(() => import('./pages/CodeManagementPage'));
 const ScanTasksPage = lazy(() => import('./pages/ScanTasksPage'));
@@ -20,6 +20,7 @@ const AICenterPage = lazy(() => import('./pages/AICenterPage'));
 const ReportsPage = lazy(() => import('./pages/ReportsPage'));
 const UserManagementPage = lazy(() => import('./pages/UserManagementPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const TaskLogsPage = lazy(() => import('./pages/TaskLogsPage'));
 
 const RouteFallback = () => (
   <div style={{ display: 'flex', justifyContent: 'center', padding: '48px 0' }}>
@@ -27,9 +28,9 @@ const RouteFallback = () => (
   </div>
 );
 
-// Protected Route Component
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isAuthenticated, isAuthReady } = useAuthStore();
+
   if (!isAuthReady) {
     return <RouteFallback />;
   }
@@ -39,9 +40,9 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
   return <>{children}</>;
 };
 
-// Admin Route Component
 const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, isAuthenticated, isAuthReady } = useAuthStore();
+
   if (!isAuthReady) {
     return <RouteFallback />;
   }
@@ -51,7 +52,7 @@ const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   if (!user) {
     return <RouteFallback />;
   }
-  if (user?.role !== 'Admin') {
+  if (user.role !== 'Admin') {
     return <Navigate to="/dashboard" replace />;
   }
   return <>{children}</>;
@@ -120,7 +121,22 @@ function App() {
               }
             />
             <Route path="projects" element={<Navigate to="/code-management" replace />} />
-            <Route path="log-center" element={<LogCenterPage />} />
+            <Route
+              path="log-center"
+              element={
+                <Suspense fallback={<RouteFallback />}>
+                  <LogCenterRoutePage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="task-logs"
+              element={
+                <Suspense fallback={<RouteFallback />}>
+                  <TaskLogsPage />
+                </Suspense>
+              }
+            />
             <Route path="rules" element={<RuleCenterPage />} />
             <Route path="rules/:ruleKey" element={<RuleDetailPage />} />
             <Route
@@ -168,6 +184,7 @@ function App() {
                   section.key !== 'findings' &&
                   section.key !== 'ai-center' &&
                   section.key !== 'reports' &&
+                  section.key !== 'settings' &&
                   section.key !== 'users'
               )
               .map((section) => (

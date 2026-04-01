@@ -1,3 +1,9 @@
+export const FINDING_STATUSES = ['OPEN', 'TP', 'FP', 'FIXED', 'NEEDS_REVIEW'] as const;
+export type FindingStatus = (typeof FINDING_STATUSES)[number];
+
+export const MANUAL_FINDING_LABEL_STATUSES = ['TP', 'FP', 'NEEDS_REVIEW'] as const;
+export type ManualFindingLabelStatus = (typeof MANUAL_FINDING_LABEL_STATUSES)[number];
+
 export interface FindingAIReviewSummary {
   has_assessment: boolean;
   assessment_id?: string | null;
@@ -17,7 +23,7 @@ export interface Finding {
   vuln_type?: string | null;
   vuln_display_name?: string | null;
   severity: string;
-  status: string;
+  status: FindingStatus;
   file_path?: string | null;
   line_start?: number | null;
   line_end?: number | null;
@@ -40,7 +46,7 @@ export interface FindingListParams {
   job_id?: string;
   severity?: string;
   vuln_type?: string;
-  status?: string;
+  status?: FindingStatus;
   file_prefix?: string;
   q?: string;
   sort_by?: string;
@@ -65,7 +71,7 @@ export interface ProjectResultOverview {
 }
 
 export interface FindingLabelRequest {
-  status: string;
+  status: ManualFindingLabelStatus;
   fp_reason?: string | null;
   comment?: string | null;
 }
@@ -73,7 +79,7 @@ export interface FindingLabelRequest {
 export interface FindingLabel {
   id: string;
   finding_id: string;
-  status: string;
+  status: FindingStatus;
   fp_reason?: string | null;
   comment?: string | null;
   created_by?: string | null;

@@ -209,16 +209,6 @@ const AIScanModelSelectFields: React.FC<AIScanModelSelectFieldsProps> = ({
           showSearch
         />
       </div>
-
-      {selectedProvider ? (
-        <Alert
-          type={selectedProvider.available ? 'success' : 'error'}
-          showIcon
-          message={`${selectedProvider.provider_label} · ${selectedProvider.status_label || '未知状态'}`}
-          description={selectedProvider.status_reason || '可直接用于扫描后 AI 研判。'}
-        />
-      ) : null}
-
       {manualMode && selectedProvider ? (
         <div>
           <Text strong style={{ display: 'block', marginBottom: 8 }}>

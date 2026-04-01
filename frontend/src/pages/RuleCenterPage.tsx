@@ -17,6 +17,7 @@ import RuleStatsCard from '../components/rules/RuleStatsCard';
 import RuleListTable from '../components/rules/RuleListTable';
 import RuleSetList from '../components/rules/RuleSetList';
 import { createRule, getRules, toggle } from '../services/rules';
+import { useAuthStore } from '../store/useAuthStore';
 import type { Rule } from '../types/rule';
 
 const { TextArea } = Input;
@@ -41,6 +42,8 @@ const RuleCenterPage: React.FC = () => {
   const [togglingRuleKeys, setTogglingRuleKeys] = useState<string[]>([]);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const { user } = useAuthStore();
+  const canManageRules = user?.role === 'Admin';
   const navigate = useNavigate();
   const [createForm] = Form.useForm<CreateRuleFormValues>();
   
@@ -166,6 +169,10 @@ const RuleCenterPage: React.FC = () => {
   };
 
   const handleOpenCreateModal = () => {
+    if (!canManageRules) {
+      return;
+    }
+
     createForm.setFieldsValue({
       default_severity: 'MED',
       vuln_type: 'CUSTOM',
@@ -176,6 +183,10 @@ const RuleCenterPage: React.FC = () => {
   };
 
   const handleCreateRule = async () => {
+    if (!canManageRules) {
+      return;
+    }
+
     try {
       const values = await createForm.validateFields();
       setCreating(true);
@@ -235,9 +246,11 @@ const RuleCenterPage: React.FC = () => {
             fetchStats();
             fetchData(pagination.current, pagination.pageSize, filters);
           }}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreateModal}>
-            新建规则
-          </Button>
+          {canManageRules ? (
+            <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreateModal}>
+              新建规则
+            </Button>
+          ) : null}
         </Space>
       </div>
 
@@ -246,6 +259,7 @@ const RuleCenterPage: React.FC = () => {
           loading={loading}
           dataSource={data}
           togglingRuleKeys={togglingRuleKeys}
+          canManageRules={canManageRules}
           pagination={{
             ...pagination,
             total,
@@ -274,7 +288,7 @@ const RuleCenterPage: React.FC = () => {
       label: '规则集',
       children: (
         <Card>
-          <RuleSetList />
+          <RuleSetList canManageRuleSets={canManageRules} />
         </Card>
       ),
     },

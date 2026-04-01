@@ -140,7 +140,7 @@ def login(
 ) -> TokenBundle:
     user = _load_user_by_email(db=db, email=email)
     if user is None or not verify_password(password, user.password_hash):
-        raise unauthorized_error(message="邮箱或密码错误", code="AUTH_FAILED")
+        raise unauthorized_error(message="账号或密码错误", code="AUTH_FAILED")
     if not user.is_active:
         raise AppError(code="USER_DISABLED", status_code=403, message="账号已禁用")
     if user.must_change_password:
@@ -282,7 +282,7 @@ def first_password_reset(
 ) -> User:
     user = _load_user_by_email(db=db, email=email)
     if user is None or not verify_password(current_password, user.password_hash):
-        raise unauthorized_error(message="邮箱或密码错误", code="AUTH_FAILED")
+        raise unauthorized_error(message="账号或密码错误", code="AUTH_FAILED")
     if not user.is_active:
         raise AppError(code="USER_DISABLED", status_code=403, message="账号已禁用")
     if not user.must_change_password:

@@ -359,6 +359,87 @@ def test_rule_set_create_and_bind_published_rules(client, db_session):
     assert target["rule_count"] == 2
 
 
+def test_rule_set_read_allowed_but_write_requires_admin_scope(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="rule-set-scope-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    user = _create_user(
+        db_session,
+        email="rule-set-scope-user@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+
+    admin_tokens = _login(client, email=admin.email, password="Password123!")
+    user_tokens = _login(client, email=user.email, password="Password123!")
+
+    _create_rule(client, admin_tokens["access_token"], rule_key="demo.ruleset.scope")
+    _publish_rule(client, admin_tokens["access_token"], rule_key="demo.ruleset.scope")
+
+    create_set_resp = client.post(
+        "/api/v1/rule-sets",
+        headers=_auth_header(admin_tokens["access_token"]),
+        json={
+            "key": "readonly-scope-set",
+            "name": "readonly-scope-set",
+            "description": "readonly scope set",
+        },
+    )
+    assert create_set_resp.status_code == 201
+    rule_set_id = create_set_resp.json()["data"]["id"]
+
+    bind_resp = client.post(
+        f"/api/v1/rule-sets/{rule_set_id}/rules",
+        headers=_auth_header(admin_tokens["access_token"]),
+        json={"rule_keys": ["demo.ruleset.scope"]},
+    )
+    assert bind_resp.status_code == 200
+    assert len(bind_resp.json()["data"]["items"]) == 1
+
+    list_resp = client.get(
+        "/api/v1/rule-sets",
+        headers=_auth_header(user_tokens["access_token"]),
+    )
+    assert list_resp.status_code == 200
+    assert any(item["id"] == rule_set_id for item in list_resp.json()["data"]["items"])
+
+    detail_resp = client.get(
+        f"/api/v1/rule-sets/{rule_set_id}",
+        headers=_auth_header(user_tokens["access_token"]),
+    )
+    assert detail_resp.status_code == 200
+    assert detail_resp.json()["data"]["id"] == rule_set_id
+    assert len(detail_resp.json()["data"]["items"]) == 1
+
+    denied_create_resp = client.post(
+        "/api/v1/rule-sets",
+        headers=_auth_header(user_tokens["access_token"]),
+        json={
+            "key": "user-should-not-create",
+            "name": "user-should-not-create",
+            "description": "denied",
+        },
+    )
+    assert denied_create_resp.status_code == 403
+
+    denied_update_resp = client.patch(
+        f"/api/v1/rule-sets/{rule_set_id}",
+        headers=_auth_header(user_tokens["access_token"]),
+        json={"description": "updated by user"},
+    )
+    assert denied_update_resp.status_code == 403
+
+    denied_bind_resp = client.post(
+        f"/api/v1/rule-sets/{rule_set_id}/rules",
+        headers=_auth_header(user_tokens["access_token"]),
+        json={"rule_keys": ["demo.ruleset.scope"]},
+    )
+    assert denied_bind_resp.status_code == 403
+
+
 def test_rule_publish_requires_valid_query_content(client, db_session):
     admin = _create_user(
         db_session,

@@ -5,8 +5,6 @@ import type {
   AuditLogItem,
   AuditLogQuery,
   BatchDeleteLogsPayload,
-  CorrelationQuery,
-  LogCorrelationPayload,
   PagedPayload,
   TaskLogPayload,
   TaskType,
@@ -24,10 +22,6 @@ const resolveTaskPath = (taskType: TaskType, taskId: string): string => {
 
 export const getAuditLogs = (params: AuditLogQuery) => {
   return request.get<any, ApiResponse<PagedPayload<AuditLogItem>>>('/audit-logs', { params });
-};
-
-export const getLogCorrelation = (params: CorrelationQuery) => {
-  return request.get<any, ApiResponse<LogCorrelationPayload>>('/log-center/correlation', { params });
 };
 
 export const getTaskLogs = (

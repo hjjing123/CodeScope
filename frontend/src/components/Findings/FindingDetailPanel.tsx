@@ -1,14 +1,26 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Drawer, Typography, Tag, Button, Space, message, Spin, Empty, Tabs } from 'antd';
-import { BugOutlined, CheckCircleOutlined, CloseCircleOutlined, WarningOutlined, CodeOutlined, InfoCircleOutlined, RobotOutlined, FileTextOutlined } from '@ant-design/icons';
+import { BugOutlined, CloseCircleOutlined, WarningOutlined, CodeOutlined, InfoCircleOutlined, RobotOutlined, FileTextOutlined } from '@ant-design/icons';
 import { FindingService } from '../../services/findings';
 import { getVersionFile } from '../../services/projectVersion';
 import FindingPathViewer from './FindingPathViewer';
 import FindingAIReviewPanel from './FindingAIReviewPanel';
 import CodeViewer from './CodeViewer';
-import type { Finding, FindingHighlightRange, FindingPath, FindingPathNodeContext, FindingPathStep, FindingLabelRequest } from '../../types/finding';
+import type {
+  Finding,
+  FindingHighlightRange,
+  FindingPath,
+  FindingPathNodeContext,
+  FindingPathStep,
+  FindingLabelRequest,
+  ManualFindingLabelStatus,
+} from '../../types/finding';
 import { pickPreferredPathStep } from './findingPathGraph';
 import { buildFallbackFindingPaths } from './findingPathFallback';
+import {
+  FINDING_STATUS_LABELS,
+  MANUAL_FINDING_STATUS_ACTIONS,
+} from '../../utils/findingStatus';
 import { formatLocation } from '../../utils/findingLocation';
 import '../ProjectVersion/CodeBrowser.css';
 
@@ -261,17 +273,24 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
     ? [selectedStep.line as number]
     : [];
 
-  const handleStatusUpdate = async (status: string, fp_reason?: string) => {
+  const resolveStatusErrorMessage = (error: unknown) => {
+    const responseData = (error as {
+      response?: { data?: { error?: { message?: string }; message?: string } };
+    })?.response?.data;
+    return responseData?.error?.message || responseData?.message || 'Failed to update status';
+  };
+
+  const handleStatusUpdate = async (status: ManualFindingLabelStatus, fp_reason?: string) => {
     if (!finding) return;
     try {
       const payload: FindingLabelRequest = { status, fp_reason };
       await FindingService.labelFinding(finding.id, payload);
-      message.success(`Finding marked as ${status}`);
+      message.success(`Finding marked as ${FINDING_STATUS_LABELS[status]}`);
       onUpdate();
       onClose();
     } catch (error) {
       console.error('Failed to update finding status:', error);
-      message.error('Failed to update status');
+      message.error(resolveStatusErrorMessage(error));
     }
   };
 
@@ -286,39 +305,26 @@ const FindingDetailPanel: React.FC<FindingDetailPanelProps> = ({
           生成报告
         </Button>
       )}
-      <Button
-        type={finding?.status === 'confirmed' ? 'primary' : 'default'}
-        danger
-        size="small"
-        icon={<BugOutlined />}
-        onClick={() => handleStatusUpdate('confirmed')}
-      >
-        Confirm
-      </Button>
-      <Button
-        type={finding?.status === 'false_positive' ? 'primary' : 'default'}
-        size="small"
-        icon={<CloseCircleOutlined />}
-        onClick={() => handleStatusUpdate('false_positive', 'Manually marked as FP')}
-      >
-        Ignore
-      </Button>
-      <Button
-        type={finding?.status === 'wont_fix' ? 'primary' : 'default'}
-        size="small"
-        icon={<WarningOutlined />}
-        onClick={() => handleStatusUpdate('wont_fix', 'Accepted Risk')}
-      >
-        Risk
-      </Button>
-      <Button
-        type={finding?.status === 'fixed' ? 'primary' : 'default'}
-        size="small"
-        icon={<CheckCircleOutlined />}
-        onClick={() => handleStatusUpdate('fixed')}
-      >
-        Fixed
-      </Button>
+      {MANUAL_FINDING_STATUS_ACTIONS.map((action) => {
+        const icon = action.value === 'TP'
+          ? <BugOutlined />
+          : action.value === 'FP'
+            ? <CloseCircleOutlined />
+            : <WarningOutlined />;
+
+        return (
+          <Button
+            key={action.value}
+            type={finding?.status === action.value ? 'primary' : 'default'}
+            danger={action.danger}
+            size="small"
+            icon={icon}
+            onClick={() => handleStatusUpdate(action.value, action.fpReason)}
+          >
+            {action.label}
+          </Button>
+        );
+      })}
     </Space>
   );
 

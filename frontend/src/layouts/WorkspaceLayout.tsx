@@ -2,13 +2,14 @@ import React, { useMemo, useState } from 'react';
 import { Avatar, Button, Drawer, Layout, Menu, Typography } from 'antd';
 import type { MenuProps } from 'antd';
 import {
+  FileSearchOutlined,
   LogoutOutlined,
   MenuOutlined,
   SafetyCertificateOutlined,
-  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/useAuthStore';
+import type { WorkspaceSection } from '../config/workspaceSections';
 import {
   getWorkspaceSectionByKey,
   getWorkspaceSectionByPath,
@@ -17,8 +18,22 @@ import {
 } from '../config/workspaceSections';
 import './WorkspaceLayout.css';
 
-const { Header, Sider, Content } = Layout;
+const { Content, Header, Sider } = Layout;
 const { Text, Title } = Typography;
+
+const hiddenTaskLogsSection: WorkspaceSection = {
+  key: 'task-logs',
+  route: 'task-logs',
+  path: '/task-logs',
+  label: '任务日志',
+  tagline: '按任务类型、阶段与任务 ID 查看任务执行日志。',
+  badge: 'Task Trace',
+  intro: '隐藏入口，仅通过安全概览页中的任务日志摘要进入。',
+  icon: FileSearchOutlined,
+  highlights: [],
+  blocks: [],
+  nextAction: '',
+};
 
 const WorkspaceBrand: React.FC<{ compact?: boolean }> = ({ compact = false }) => {
   return (
@@ -40,13 +55,24 @@ const WorkspaceLayout: React.FC = () => {
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const activeSection = useMemo(() => getWorkspaceSectionByPath(location.pathname), [location.pathname]);
+  const activeSection = useMemo(() => {
+    if (location.pathname === hiddenTaskLogsSection.path) {
+      return hiddenTaskLogsSection;
+    }
+    return getWorkspaceSectionByPath(location.pathname);
+  }, [location.pathname]);
 
   const activeMenuKey = useMemo(() => activeSection.key, [activeSection.key]);
 
   const filteredMenuItems = useMemo(() => {
     return workspaceMenuItems?.filter((item) => {
+      if (item?.key === 'settings') {
+        return false;
+      }
       if (item?.key === 'users' && user?.role !== 'Admin') {
+        return false;
+      }
+      if (item?.key === 'log-center' && user?.role !== 'Admin') {
         return false;
       }
       return true;
@@ -64,7 +90,9 @@ const WorkspaceLayout: React.FC = () => {
     navigate('/login');
   };
 
-  const userInitial = (user?.display_name?.trim() || user?.email || 'U').charAt(0).toUpperCase();
+  const userInitial = (user?.display_name?.trim() || user?.email || 'U')
+    .charAt(0)
+    .toUpperCase();
 
   return (
     <Layout className="workspace-layout">
@@ -78,16 +106,6 @@ const WorkspaceLayout: React.FC = () => {
           className="workspace-menu"
           onClick={handleMenuClick}
         />
-
-        <div className="workspace-sider-footer" aria-label="侧栏说明">
-          <span className="workspace-footer-tag">
-            <ThunderboltOutlined /> 框架模式
-          </span>
-          <p className="workspace-footer-title">统一视觉规范已就绪</p>
-          <p className="workspace-footer-text">
-            当前侧栏、头部和内容区使用同一套色板与组件节奏，后续新增页面可直接复用。
-          </p>
-        </div>
       </Sider>
 
       <Layout className="workspace-main">
@@ -113,7 +131,9 @@ const WorkspaceLayout: React.FC = () => {
             <div className="workspace-user-chip" aria-label="当前用户信息">
               <Avatar className="workspace-user-avatar">{userInitial}</Avatar>
               <div className="workspace-user-copy">
-                <span className="workspace-user-name">{user?.display_name || '未命名用户'}</span>
+                <span className="workspace-user-name">
+                  {user?.display_name || '未命名用户'}
+                </span>
                 <span className="workspace-user-meta">{user?.role || '角色未分配'}</span>
               </div>
             </div>

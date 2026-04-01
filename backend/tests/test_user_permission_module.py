@@ -29,6 +29,7 @@ from app.services.authorization_service import (
     ensure_resource_action,
     resolve_project_id,
 )
+from app.services.log_center_service import resolve_audit_action_meta
 
 
 def _create_user(
@@ -208,6 +209,25 @@ def test_first_login_password_change_required_flow(client, db_session):
     )
     assert me_resp.status_code == 200
     assert me_resp.json()["data"]["must_change_password"] is False
+
+
+def test_login_and_me_support_non_email_admin_identifier(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="admin",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+        display_name="Bootstrap Admin",
+    )
+
+    tokens = _login(client, email=admin.email, password="Password123!")
+    me_resp = client.get(
+        "/api/v1/auth/me", headers=_auth_header(tokens["access_token"])
+    )
+
+    assert me_resp.status_code == 200
+    assert me_resp.json()["data"]["email"] == "admin"
+    assert me_resp.json()["data"]["role"] == SystemRole.ADMIN.value
 
 
 def test_platform_admin_endpoint_requires_admin(client, db_session):
@@ -910,7 +930,7 @@ def test_admin_can_delete_any_project(client, db_session):
     assert owner_get_resp.status_code == 404
 
 
-def test_audit_logs_endpoint_admin_only(client, db_session):
+def test_audit_logs_endpoint_scopes_regular_user_to_own_entries(client, db_session):
     admin = _create_user(
         db_session,
         email="audit-list-admin@example.com",
@@ -923,36 +943,86 @@ def test_audit_logs_endpoint_admin_only(client, db_session):
         password="Password123!",
         role=SystemRole.USER.value,
     )
+    other_user = _create_user(
+        db_session,
+        email="audit-list-other@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    request_id = "req-audit-scope"
+
+    db_session.add_all(
+        [
+            SystemLog(
+                log_kind=SystemLogKind.OPERATION.value,
+                request_id=request_id,
+                operator_user_id=developer.id,
+                action="finding.label",
+                action_zh="标记漏洞",
+                action_group="finding",
+                resource_type="FINDING",
+                resource_id="finding-own",
+                result="SUCCEEDED",
+                summary_zh="标记漏洞",
+                detail_json={"context": {"scope": "self"}},
+                occurred_at=utc_now(),
+            ),
+            SystemLog(
+                log_kind=SystemLogKind.OPERATION.value,
+                request_id=request_id,
+                operator_user_id=other_user.id,
+                action="finding.label",
+                action_zh="标记漏洞",
+                action_group="finding",
+                resource_type="FINDING",
+                resource_id="finding-other",
+                result="SUCCEEDED",
+                summary_zh="标记漏洞",
+                detail_json={"context": {"scope": "other"}},
+                occurred_at=utc_now(),
+            ),
+            SystemLog(
+                log_kind=SystemLogKind.OPERATION.value,
+                request_id=request_id,
+                operator_user_id=None,
+                action="system.cleanup",
+                action_zh="系统清理",
+                action_group="system",
+                resource_type="SYSTEM",
+                resource_id="cleanup-job",
+                result="SUCCEEDED",
+                summary_zh="系统清理",
+                detail_json={"context": {"scope": "system"}},
+                occurred_at=utc_now(),
+            ),
+        ]
+    )
+    db_session.commit()
 
     dev_tokens = _login(client, email=developer.email, password="Password123!")
-    denied = client.get(
-        "/api/v1/audit-logs", headers=_auth_header(dev_tokens["access_token"])
+    scoped_resp = client.get(
+        "/api/v1/audit-logs",
+        headers=_auth_header(dev_tokens["access_token"]),
+        params={"request_id": request_id},
     )
-    assert denied.status_code == 403
-    assert denied.json()["error"]["code"] == "INSUFFICIENT_SCOPE"
+    assert scoped_resp.status_code == 200
+    scoped_data = scoped_resp.json()["data"]
+    assert scoped_data["total"] == 1
+    assert len(scoped_data["items"]) == 1
+    assert scoped_data["items"][0]["operator_user_id"] == str(developer.id)
+    assert scoped_data["items"][0]["resource_id"] == "finding-own"
 
     admin_tokens = _login(client, email=admin.email, password="Password123!")
-    create_resp = client.post(
-        "/api/v1/auth/register",
-        json={
-            "email": "audit-list-created@example.com",
-            "password": "Password123!",
-            "display_name": "audit-created",
-            "role": SystemRole.USER.value,
-        },
-    )
-    assert create_resp.status_code == 201
-
     logs_resp = client.get(
         "/api/v1/audit-logs",
         headers=_auth_header(admin_tokens["access_token"]),
-        params={"action": "auth.register"},
+        params={"request_id": request_id},
     )
     assert logs_resp.status_code == 200
-    assert logs_resp.json()["data"]["total"] >= 1
+    assert logs_resp.json()["data"]["total"] == 3
 
 
-def test_runtime_logs_and_log_center_endpoints_admin_only(client, db_session):
+def test_runtime_logs_endpoint_admin_only(client, db_session):
     admin = _create_user(
         db_session,
         email="runtime-admin@example.com",
@@ -972,14 +1042,6 @@ def test_runtime_logs_and_log_center_endpoints_admin_only(client, db_session):
     )
     assert denied_runtime.status_code == 403
     assert denied_runtime.json()["error"]["code"] == "INSUFFICIENT_SCOPE"
-
-    denied_correlation = client.get(
-        "/api/v1/log-center/correlation",
-        headers=_auth_header(dev_tokens["access_token"]),
-        params={"request_id": "req_demo"},
-    )
-    assert denied_correlation.status_code == 403
-    assert denied_correlation.json()["error"]["code"] == "INSUFFICIENT_SCOPE"
 
     admin_tokens = _login(client, email=admin.email, password="Password123!")
     register_resp = client.post(
@@ -1015,15 +1077,6 @@ def test_runtime_logs_and_log_center_endpoints_admin_only(client, db_session):
     )
     assert runtime_resp.status_code == 200
     assert runtime_resp.json()["data"]["total"] >= 1
-
-    correlation_resp = client.get(
-        "/api/v1/log-center/correlation",
-        headers=_auth_header(admin_tokens["access_token"]),
-        params={"request_id": request_id},
-    )
-    assert correlation_resp.status_code == 200
-    audit_logs = correlation_resp.json()["data"]["audit_logs"]
-    assert any(item["action"] == "auth.register" for item in audit_logs)
 
 
 def test_log_endpoints_tolerate_non_object_detail_json(client, db_session):
@@ -1086,17 +1139,6 @@ def test_log_endpoints_tolerate_non_object_detail_json(client, db_session):
     assert len(audit_items) >= 1
     assert audit_items[0]["detail_json"] == {}
 
-    correlation_resp = client.get(
-        "/api/v1/log-center/correlation",
-        headers=_auth_header(tokens["access_token"]),
-        params={"request_id": request_id},
-    )
-    assert correlation_resp.status_code == 200
-    correlation_data = correlation_resp.json()["data"]
-    assert len(correlation_data["audit_logs"]) >= 1
-    assert "runtime_logs" not in correlation_data
-    assert correlation_data["audit_logs"][0]["detail_json"] == {}
-
 
 def test_audit_logs_support_keyword_group_and_zh_fields(client, db_session):
     admin = _create_user(
@@ -1136,7 +1178,6 @@ def test_audit_logs_support_keyword_group_and_zh_fields(client, db_session):
         params={
             "action_group": "version",
             "keyword": "代码快照",
-            "high_value_only": "true",
         },
     )
     assert resp.status_code == 200
@@ -1148,6 +1189,79 @@ def test_audit_logs_support_keyword_group_and_zh_fields(client, db_session):
     assert item["action_group"] == "version"
     assert "创建代码快照" in item["summary_zh"]
     assert set(item["detail_json"].keys()) == {"context", "change", "outcome"}
+    assert "project_id" not in item
+    assert "error_code" not in item
+    assert "is_high_value" not in item
+
+
+def test_audit_logs_ignore_removed_filters_and_hide_removed_fields(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="audit-contract-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    tokens = _login(client, email=admin.email, password="Password123!")
+    project_a = _create_project(db_session, name="audit-contract-a")
+    project_b = _create_project(db_session, name="audit-contract-b")
+
+    db_session.add_all(
+        [
+            SystemLog(
+                log_kind=SystemLogKind.OPERATION.value,
+                request_id="req-audit-contract-a",
+                operator_user_id=admin.id,
+                action="project.update",
+                action_zh="Project updated",
+                action_group="project",
+                resource_type="PROJECT",
+                resource_id="project-a",
+                project_id=project_a.id,
+                result="SUCCEEDED",
+                error_code="LEGACY_A",
+                summary_zh="Project updated",
+                is_high_value=True,
+                detail_json={"context": {"source": "legacy-a"}},
+                occurred_at=utc_now(),
+            ),
+            SystemLog(
+                log_kind=SystemLogKind.OPERATION.value,
+                request_id="req-audit-contract-b",
+                operator_user_id=admin.id,
+                action="version.create",
+                action_zh="Version created",
+                action_group="version",
+                resource_type="VERSION",
+                resource_id="version-b",
+                project_id=project_b.id,
+                result="SUCCEEDED",
+                error_code="LEGACY_B",
+                summary_zh="Version created",
+                is_high_value=False,
+                detail_json={"context": {"source": "legacy-b"}},
+                occurred_at=utc_now(),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    resp = client.get(
+        "/api/v1/audit-logs",
+        headers=_auth_header(tokens["access_token"]),
+        params={
+            "project_id": str(project_a.id),
+            "action": "project.update",
+            "error_code": "LEGACY_A",
+            "high_value_only": "true",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["total"] == 2
+    for item in data["items"]:
+        assert "project_id" not in item
+        assert "error_code" not in item
+        assert "is_high_value" not in item
 
 
 def test_audit_action_zh_fallback_from_action_mapping(client, db_session):
@@ -1189,15 +1303,82 @@ def test_audit_action_zh_fallback_from_action_mapping(client, db_session):
     assert audit_items[0]["action"] == "import.dispatch.failed"
     assert audit_items[0]["action_zh"] == "导入派发失败"
 
-    correlation_resp = client.get(
-        "/api/v1/log-center/correlation",
+
+@pytest.mark.parametrize(
+    ("action", "expected_action_zh", "expected_action_group"),
+    [
+        ("ai.chat.session.created", "创建通用 AI 会话", "ai"),
+        ("ai.chat.session.deleted", "删除 AI 会话", "ai"),
+        ("ai.chat.session.selection.updated", "更新 AI 会话模型选择", "ai"),
+        ("ai.chat.message.sent", "发送 AI 对话消息", "ai"),
+        ("ai.chat.message.failed", "AI 对话消息失败", "ai"),
+        ("ai.job.dispatch.failed", "AI 任务派发失败", "ai"),
+        ("ai.job.completed", "AI 任务完成", "ai"),
+        ("ai.job.failed", "AI 任务失败", "ai"),
+        ("finding.ai.chat.session.created", "创建漏洞 AI 会话", "finding"),
+        ("finding.ai.retry.triggered", "触发漏洞 AI 研判重试", "finding"),
+        ("user.ai.provider.created", "创建个人 AI 提供方", "user"),
+        ("user.ai.provider.updated", "更新个人 AI 提供方", "user"),
+        ("user.ai.provider.deleted", "删除个人 AI 提供方", "user"),
+        ("user.ai.provider.tested", "测试个人 AI 提供方", "user"),
+        ("user.ai.provider.draft_tested", "测试个人 AI 提供方草稿", "user"),
+        ("system.ai.ollama.updated", "更新系统 Ollama 配置", "system"),
+        ("system.ai.ollama.tested", "测试系统 Ollama 配置", "system"),
+        ("system.ai.ollama.model.pull.triggered", "触发 Ollama 模型拉取", "system"),
+        ("system.ai.ollama.model.pull.succeeded", "Ollama 模型拉取成功", "system"),
+        ("system.ai.ollama.model.pull.failed", "Ollama 模型拉取失败", "system"),
+        ("system.ai.ollama.model.deleted", "删除 Ollama 模型", "system"),
+    ],
+)
+def test_ai_audit_action_meta_resolves_translations(
+    action, expected_action_zh, expected_action_group
+):
+    meta = resolve_audit_action_meta(action)
+
+    assert meta.action_zh == expected_action_zh
+    assert meta.action_group == expected_action_group
+
+
+def test_audit_summary_zh_fallback_for_legacy_ai_actions(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="audit-ai-summary-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    tokens = _login(client, email=admin.email, password="Password123!")
+    request_id = "req-audit-ai-summary-fallback"
+    db_session.add(
+        SystemLog(
+            log_kind=SystemLogKind.OPERATION.value,
+            request_id=request_id,
+            operator_user_id=admin.id,
+            action="ai.chat.session.created",
+            action_zh="ai.chat.session.created",
+            action_group="ai",
+            resource_type="AI_CHAT_SESSION",
+            resource_id="session-legacy",
+            result="SUCCEEDED",
+            summary_zh="ai.chat.session.created",
+            is_high_value=True,
+            detail_json={"context": {"session_mode": "general"}},
+            occurred_at=utc_now(),
+        )
+    )
+    db_session.commit()
+
+    audit_resp = client.get(
+        "/api/v1/audit-logs",
         headers=_auth_header(tokens["access_token"]),
         params={"request_id": request_id},
     )
-    assert correlation_resp.status_code == 200
-    correlation_audit_items = correlation_resp.json()["data"]["audit_logs"]
-    assert len(correlation_audit_items) == 1
-    assert correlation_audit_items[0]["action_zh"] == "导入派发失败"
+    assert audit_resp.status_code == 200
+    audit_items = audit_resp.json()["data"]["items"]
+    assert len(audit_items) == 1
+    assert audit_items[0]["action"] == "ai.chat.session.created"
+    assert audit_items[0]["action_zh"] == "创建通用 AI 会话"
+    assert audit_items[0]["summary_zh"] == "创建通用 AI 会话"
+    assert audit_items[0]["action_group"] == "ai"
 
 
 def test_runtime_http_logging_uses_high_value_strategy(client, db_session):
@@ -1317,7 +1498,70 @@ def test_log_center_delete_endpoints_without_audit(client, db_session):
     audit_resp = client.get(
         "/api/v1/audit-logs",
         headers=_auth_header(tokens["access_token"]),
-        params={"action": "log.delete"},
+        params={"action_group": "log", "keyword": "log.delete"},
     )
     assert audit_resp.status_code == 200
     assert audit_resp.json()["data"]["total"] == 0
+
+
+def test_log_center_delete_endpoints_remain_admin_only_for_regular_user(
+    client, db_session
+):
+    developer = _create_user(
+        db_session,
+        email="log-delete-dev@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    tokens = _login(client, email=developer.email, password="Password123!")
+
+    target_log = SystemLog(
+        log_kind=SystemLogKind.OPERATION.value,
+        request_id="req-log-delete-user-denied",
+        operator_user_id=developer.id,
+        action="finding.label",
+        action_zh="标记漏洞",
+        action_group="finding",
+        resource_type="FINDING",
+        resource_id="finding-user-denied",
+        result="SUCCEEDED",
+        summary_zh="标记漏洞",
+        detail_json={"context": {"source": "test"}},
+        occurred_at=utc_now(),
+    )
+    db_session.add(target_log)
+    db_session.commit()
+
+    single_resp = client.delete(
+        f"/api/v1/log-center/logs/{target_log.id}",
+        headers=_auth_header(tokens["access_token"]),
+    )
+    assert single_resp.status_code == 403
+    assert single_resp.json()["error"]["code"] == "INSUFFICIENT_SCOPE"
+
+    batch_resp = client.post(
+        "/api/v1/log-center/logs/batch-delete",
+        headers=_auth_header(tokens["access_token"]),
+        json={"request_id": "req-log-delete-user-denied"},
+    )
+    assert batch_resp.status_code == 403
+    assert batch_resp.json()["error"]["code"] == "INSUFFICIENT_SCOPE"
+
+
+def test_log_center_batch_delete_rejects_removed_filter_only_payloads(client, db_session):
+    admin = _create_user(
+        db_session,
+        email="log-delete-filter-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    tokens = _login(client, email=admin.email, password="Password123!")
+
+    resp = client.post(
+        "/api/v1/log-center/logs/batch-delete",
+        headers=_auth_header(tokens["access_token"]),
+        json={"project_id": str(uuid.uuid4()), "high_value_only": True},
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error"]["code"] == "INVALID_ARGUMENT"

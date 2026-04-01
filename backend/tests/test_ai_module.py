@@ -1723,12 +1723,14 @@ def test_findings_include_latest_ai_review_summary_and_context(
     )
     assert findings_response.status_code == 200, findings_response.text
     item = findings_response.json()["data"]["items"][0]
+    assert item["severity"] == finding.severity
     assert item["ai_review"]["has_assessment"] is True
     assert item["ai_review"]["verdict"] == "TP"
     assert item["ai_review"]["confidence"] == "high"
 
     detail_response = client.get(f"/api/v1/findings/{finding.id}", headers=headers)
     assert detail_response.status_code == 200, detail_response.text
+    assert detail_response.json()["data"]["severity"] == finding.severity
     assert detail_response.json()["data"]["ai_review"]["confidence"] == "high"
 
     context_response = client.get(

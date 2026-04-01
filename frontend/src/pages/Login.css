@@ -287,12 +287,6 @@
   box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.2) !important;
 }
 
-.login-hint {
-  text-align: center;
-  color: var(--cs-text-subtle);
-  font-size: 13px;
-}
-
 @media (max-width: 980px) {
   .login-page {
     padding: 16px 12px;
