@@ -27,7 +27,6 @@ interface CreateRuleFormValues {
   name: string;
   vuln_type: string;
   default_severity: string;
-  language_scope: string;
   description?: string;
   query: string;
   timeout_ms: number;
@@ -176,7 +175,6 @@ const RuleCenterPage: React.FC = () => {
     createForm.setFieldsValue({
       default_severity: 'MED',
       vuln_type: 'CUSTOM',
-      language_scope: 'java',
       timeout_ms: 5000,
     });
     setCreateModalOpen(true);
@@ -195,7 +193,6 @@ const RuleCenterPage: React.FC = () => {
         name: values.name.trim(),
         vuln_type: values.vuln_type.trim(),
         default_severity: values.default_severity,
-        language_scope: values.language_scope.trim(),
         description: values.description?.trim() || undefined,
         content: {
           query: values.query,
@@ -315,7 +312,6 @@ const RuleCenterPage: React.FC = () => {
           initialValues={{
             default_severity: 'MED',
             vuln_type: 'CUSTOM',
-            language_scope: 'java',
             timeout_ms: 5000,
           }}
         >
@@ -374,14 +370,6 @@ const RuleCenterPage: React.FC = () => {
               </Select>
             </Form.Item>
 
-            <Form.Item
-              name="language_scope"
-              label="语言范围"
-              style={{ flex: 1 }}
-              rules={[{ required: true, message: '请输入语言范围' }]}
-            >
-              <Input placeholder="例如: java" />
-            </Form.Item>
           </Space>
 
           <Form.Item name="description" label="描述">

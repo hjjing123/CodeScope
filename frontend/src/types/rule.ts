@@ -75,7 +75,7 @@ export interface RuleCreateRequest {
   name: string;
   vuln_type: string;
   default_severity: string;
-  language_scope: string;
+  language_scope?: string;
   description?: string;
   content: Record<string, any>;
 }

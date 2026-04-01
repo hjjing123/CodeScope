@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import RuleCenterPage from './RuleCenterPage';
-import { getRules } from '../services/rules';
+import { createRule, getRules } from '../services/rules';
 import { useAuthStore } from '../store/useAuthStore';
 
 const { mockedRuleSetList } = vi.hoisted(() => ({
@@ -35,6 +35,7 @@ vi.mock('../components/rules/RuleSetList', () => ({
 }));
 
 const mockedGetRules = vi.mocked(getRules);
+const mockedCreateRule = vi.mocked(createRule);
 const mockedUseAuthStore = vi.mocked(useAuthStore);
 
 const renderPage = () =>
@@ -58,6 +59,18 @@ describe('RuleCenterPage', () => {
 
     vi.stubGlobal('ResizeObserver', ResizeObserverMock);
     vi.clearAllMocks();
+    mockedCreateRule.mockResolvedValue({
+      rule_key: 'created.rule',
+      name: 'Created Rule',
+      vuln_type: 'CUSTOM',
+      default_severity: 'MED',
+      language_scope: 'java',
+      description: 'created',
+      enabled: true,
+      active_version: null,
+      created_at: '2026-04-01T08:00:00Z',
+      updated_at: '2026-04-01T08:00:00Z',
+    });
 
     mockedGetRules.mockImplementation(async (params = {}) => {
       if (params.enabled === true) {
@@ -118,6 +131,64 @@ describe('RuleCenterPage', () => {
       expect.objectContaining({ canManageRuleSets: true })
     );
   });
+
+  it(
+    'creates a rule without exposing or submitting language scope',
+    async () => {
+      mockedUseAuthStore.mockReturnValue({
+        user: {
+          id: 'admin-1',
+          email: 'admin@example.com',
+          display_name: 'Admin',
+          role: 'Admin',
+        },
+      } as ReturnType<typeof useAuthStore>);
+
+      renderPage();
+
+      expect(await screen.findByText('Demo Rule')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /新建规则/ }));
+
+      const dialog = await screen.findByRole('dialog');
+      const modal = within(dialog);
+
+      expect(modal.queryByText('语言范围')).not.toBeInTheDocument();
+      expect(modal.queryByText('请输入语言范围')).not.toBeInTheDocument();
+
+      fireEvent.change(modal.getByPlaceholderText('例如: custom.demo.xss'), {
+        target: { value: 'custom.demo.xss' },
+      });
+      fireEvent.change(modal.getByPlaceholderText('请输入规则名称'), {
+        target: { value: 'Custom Demo Rule' },
+      });
+      fireEvent.change(modal.getByPlaceholderText('MATCH (n) RETURN n LIMIT 10'), {
+        target: { value: 'MATCH (n) RETURN n LIMIT 1' },
+      });
+      fireEvent.change(modal.getByRole('spinbutton'), {
+        target: { value: '5000' },
+      });
+
+      fireEvent.click(modal.getByRole('button', { name: /^(OK|确定)$/ }));
+
+      await waitFor(() => {
+        expect(mockedCreateRule).toHaveBeenCalledTimes(1);
+      });
+
+      expect(mockedCreateRule.mock.calls[0][0]).toEqual({
+        rule_key: 'custom.demo.xss',
+        name: 'Custom Demo Rule',
+        vuln_type: 'CUSTOM',
+        default_severity: 'MED',
+        description: undefined,
+        content: {
+          query: 'MATCH (n) RETURN n LIMIT 1',
+          timeout_ms: 5000,
+        },
+      });
+      expect(mockedCreateRule.mock.calls[0][0]).not.toHaveProperty('language_scope');
+    },
+    10000
+  );
 
   it('hides status and action columns for regular users', async () => {
     mockedUseAuthStore.mockReturnValue({

@@ -232,6 +232,207 @@ def test_rule_lifecycle_create_draft_publish_and_rollback(client, db_session):
     )
 
 
+def test_rule_create_defaults_language_scope_to_java_when_omitted(
+    client, db_session
+):
+    admin = _create_user(
+        db_session,
+        email="rule-default-language-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    tokens = _login(client, email=admin.email, password="Password123!")
+
+    create_resp = client.post(
+        "/api/v1/rules",
+        headers=_auth_header(tokens["access_token"]),
+        json={
+            "rule_key": "demo.rule.default.language",
+            "name": "demo-rule-default-language",
+            "vuln_type": "XSS",
+            "default_severity": "HIGH",
+            "description": "demo rule",
+            "content": {
+                "query": "MATCH (n) RETURN n LIMIT 1",
+                "timeout_ms": 5000,
+            },
+        },
+    )
+    assert create_resp.status_code == 201
+    assert create_resp.json()["data"]["language_scope"] == "java"
+
+    detail_resp = client.get(
+        "/api/v1/rules/demo.rule.default.language",
+        headers=_auth_header(tokens["access_token"]),
+    )
+    assert detail_resp.status_code == 200
+    assert detail_resp.json()["data"]["language_scope"] == "java"
+
+
+def test_rule_visibility_hides_pure_draft_from_regular_users_until_publish(
+    client, db_session
+):
+    admin = _create_user(
+        db_session,
+        email="rule-draft-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    user = _create_user(
+        db_session,
+        email="rule-draft-user@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    admin_tokens = _login(client, email=admin.email, password="Password123!")
+    user_tokens = _login(client, email=user.email, password="Password123!")
+
+    created = _create_rule(
+        client, admin_tokens["access_token"], rule_key="demo.rule.hidden.draft"
+    )
+    assert created["active_version"] is None
+
+    admin_list_resp = client.get(
+        "/api/v1/rules",
+        headers=_auth_header(admin_tokens["access_token"]),
+    )
+    assert admin_list_resp.status_code == 200
+    assert any(
+        item["rule_key"] == "demo.rule.hidden.draft"
+        for item in admin_list_resp.json()["data"]["items"]
+    )
+
+    user_list_resp = client.get(
+        "/api/v1/rules",
+        headers=_auth_header(user_tokens["access_token"]),
+    )
+    assert user_list_resp.status_code == 200
+    assert all(
+        item["rule_key"] != "demo.rule.hidden.draft"
+        for item in user_list_resp.json()["data"]["items"]
+    )
+
+    user_detail_resp = client.get(
+        "/api/v1/rules/demo.rule.hidden.draft",
+        headers=_auth_header(user_tokens["access_token"]),
+    )
+    assert user_detail_resp.status_code == 404
+
+    user_versions_resp = client.get(
+        "/api/v1/rules/demo.rule.hidden.draft/versions",
+        headers=_auth_header(user_tokens["access_token"]),
+    )
+    assert user_versions_resp.status_code == 404
+
+    _publish_rule(
+        client, admin_tokens["access_token"], rule_key="demo.rule.hidden.draft"
+    )
+
+    visible_after_publish_resp = client.get(
+        "/api/v1/rules",
+        headers=_auth_header(user_tokens["access_token"]),
+    )
+    assert visible_after_publish_resp.status_code == 200
+    assert any(
+        item["rule_key"] == "demo.rule.hidden.draft"
+        for item in visible_after_publish_resp.json()["data"]["items"]
+    )
+
+    published_detail_resp = client.get(
+        "/api/v1/rules/demo.rule.hidden.draft",
+        headers=_auth_header(user_tokens["access_token"]),
+    )
+    assert published_detail_resp.status_code == 200
+    assert published_detail_resp.json()["data"]["active_version"] == 1
+
+
+def test_regular_user_rule_reads_ignore_unpublished_draft_metadata_and_versions(
+    client, db_session
+):
+    admin = _create_user(
+        db_session,
+        email="rule-snapshot-admin@example.com",
+        password="Password123!",
+        role=SystemRole.ADMIN.value,
+    )
+    user = _create_user(
+        db_session,
+        email="rule-snapshot-user@example.com",
+        password="Password123!",
+        role=SystemRole.USER.value,
+    )
+    admin_tokens = _login(client, email=admin.email, password="Password123!")
+    user_tokens = _login(client, email=user.email, password="Password123!")
+
+    _create_rule(client, admin_tokens["access_token"], rule_key="demo.rule.snapshot")
+    _publish_rule(client, admin_tokens["access_token"], rule_key="demo.rule.snapshot")
+
+    draft_update_resp = client.patch(
+        "/api/v1/rules/demo.rule.snapshot/draft",
+        headers=_auth_header(admin_tokens["access_token"]),
+        json={
+            "name": "draft-only-name",
+            "default_severity": "LOW",
+            "description": "draft-only description",
+            "content": {
+                "query": "MATCH (n) RETURN n LIMIT 2",
+                "timeout_ms": 8000,
+            },
+        },
+    )
+    assert draft_update_resp.status_code == 200
+    assert draft_update_resp.json()["data"]["rule"]["name"] == "draft-only-name"
+    assert draft_update_resp.json()["data"]["rule"]["default_severity"] == "LOW"
+
+    admin_detail_resp = client.get(
+        "/api/v1/rules/demo.rule.snapshot",
+        headers=_auth_header(admin_tokens["access_token"]),
+    )
+    assert admin_detail_resp.status_code == 200
+    assert admin_detail_resp.json()["data"]["name"] == "draft-only-name"
+    assert admin_detail_resp.json()["data"]["default_severity"] == "LOW"
+
+    admin_versions_resp = client.get(
+        "/api/v1/rules/demo.rule.snapshot/versions",
+        headers=_auth_header(admin_tokens["access_token"]),
+    )
+    assert admin_versions_resp.status_code == 200
+    assert any(
+        item["status"] == "DRAFT"
+        for item in admin_versions_resp.json()["data"]["items"]
+    )
+
+    user_list_resp = client.get(
+        "/api/v1/rules",
+        headers=_auth_header(user_tokens["access_token"]),
+        params={"search": "demo.rule.snapshot"},
+    )
+    assert user_list_resp.status_code == 200
+    assert user_list_resp.json()["data"]["total"] == 1
+    assert user_list_resp.json()["data"]["items"][0]["name"] == "demo.rule.snapshot-name"
+    assert (
+        user_list_resp.json()["data"]["items"][0]["default_severity"] == "HIGH"
+    )
+
+    user_detail_resp = client.get(
+        "/api/v1/rules/demo.rule.snapshot",
+        headers=_auth_header(user_tokens["access_token"]),
+    )
+    assert user_detail_resp.status_code == 200
+    assert user_detail_resp.json()["data"]["name"] == "demo.rule.snapshot-name"
+    assert user_detail_resp.json()["data"]["default_severity"] == "HIGH"
+    assert user_detail_resp.json()["data"]["description"] == "demo rule"
+    assert user_detail_resp.json()["data"]["active_version"] == 1
+
+    user_versions_resp = client.get(
+        "/api/v1/rules/demo.rule.snapshot/versions",
+        headers=_auth_header(user_tokens["access_token"]),
+    )
+    assert user_versions_resp.status_code == 200
+    assert user_versions_resp.json()["data"]["total"] == 1
+    assert user_versions_resp.json()["data"]["items"][0]["status"] == "PUBLISHED"
+
+
 def test_rule_list_supports_keyword_search(client, db_session):
     admin = _create_user(
         db_session,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,13 @@ from app.core.errors import AppError
 
 RULE_KEY_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 DEFAULT_RULE_TIMEOUT_MS = 5000
+DRAFT_RULE_META_FIELDS = (
+    "name",
+    "vuln_type",
+    "default_severity",
+    "language_scope",
+    "description",
+)
 
 
 @dataclass(slots=True)
@@ -70,13 +77,21 @@ def list_rules(
     search: str | None = None,
     page: int,
     page_size: int,
+    published_only: bool = False,
+    include_draft_metadata: bool = False,
 ) -> tuple[list[RuleFileRecord], int]:
     rules_dir = _resolve_rules_dir()
     keys = _collect_rule_keys(rules_dir)
     records: list[RuleFileRecord] = []
     for key in keys:
         try:
-            records.append(_build_rule_record(rules_dir, key))
+            records.append(
+                _build_rule_record(
+                    rules_dir,
+                    key,
+                    include_draft_metadata=include_draft_metadata,
+                )
+            )
         except AppError as exc:
             if exc.code == "NOT_FOUND":
                 continue
@@ -99,6 +114,8 @@ def list_rules(
                 or keyword in (item.description or "").lower()
             )
         ]
+    if published_only:
+        records = [item for item in records if item.active_version is not None]
 
     records.sort(key=lambda item: item.updated_at, reverse=True)
     total = len(records)
@@ -106,10 +123,22 @@ def list_rules(
     return records[start : start + page_size], total
 
 
-def get_rule(rule_key: str) -> RuleFileRecord:
+def get_rule(
+    rule_key: str,
+    *,
+    published_only: bool = False,
+    include_draft_metadata: bool = False,
+) -> RuleFileRecord:
     key = normalize_rule_key(rule_key)
     rules_dir = _resolve_rules_dir()
-    return _build_rule_record(rules_dir, key)
+    record = _build_rule_record(
+        rules_dir,
+        key,
+        include_draft_metadata=include_draft_metadata,
+    )
+    if published_only and record.active_version is None:
+        raise AppError(code="NOT_FOUND", status_code=404, message="Rule not found")
+    return record
 
 
 def get_rules_by_keys(rule_keys: set[str]) -> dict[str, RuleFileRecord]:
@@ -124,10 +153,16 @@ def get_rules_by_keys(rule_keys: set[str]) -> dict[str, RuleFileRecord]:
     return records
 
 
-def list_rule_versions(rule_key: str) -> list[RuleFileVersionRecord]:
+def list_rule_versions(
+    rule_key: str, *, published_only: bool = False
+) -> list[RuleFileVersionRecord]:
     key = normalize_rule_key(rule_key)
     rules_dir = _resolve_rules_dir()
     _ensure_rule_exists(rules_dir, key)
+    if published_only:
+        published_record = _build_rule_record(rules_dir, key)
+        if published_record.active_version is None:
+            raise AppError(code="NOT_FOUND", status_code=404, message="Rule not found")
 
     versions: list[RuleFileVersionRecord] = []
     version_dir = _version_dir(rules_dir, key)
@@ -202,6 +237,10 @@ def list_rule_versions(rule_key: str) -> list[RuleFileVersionRecord]:
         key=lambda item: (item.version, 1 if item.status == "DRAFT" else 0),
         reverse=True,
     )
+    if published_only:
+        versions = [item for item in versions if item.status == "PUBLISHED"]
+        if not versions:
+            versions = _build_fallback_published_versions(rules_dir, key)
     return versions
 
 
@@ -241,13 +280,18 @@ def create_rule(
     draft = {
         "version": 1,
         "status": "DRAFT",
+        "name": meta["name"],
+        "vuln_type": meta["vuln_type"],
+        "default_severity": meta["default_severity"],
+        "language_scope": meta["language_scope"],
+        "description": meta["description"],
         "content": _ensure_content_dict(content, default_query_path=None),
         "created_by": str(created_by) if created_by is not None else None,
         "created_at": now.isoformat(),
     }
     _write_json(_draft_path(rules_dir, key), draft)
 
-    rule = _build_rule_record(rules_dir, key)
+    rule = _build_rule_record(rules_dir, key, include_draft_metadata=True)
     draft_version = RuleFileVersionRecord(
         id=_version_uuid(key, 1, "DRAFT"),
         rule_key=key,
@@ -272,6 +316,7 @@ def update_rule_draft(
 
     now = _now()
     meta = _load_meta(rules_dir, key)
+    meta_needs_write = False
     if not meta:
         base = _build_rule_record(rules_dir, key)
         meta = {
@@ -286,11 +331,13 @@ def update_rule_draft(
             "created_at": base.created_at.isoformat(),
             "updated_at": base.updated_at.isoformat(),
         }
+        meta_needs_write = True
 
     draft_path = _draft_path(rules_dir, key)
     if draft_path.exists() and draft_path.is_file():
         draft = _read_json_dict(draft_path)
     else:
+        base_record = _build_rule_record(rules_dir, key)
         base_content: dict[str, object] = {}
         active_version = _parse_positive_int(meta.get("active_version"), default=0)
         if active_version > 0:
@@ -310,26 +357,31 @@ def update_rule_draft(
         draft = {
             "version": _next_version(rules_dir, key),
             "status": "DRAFT",
+            "name": base_record.name,
+            "vuln_type": base_record.vuln_type,
+            "default_severity": base_record.default_severity,
+            "language_scope": base_record.language_scope,
+            "description": base_record.description,
             "content": base_content,
             "created_by": str(operator_id) if operator_id is not None else None,
             "created_at": now.isoformat(),
         }
 
     if updates.get("name") is not None:
-        meta["name"] = str(updates["name"]).strip() or key
+        draft["name"] = str(updates["name"]).strip() or key
     if updates.get("vuln_type") is not None:
-        meta["vuln_type"] = str(
+        draft["vuln_type"] = str(
             updates["vuln_type"]
         ).strip().upper() or _infer_vuln_type(key)
     if updates.get("default_severity") is not None:
-        meta["default_severity"] = str(
+        draft["default_severity"] = str(
             updates["default_severity"]
         ).strip().upper() or _infer_severity(key)
     if updates.get("language_scope") is not None:
-        meta["language_scope"] = str(updates["language_scope"]).strip() or "java"
+        draft["language_scope"] = str(updates["language_scope"]).strip() or "java"
     if "description" in updates:
         value = updates.get("description")
-        meta["description"] = None if value is None else str(value)
+        draft["description"] = None if value is None else str(value)
     if updates.get("content") is not None:
         draft["content"] = _ensure_content_dict(
             updates.get("content"), default_query_path=None
@@ -337,15 +389,15 @@ def update_rule_draft(
     draft["created_by"] = (
         str(operator_id) if operator_id is not None else draft.get("created_by")
     )
-    meta["updated_at"] = now.isoformat()
 
-    _write_meta(rules_dir, key, meta)
+    if meta_needs_write:
+        _write_meta(rules_dir, key, meta)
     _write_json(draft_path, draft)
 
     draft_version_number = _parse_positive_int(
         draft.get("version"), default=_next_version(rules_dir, key)
     )
-    rule = _build_rule_record(rules_dir, key)
+    rule = _build_rule_record(rules_dir, key, include_draft_metadata=True)
     draft_version = RuleFileVersionRecord(
         id=_version_uuid(key, draft_version_number, "DRAFT"),
         rule_key=key,
@@ -408,6 +460,22 @@ def publish_rule(
             "created_at": inferred.created_at.isoformat(),
         }
     meta["active_version"] = version
+    meta["name"] = str(draft.get("name") or meta.get("name") or key)
+    meta["vuln_type"] = str(
+        draft.get("vuln_type") or meta.get("vuln_type") or _infer_vuln_type(key)
+    ).strip().upper()
+    meta["default_severity"] = str(
+        draft.get("default_severity")
+        or meta.get("default_severity")
+        or _infer_severity(key)
+    ).strip().upper()
+    meta["language_scope"] = str(
+        draft.get("language_scope") or meta.get("language_scope") or "java"
+    ).strip() or "java"
+    if "description" in draft:
+        meta["description"] = (
+            None if draft.get("description") is None else str(draft.get("description"))
+        )
     meta["timeout_ms"] = int(
         normalized_content.get("timeout_ms") or DEFAULT_RULE_TIMEOUT_MS
     )
@@ -659,7 +727,80 @@ def is_rule_enabled(rule_key: str, *, rules_dir: Path | None = None) -> bool:
     return True
 
 
-def _build_rule_record(rules_dir: Path, rule_key: str) -> RuleFileRecord:
+def _build_fallback_published_versions(
+    rules_dir: Path, rule_key: str
+) -> list[RuleFileVersionRecord]:
+    record = _build_rule_record(rules_dir, rule_key)
+    if record.active_version is None:
+        return []
+
+    rule_file = _rule_file_path(rules_dir, rule_key)
+    if not rule_file.exists() or not rule_file.is_file():
+        return []
+
+    content = _build_content_from_rule_file(
+        rule_file=rule_file,
+        meta=_load_meta(rules_dir, rule_key),
+    )
+    return [
+        RuleFileVersionRecord(
+            id=_version_uuid(rule_key, record.active_version, "PUBLISHED"),
+            rule_key=rule_key,
+            version=record.active_version,
+            status="PUBLISHED",
+            content=content,
+            created_by=None,
+            created_at=_mtime(rule_file),
+        )
+    ]
+
+
+def _draft_rule_payload(rules_dir: Path, rule_key: str) -> dict[str, object] | None:
+    draft_path = _draft_path(rules_dir, rule_key)
+    if not draft_path.exists() or not draft_path.is_file():
+        return None
+    return _read_json_dict(draft_path)
+
+
+def _apply_draft_metadata(
+    base: RuleFileRecord,
+    *,
+    draft_path: Path,
+    draft_payload: dict[str, object] | None,
+) -> RuleFileRecord:
+    if draft_payload is None:
+        return base
+
+    draft_updated_at = max(
+        base.updated_at,
+        _parse_datetime(draft_payload.get("created_at"), fallback=_mtime(draft_path)),
+        _mtime(draft_path),
+    )
+    overlay: dict[str, object] = {
+        "name": str(draft_payload.get("name") or base.name),
+        "vuln_type": str(draft_payload.get("vuln_type") or base.vuln_type).strip().upper(),
+        "default_severity": str(
+            draft_payload.get("default_severity") or base.default_severity
+        )
+        .strip()
+        .upper(),
+        "language_scope": str(draft_payload.get("language_scope") or base.language_scope).strip()
+        or "java",
+        "updated_at": draft_updated_at,
+    }
+    if "description" in draft_payload:
+        overlay["description"] = (
+            None
+            if draft_payload.get("description") is None
+            else str(draft_payload.get("description"))
+        )
+
+    return replace(base, **overlay)
+
+
+def _build_rule_record(
+    rules_dir: Path, rule_key: str, *, include_draft_metadata: bool = False
+) -> RuleFileRecord:
     key = normalize_rule_key(rule_key)
     if not _rule_exists(rules_dir, key):
         raise AppError(code="NOT_FOUND", status_code=404, message="规则不存在")
@@ -693,7 +834,7 @@ def _build_rule_record(rules_dir: Path, rule_key: str) -> RuleFileRecord:
     if active_version is None:
         active_version = _infer_active_version(rules_dir, key)
 
-    return RuleFileRecord(
+    record = RuleFileRecord(
         rule_key=key,
         name=str(meta.get("name") or key),
         vuln_type=str(meta.get("vuln_type") or _infer_vuln_type(key)),
@@ -707,6 +848,11 @@ def _build_rule_record(rules_dir: Path, rule_key: str) -> RuleFileRecord:
         created_at=created_at,
         updated_at=updated_at,
     )
+    if not include_draft_metadata:
+        return record
+
+    draft_payload = _draft_rule_payload(rules_dir, key)
+    return _apply_draft_metadata(record, draft_path=draft, draft_payload=draft_payload)
 
 
 def _infer_active_version(rules_dir: Path, rule_key: str) -> int | None:

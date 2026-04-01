@@ -27,6 +27,7 @@ import {
 } from '../services/rules';
 import type { Rule, RuleVersion } from '../types/rule';
 import SelfTestPanel from '../components/rules/SelfTestPanel';
+import { useAuthStore } from '../store/useAuthStore';
 import dayjs from 'dayjs';
 
 const { Title, Text } = Typography;
@@ -49,14 +50,16 @@ const RuleDetailPage: React.FC = () => {
   const [versions, setVersions] = useState<RuleVersion[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const { user } = useAuthStore();
+  const canManageRules = user?.role === 'Admin';
 
   const fetchData = async () => {
     if (!ruleKey) return;
     setLoading(true);
     try {
       const [ruleRes, versionsRes] = await Promise.all([
-        getRuleDetails(ruleKey),
-        getRuleVersions(ruleKey),
+        getRuleDetails(ruleKey, { skipErrorToast: true }),
+        getRuleVersions(ruleKey, { skipErrorToast: true }),
       ]);
       setRule(ruleRes);
       setVersions(versionsRes.items);
@@ -81,7 +84,16 @@ const RuleDetailPage: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to fetch rule details:', error);
-      message.error('获取规则详情失败');
+      const status =
+        typeof error === 'object' && error !== null && 'response' in error
+          ? (error as { response?: { status?: number } }).response?.status
+          : undefined;
+      if (status === 404) {
+        message.error('规则不存在或尚未发布');
+        navigate('/rules', { replace: true });
+      } else {
+        message.error('获取规则详情失败');
+      }
     } finally {
       setLoading(false);
     }
@@ -175,22 +187,28 @@ const RuleDetailPage: React.FC = () => {
           <Text type="secondary">Key: {rule.rule_key}</Text>
         </div>
         <Space>
-          <div style={{ marginRight: 8, display: 'flex', alignItems: 'center' }}>
-            <span style={{ marginRight: 8 }}>状态:</span>
-            <Switch
-              checked={rule.enabled}
-              onChange={handleToggle}
-              checkedChildren="开启"
-              unCheckedChildren="关闭"
-            />
-          </div>
+          {canManageRules ? (
+            <div style={{ marginRight: 8, display: 'flex', alignItems: 'center' }}>
+              <span style={{ marginRight: 8 }}>状态:</span>
+              <Switch
+                checked={rule.enabled}
+                onChange={handleToggle}
+                checkedChildren="开启"
+                unCheckedChildren="关闭"
+              />
+            </div>
+          ) : null}
           <Button onClick={() => navigate('/rules')}>返回列表</Button>
-          <Button type="primary" icon={<SaveOutlined />} onClick={() => form.submit()} loading={saving}>
-            保存草稿
-          </Button>
-          <Button type="primary" ghost icon={<PlayCircleOutlined />} onClick={handlePublish}>
-            发布版本
-          </Button>
+          {canManageRules ? (
+            <Button type="primary" icon={<SaveOutlined />} onClick={() => form.submit()} loading={saving}>
+              保存草稿
+            </Button>
+          ) : null}
+          {canManageRules ? (
+            <Button type="primary" ghost icon={<PlayCircleOutlined />} onClick={handlePublish}>
+              发布版本
+            </Button>
+          ) : null}
         </Space>
       </div>
 
@@ -200,6 +218,7 @@ const RuleDetailPage: React.FC = () => {
             <Form
               form={form}
               layout="vertical"
+              disabled={!canManageRules}
               onFinish={handleSave}
               initialValues={{
                 default_severity: 'MEDIUM',
@@ -264,7 +283,7 @@ const RuleDetailPage: React.FC = () => {
               renderItem={(item) => (
                 <List.Item
                   actions={[
-                    item.version !== rule.active_version && (
+                    canManageRules && item.version !== rule.active_version && (
                       <Popconfirm
                         title="确认回滚"
                         description={`确定要回滚到版本 v${item.version} 吗？`}
@@ -302,16 +321,18 @@ const RuleDetailPage: React.FC = () => {
             />
           </Card>
 
-          <SelfTestPanel 
-            ruleKey={ruleKey || ''} 
-            getDraftPayload={() => {
-              const values = form.getFieldsValue();
-              return {
-                query: values.query,
-                remediation: values.remediation,
-              };
-            }}
-          />
+          {canManageRules ? (
+            <SelfTestPanel
+              ruleKey={ruleKey || ''}
+              getDraftPayload={() => {
+                const values = form.getFieldsValue();
+                return {
+                  query: values.query,
+                  remediation: values.remediation,
+                };
+              }}
+            />
+          ) : null}
         </div>
       </div>
     </Layout>

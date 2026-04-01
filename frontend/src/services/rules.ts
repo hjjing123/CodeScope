@@ -82,6 +82,10 @@ interface RulePublishResponse {
   published_version: RuleVersion;
 }
 
+interface RuleRequestOptions {
+  skipErrorToast?: boolean;
+}
+
 const unwrapData = <T>(promise: Promise<ApiResponse<T>>): Promise<T> => {
   return promise.then((response) => response.data);
 };
@@ -127,13 +131,13 @@ export const getRules = (params: RuleQueryParams = {}) => {
   return unwrapData(request.get<unknown, ApiResponse<RuleListResponse>>('/rules', { params }));
 };
 
-export const getRuleDetails = (ruleKey: string) => {
-  return unwrapData(request.get<unknown, ApiResponse<Rule>>(`/rules/${ruleKey}`));
+export const getRuleDetails = (ruleKey: string, options: RuleRequestOptions = {}) => {
+  return unwrapData(request.get<unknown, ApiResponse<Rule>>(`/rules/${ruleKey}`, options));
 };
 
-export const getRuleVersions = (ruleKey: string) => {
+export const getRuleVersions = (ruleKey: string, options: RuleRequestOptions = {}) => {
   return unwrapData(
-    request.get<unknown, ApiResponse<RuleVersionListResponse>>(`/rules/${ruleKey}/versions`)
+    request.get<unknown, ApiResponse<RuleVersionListResponse>>(`/rules/${ruleKey}/versions`, options)
   );
 };
 

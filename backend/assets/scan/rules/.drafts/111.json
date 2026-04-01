@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "status": "DRAFT",
+  "content": {
+    "query": "111"
+  },
+  "created_by": "af6238ce-41d3-4e0d-b2bc-05f840602e9b",
+  "created_at": "2026-04-01T02:11:26.854607+00:00",
+  "name": "111",
+  "default_severity": "MED",
+  "description": "111"
+}

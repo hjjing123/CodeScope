@@ -24,6 +24,7 @@ from app.models import (
     SelfTestJob,
     SelfTestJobStage,
     SelfTestJobStatus,
+    SystemRole,
     utc_now,
 )
 from app.schemas.rule import (
@@ -91,6 +92,10 @@ from app.services.task_log_service import (
 router = APIRouter(tags=["rules"])
 
 RULE_KEY_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _can_view_rule_drafts(principal: AuthPrincipal) -> bool:
+    return principal.user.role == SystemRole.ADMIN.value
 
 
 def _normalize_rule_key(value: str) -> str:
@@ -292,14 +297,17 @@ def list_rules(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=1000),
     _db: Session = Depends(get_db),
-    _principal: AuthPrincipal = Depends(require_platform_action("rule:read")),
+    principal: AuthPrincipal = Depends(require_platform_action("rule:read")),
 ):
+    include_drafts = _can_view_rule_drafts(principal)
     rows, total = list_file_rules(
         enabled=enabled,
         vuln_type=vuln_type,
         search=search,
         page=page,
         page_size=page_size,
+        published_only=not include_drafts,
+        include_draft_metadata=include_drafts,
     )
     payload = RuleListPayload(items=[_rule_payload(item) for item in rows], total=total)
     return success_response(request, data=payload.model_dump())
@@ -310,9 +318,14 @@ def get_rule(
     request: Request,
     rule_key: str,
     _db: Session = Depends(get_db),
-    _principal: AuthPrincipal = Depends(require_platform_action("rule:read")),
+    principal: AuthPrincipal = Depends(require_platform_action("rule:read")),
 ):
-    rule = get_file_rule(_normalize_rule_key(rule_key))
+    include_drafts = _can_view_rule_drafts(principal)
+    rule = get_file_rule(
+        _normalize_rule_key(rule_key),
+        published_only=not include_drafts,
+        include_draft_metadata=include_drafts,
+    )
     return success_response(request, data=_rule_payload(rule).model_dump())
 
 
@@ -321,10 +334,13 @@ def list_rule_versions(
     request: Request,
     rule_key: str,
     _db: Session = Depends(get_db),
-    _principal: AuthPrincipal = Depends(require_platform_action("rule:read")),
+    principal: AuthPrincipal = Depends(require_platform_action("rule:read")),
 ):
     normalized_rule_key = _normalize_rule_key(rule_key)
-    rows = list_file_rule_versions(normalized_rule_key)
+    rows = list_file_rule_versions(
+        normalized_rule_key,
+        published_only=not _can_view_rule_drafts(principal),
+    )
     payload = RuleVersionListPayload(
         items=[_rule_version_payload(item) for item in rows],
         total=len(rows),
